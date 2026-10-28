@@ -1,0 +1,263 @@
+- name: HolidayListDay
+  label: Holiday
+  kind: child
+  fields:
+    - {name: holiday_date, type: date, required: true, in_list: true}
+    - {name: description, type: data, required: true, in_list: true}
+    - {name: weekly_off, type: check, in_list: true}
+
+- name: HolidayList
+  label: Holiday List
+  kind: master
+  module: attendance
+  title_field: holiday_list_name
+  description: Holidays and weekly offs; leave days and payroll working days skip them.
+  fields:
+    - {name: holiday_list_name, type: data, required: true, unique: true, in_list: true}
+    - {name: from_date, type: date, required: true, in_list: true}
+    - {name: to_date, type: date, required: true, in_list: true}
+    - {name: weekly_off, type: select, options: [Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday], description: Day Add Weekly Offs uses when no days are given}
+    - {name: holidays, type: table, of: HolidayListDay}
+    - {name: total_holidays, type: int, read_only: true, in_list: true}
+  rules:
+    - {name: ordered_dates, check: "doc.from_date == null || doc.to_date == null || doc.to_date >= doc.from_date", message: "To date must not be before from date"}
+  actions:
+    - {name: add_weekly_offs, label: Add Weekly Offs, permission: write}
+  list: {columns: [holiday_list_name, from_date, to_date, total_holidays], sort: from_date desc}
+
+- name: ShiftType
+  label: Shift Type
+  kind: master
+  module: attendance
+  title_field: shift_name
+  description: Working hours, grace periods and thresholds used to turn check-ins into attendance.
+  fields:
+    - {name: shift_name, type: data, required: true, unique: true, in_list: true}
+    - {name: start_time, type: data, required: true, max_length: 5, in_list: true, description: "HH:MM in the tenant's time zone"}
+    - {name: end_time, type: data, required: true, max_length: 5, in_list: true, description: "HH:MM; at or before the start time for overnight shifts"}
+    - {name: is_overnight, type: check, read_only: true, in_list: true}
+    - {name: holiday_list, type: link, to: HolidayList, description: For employees without a holiday list of their own}
+    - {name: enable_auto_attendance, type: check, in_filter: true, description: Mark attendance from check-ins once each shift is over}
+    - {name: process_attendance_after, type: date, required_if: "doc.enable_auto_attendance", description: Days before this date are never marked automatically}
+    - {name: last_sync_of_checkin, type: datetime, description: When devices last uploaded check-ins; shifts ending later wait for the next upload}
+    - {name: last_processed_date, type: date, read_only: true, no_copy: true}
+    - {name: working_hours_calculation, type: select, options: [First Check-in and Last Check-out, Every Valid Check-in and Check-out], default: First Check-in and Last Check-out, required: true}
+    - {name: begin_check_in_before_shift_start_time, type: int, default: 60, min: 0, max: 720, label: Check-in Window Before Start (minutes)}
+    - {name: allow_check_out_after_shift_end_time, type: int, default: 60, min: 0, max: 720, label: Check-out Window After End (minutes)}
+    - {name: late_entry_grace_period, type: int, default: 0, min: 0, max: 720, label: Late Entry Grace (minutes)}
+    - {name: early_exit_grace_period, type: int, default: 0, min: 0, max: 720, label: Early Exit Grace (minutes)}
+    - {name: working_hours_threshold_for_half_day, type: decimal, default: 0, min: "0", max: "24", description: Fewer working hours mark a half day (0 = off)}
+    - {name: working_hours_threshold_for_absent, type: decimal, default: 0, min: "0", max: "24", description: Fewer working hours mark the employee absent (0 = off)}
+    - {name: mark_absent_without_checkins, type: check, default: true, description: Employees without any check-in on a working day are marked absent}
+  rules:
+    - {name: start_format, check: "doc.start_time == null || doc.start_time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')", message: "Start time must look like 09:00"}
+    - {name: end_format, check: "doc.end_time == null || doc.end_time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')", message: "End time must look like 18:00"}
+    - {name: thresholds, check: "doc.working_hours_threshold_for_absent == 0.0 || doc.working_hours_threshold_for_half_day == 0.0 || doc.working_hours_threshold_for_absent < doc.working_hours_threshold_for_half_day", message: "The absent threshold must be below the half-day threshold"}
+  actions:
+    - {name: mark_attendance, label: Mark Attendance Up To Date, permission: write, confirm: "Mark attendance from check-ins for every completed shift day of this shift type?"}
+  list: {columns: [shift_name, start_time, end_time, enable_auto_attendance], sort: shift_name asc}
+
+- name: ShiftAssignment
+  label: Shift Assignment
+  kind: document
+  module: attendance
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-SHA-{YYYY}-{seq:5}", date_field: start_date}
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: shift_type, type: link, to: ShiftType, required: true, in_list: true, in_filter: true}
+    - {name: start_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: end_date, type: date, in_list: true, description: Empty = until further notice}
+  rules:
+    - {name: ordered_dates, check: "doc.end_date == null || doc.start_date == null || doc.end_date >= doc.start_date", message: "End date must not be before start date"}
+  list: {columns: [number, employee_name, shift_type, start_date, end_date], sort: start_date desc}
+
+- name: EmployeeCheckin
+  label: Employee Check-in
+  kind: master
+  module: attendance
+  title_field: employee_name
+  owner_fields: [employee_user]
+  company_scoped: true
+  description: One punch from a device, the app or HR. Devices may send the employee's attendance device id instead of the employee.
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: employee_device_id, type: data, label: Device User ID}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: log_type, type: select, options: [IN, OUT], in_list: true, in_filter: true}
+    - {name: log_time, type: datetime, required: true, default_expr: now, in_list: true}
+    - {name: device_id, type: data, label: Device / Location, in_list: true}
+    - {name: skip_auto_attendance, type: check}
+    - {name: shift, type: link, to: ShiftType, read_only: true}
+    - {name: attendance, type: link, to: Attendance, read_only: true, on_delete: set_null}
+  unique: [[employee, log_time]]
+  list: {columns: [employee_name, log_type, log_time, device_id], sort: log_time desc}
+
+- name: Attendance
+  label: Attendance
+  label_plural: Attendance
+  kind: document
+  module: attendance
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-ATT-{YYYY}-{seq:6}", date_field: attendance_date}
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: department, type: link, to: Department, fetch_from: employee.department, read_only: true, in_filter: true}
+    - {name: attendance_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
+    - {name: status, type: select, options: [Present, Absent, Half Day, On Leave, Work From Home], default: Present, required: true, in_list: true, in_filter: true}
+    - {name: leave_type, type: link, to: LeaveType, required_if: "doc.status == 'On Leave'", visible_if: "doc.status == 'On Leave' || doc.status == 'Half Day'"}
+    - {name: leave_application, type: link, to: LeaveApplication, read_only: true}
+    - {name: shift, type: link, to: ShiftType}
+    - {name: in_time, type: datetime}
+    - {name: out_time, type: datetime}
+    - {name: working_hours, type: decimal, min: "0", max: "48"}
+    - {name: late_entry, type: check}
+    - {name: early_exit, type: check}
+    - {name: remarks, type: text}
+  list: {columns: [number, employee_name, attendance_date, status], sort: attendance_date desc}
+
+- name: LeaveType
+  label: Leave Type
+  kind: master
+  module: attendance
+  title_field: leave_type_name
+  fields:
+    - {name: leave_type_name, type: data, required: true, unique: true, in_list: true}
+    - {name: max_leaves_allowed, type: decimal, min: "0", description: Most leaves one allocation may grant (0 = no limit)}
+    - {name: applicable_after, type: int, min: 0, label: Applicable After (Working Days), description: Working days since joining before this leave can be taken}
+    - {name: max_continuous_days_allowed, type: int, min: 0, description: Longest single application in days (0 = no limit)}
+    - {name: is_lwp, type: check, label: Leave Without Pay, in_list: true, description: Unpaid; reduces payment days and needs no allocation}
+    - {name: include_holiday, type: check, label: Count Holidays Within Leave, description: Holidays and weekly offs inside the leave dates count as leave}
+    - {name: allow_negative, type: check, label: Allow Negative Balance}
+    - {name: is_carry_forward, type: check, in_list: true, description: Unused leaves can move into the next allocation}
+    - {name: maximum_carry_forwarded_leaves, type: decimal, min: "0", visible_if: "doc.is_carry_forward", description: 0 = no limit}
+    - {name: allow_encashment, type: check}
+    - {name: encashment_threshold_days, type: decimal, min: "0", visible_if: "doc.allow_encashment", description: Leaves that must remain after an encashment}
+    - {name: disabled, type: check, in_filter: true}
+  rules:
+    - {name: lwp_has_no_balance, check: "!(doc.is_lwp && (doc.is_carry_forward || doc.allow_encashment || doc.allow_negative))", message: "Leave without pay has no balance to carry forward, encash or overdraw"}
+  list: {columns: [leave_type_name, is_lwp, is_carry_forward, max_leaves_allowed], sort: leave_type_name asc}
+
+- name: LeavePolicyDetail
+  label: Leave Policy Detail
+  kind: child
+  fields:
+    - {name: leave_type, type: link, to: LeaveType, required: true, in_list: true}
+    - {name: annual_allocation, type: decimal, required: true, min: "0", in_list: true}
+
+- name: LeavePolicy
+  label: Leave Policy
+  label_plural: Leave Policies
+  kind: master
+  module: attendance
+  title_field: title
+  fields:
+    - {name: title, type: data, required: true, unique: true, in_list: true}
+    - {name: leave_policy_details, type: table, of: LeavePolicyDetail, required: true, label: Leave Allocations}
+    - {name: description, type: text}
+  actions:
+    - {name: assign_allocations, label: Allocate Leaves, permission: read, confirm: "Create and submit leave allocations from this policy?"}
+  list: {sort: title asc}
+
+- name: LeaveAllocation
+  label: Leave Allocation
+  kind: document
+  module: attendance
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-LAL-{YYYY}-{seq:5}", date_field: from_date}
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: leave_type, type: link, to: LeaveType, required: true, in_list: true, in_filter: true}
+    - {name: from_date, type: date, required: true, in_list: true}
+    - {name: to_date, type: date, required: true, in_list: true}
+    - {name: new_leaves_allocated, type: decimal, required: true, default: 0, min: "0"}
+    - {name: carry_forward, type: check, description: Add the unused leaves of the previous allocation of this type}
+    - {name: unused_leaves, type: decimal, read_only: true, no_copy: true, label: Carried Forward Leaves}
+    - {name: total_leaves_allocated, type: decimal, read_only: true, in_list: true}
+    - {name: leave_policy, type: link, to: LeavePolicy, read_only: true}
+    - {name: description, type: text}
+  rules:
+    - {name: ordered_dates, check: "doc.from_date == null || doc.to_date == null || doc.to_date >= doc.from_date", message: "To date must not be before from date"}
+    - {name: something_allocated, check: "doc.total_leaves_allocated > 0.0", message: "Allocate at least some leaves", on: submit}
+  list: {columns: [number, employee_name, leave_type, from_date, to_date, total_leaves_allocated], sort: from_date desc}
+
+- name: LeaveApplication
+  label: Leave Application
+  kind: document
+  module: attendance
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-LAP-{YYYY}-{seq:5}", date_field: from_date}
+  description: Approved through the Leave Approval workflow by the leave approver (or an HR manager).
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: department, type: link, to: Department, fetch_from: employee.department, read_only: true, in_filter: true}
+    - {name: leave_type, type: link, to: LeaveType, required: true, in_list: true, in_filter: true}
+    - {name: from_date, type: date, required: true, in_list: true}
+    - {name: to_date, type: date, required: true, in_list: true}
+    - {name: half_day, type: check}
+    - {name: half_day_date, type: date, visible_if: "doc.half_day", description: Defaults to the from date}
+    - {name: total_leave_days, type: decimal, read_only: true, in_list: true}
+    - {name: leave_balance, type: decimal, read_only: true, no_copy: true, description: Available before this application}
+    - {name: reason, type: text}
+    - {name: leave_approver, type: email, in_filter: true}
+    - {name: posting_date, type: date, required: true, default_expr: today}
+    - {name: status, type: select, options: [Open, Approved, Rejected, Cancelled], default: Open, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: allocation, type: link, to: LeaveAllocation, read_only: true, no_copy: true}
+  rules:
+    - {name: ordered_dates, check: "doc.from_date == null || doc.to_date == null || doc.to_date >= doc.from_date", message: "To date must not be before from date"}
+    - {name: half_day_in_range, check: "!doc.half_day || doc.half_day_date == null || (doc.half_day_date >= doc.from_date && doc.half_day_date <= doc.to_date)", message: "The half day must fall within the leave dates"}
+  list: {columns: [number, employee_name, leave_type, from_date, to_date, total_leave_days, status], sort: from_date desc}
+
+- name: LeaveLedgerEntry
+  label: Leave Ledger Entry
+  label_plural: Leave Ledger Entries
+  kind: master
+  module: attendance
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  description: Append-only record of every change to a leave balance (allocations add, applications, encashments and expiries subtract); written by the system only.
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, read_only: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: leave_type, type: link, to: LeaveType, required: true, read_only: true, in_list: true, in_filter: true}
+    - {name: transaction_type, type: select, options: [Leave Allocation, Leave Application, Leave Encashment, Expiry], required: true, read_only: true, in_list: true, in_filter: true}
+    - {name: transaction_id, type: data, required: true, read_only: true}
+    - {name: transaction_number, type: data, read_only: true, in_list: true}
+    - {name: allocation, type: link, to: LeaveAllocation, read_only: true, in_filter: true}
+    - {name: leaves, type: decimal, required: true, read_only: true, in_list: true}
+    - {name: from_date, type: date, required: true, read_only: true, in_list: true}
+    - {name: to_date, type: date, required: true, read_only: true}
+    - {name: is_carry_forward, type: check, read_only: true}
+    - {name: is_lwp, type: check, read_only: true}
+    - {name: is_reversal, type: check, read_only: true}
+  indexes: [[employee, leave_type], [transaction_id]]
+  list: {columns: [employee_name, leave_type, transaction_type, leaves, from_date], sort: created_at desc}

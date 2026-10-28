@@ -1,0 +1,225 @@
+package: hr
+version: 0.1.0
+label: Human Resources
+description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, expense claims and employee advances posted to the ledger, recruitment, appraisals and the employee lifecycle.
+depends: [core, accounting]
+field_prefix: hr_
+
+overlays:
+  - entity: Company
+    ops:
+      - {op: add_field, field: {name: hr_default_holiday_list, type: link, to: HolidayList, label: Default Holiday List}}
+      - {op: add_field, field: {name: hr_employee_payable_account, type: link, to: Account, label: Employee Payable Account, link_filters: {is_group: false}, description: Credited when expense claims are approved}}
+      - {op: add_field, field: {name: hr_employee_advance_account, type: link, to: Account, label: Employee Advance Account, link_filters: {is_group: false}}}
+      - {op: add_action, action: {name: setup_hr_accounts, label: Create HR and Payroll Accounts, permission: write}}
+  - entity: JournalEntry
+    ops:
+      - {op: add_field, field: {name: hr_reference_type, type: select, label: HR Reference Type, options: [Expense Claim, Employee Advance, Employee Advance Return, Payroll Entry], read_only: true, in_filter: true}}
+      - {op: add_field, field: {name: hr_reference, type: data, label: HR Reference, read_only: true, description: "Id of the expense claim, employee advance or payroll entry this entry settles"}}
+      - {op: add_field, field: {name: hr_reference_number, type: data, label: HR Reference No, read_only: true}}
+
+modules:
+  - name: hr
+    label: HR
+    icon: users
+    order: 70
+    items: [Employee, Department, Designation, Branch, EmployeeGrade, EmploymentType, EmployeeOnboarding, EmployeeSeparation, EmployeePromotion,
+            EmployeeTransfer, report:employee_directory, report:headcount, report:employee_events]
+  - name: attendance
+    label: Attendance & Leave
+    icon: calendar
+    order: 71
+    items: [Attendance, EmployeeCheckin, ShiftType, ShiftAssignment, HolidayList, LeaveApplication, LeaveAllocation, LeaveType, LeavePolicy,
+            LeaveLedgerEntry, report:monthly_attendance_sheet, report:leave_balance]
+  - name: expenses
+    label: Expense Claims
+    icon: receipt
+    order: 72
+    items: [ExpenseClaim, EmployeeAdvance, ExpenseClaimType, report:expense_claim_summary]
+  - name: recruitment
+    label: Recruitment
+    icon: user-plus
+    order: 73
+    items: [JobOpening, JobApplicant, Interview, JobOffer, report:recruitment_pipeline]
+  - name: performance
+    label: Performance
+    icon: target
+    order: 74
+    items: [Appraisal, AppraisalCycle, AppraisalTemplate]
+
+workflows:
+  - name: Leave Approval
+    entity: LeaveApplication
+    initial_state: Open
+    states:
+      - {name: Open, docstatus: 0}
+      - {name: Approved, docstatus: 1}
+      - {name: Rejected, docstatus: 1}
+      - {name: Cancelled, docstatus: 2}
+    transitions:
+      - {action: Approve, from: Open, to: Approved, roles: [Leave Approver, HR Manager]}
+      - {action: Reject, from: Open, to: Rejected, roles: [Leave Approver, HR Manager]}
+      - {action: Cancel, from: Approved, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
+      - {action: Cancel, from: Rejected, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
+  - name: Expense Approval
+    entity: ExpenseClaim
+    initial_state: Draft
+    states:
+      - {name: Draft, docstatus: 0}
+      - {name: Approved, docstatus: 1}
+      - {name: Rejected, docstatus: 1}
+      - {name: Cancelled, docstatus: 2}
+    transitions:
+      - {action: Approve, from: Draft, to: Approved, roles: [Expense Approver, HR Manager]}
+      - {action: Reject, from: Draft, to: Rejected, roles: [Expense Approver, HR Manager]}
+      - {action: Cancel, from: Approved, to: Cancelled, roles: [Expense Approver, HR Manager]}
+      - {action: Cancel, from: Rejected, to: Cancelled, roles: [Expense Approver, HR Manager]}
+
+roles:
+  - name: HR Manager
+    description: Everything in HR, including bank and identity details.
+    permissions:
+      - {entity: Employee, read: true, write: true, create: true, delete: true, export: true, import: true, read_groups: [bank, identity], write_groups: [bank, identity]}
+      - {entity: Department, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Designation, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Branch, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: EmployeeGrade, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: EmploymentType, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: EmployeeOnboarding, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: EmployeeSeparation, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: EmployeePromotion, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: EmployeeTransfer, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: HolidayList, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: ShiftType, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: ShiftAssignment, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
+      - {entity: EmployeeCheckin, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Attendance, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
+      - {entity: LeaveType, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: LeavePolicy, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: LeaveAllocation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
+      - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
+      - {entity: LeaveLedgerEntry, read: true, export: true}
+      - {entity: ExpenseClaimType, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: ExpenseClaim, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: EmployeeAdvance, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: JobOpening, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: JobApplicant, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Interview, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: JobOffer, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: AppraisalCycle, read: true, write: true, create: true, delete: true}
+      - {entity: AppraisalTemplate, read: true, write: true, create: true, delete: true}
+      - {entity: Appraisal, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, read_groups: [review], write_groups: [review]}
+      - {entity: AppraisalGoal, read_groups: [review], write_groups: [review]}
+      - {entity: JournalEntry, read: true, create: true}
+      - {entity: Company, read: true}
+      - {entity: Account, read: true}
+      - {entity: CostCenter, read: true}
+      - {entity: Project, read: true}
+      - {entity: Currency, read: true}
+  - name: HR User
+    description: Day-to-day HR work; no bank details and no approvals.
+    permissions:
+      - {entity: Employee, read: true, write: true, create: true, export: true, read_groups: [identity], write_groups: [identity]}
+      - {entity: Department, read: true, write: true, create: true}
+      - {entity: Designation, read: true, write: true, create: true}
+      - {entity: Branch, read: true, write: true, create: true}
+      - {entity: EmployeeGrade, read: true}
+      - {entity: EmploymentType, read: true}
+      - {entity: EmployeeOnboarding, read: true, write: true, create: true, delete: true}
+      - {entity: EmployeeSeparation, read: true, write: true, create: true, delete: true}
+      - {entity: EmployeePromotion, read: true, write: true, create: true, delete: true}
+      - {entity: EmployeeTransfer, read: true, write: true, create: true, delete: true}
+      - {entity: HolidayList, read: true, write: true, create: true}
+      - {entity: ShiftType, read: true}
+      - {entity: ShiftAssignment, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
+      - {entity: EmployeeCheckin, read: true, write: true, create: true, delete: true, import: true}
+      - {entity: Attendance, read: true, write: true, create: true, delete: true, submit: true, cancel: true, import: true}
+      - {entity: LeaveType, read: true}
+      - {entity: LeavePolicy, read: true}
+      - {entity: LeaveAllocation, read: true, write: true, create: true, delete: true, submit: true}
+      - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, cancel: true}
+      - {entity: LeaveLedgerEntry, read: true}
+      - {entity: ExpenseClaimType, read: true}
+      - {entity: ExpenseClaim, read: true, write: true, create: true, delete: true}
+      - {entity: EmployeeAdvance, read: true, write: true, create: true, delete: true, submit: true}
+      - {entity: JobOpening, read: true, write: true, create: true}
+      - {entity: JobApplicant, read: true, write: true, create: true, delete: true, import: true}
+      - {entity: Interview, read: true, write: true, create: true, delete: true}
+      - {entity: JobOffer, read: true, write: true, create: true, delete: true, submit: true}
+      - {entity: AppraisalCycle, read: true}
+      - {entity: AppraisalTemplate, read: true}
+      - {entity: Appraisal, read: true, write: true, create: true, submit: true, read_groups: [review], write_groups: [review]}
+      - {entity: AppraisalGoal, read_groups: [review], write_groups: [review]}
+      - {entity: Company, read: true}
+      - {entity: CostCenter, read: true}
+      - {entity: Project, read: true}
+  - name: Employee
+    description: Self-service; sees and creates only their own records (the employee whose user is the signed-in user).
+    permissions:
+      - {entity: Employee, read: true, if_owner: true, read_groups: [bank, identity]}
+      - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: ExpenseClaim, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: EmployeeAdvance, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: EmployeeCheckin, read: true, create: true, if_owner: true}
+      - {entity: Attendance, read: true, if_owner: true}
+      - {entity: ShiftAssignment, read: true, if_owner: true}
+      - {entity: LeaveAllocation, read: true, if_owner: true}
+      - {entity: LeaveLedgerEntry, read: true, if_owner: true}
+      - {entity: Appraisal, read: true, write: true, if_owner: true, read_groups: [review]}
+      - {entity: AppraisalGoal, read_groups: [review]}
+      - {entity: EmployeePromotion, read: true, if_owner: true}
+      - {entity: EmployeeTransfer, read: true, if_owner: true}
+      - {entity: EmployeeSeparation, read: true, if_owner: true}
+      - {entity: LeaveType, read: true}
+      - {entity: HolidayList, read: true}
+      - {entity: ShiftType, read: true}
+      - {entity: ExpenseClaimType, read: true}
+      - {entity: Department, read: true}
+      - {entity: Designation, read: true}
+      - {entity: Branch, read: true}
+      - {entity: AppraisalCycle, read: true}
+      - {entity: JobOpening, read: true}
+  - name: Leave Approver
+    description: Approves or rejects the leave applications routed to them.
+    permissions:
+      - {entity: LeaveApplication, read: true, write: true, submit: true, cancel: true}
+      - {entity: LeaveAllocation, read: true}
+      - {entity: LeaveLedgerEntry, read: true}
+      - {entity: LeaveType, read: true}
+      - {entity: HolidayList, read: true}
+  - name: Expense Approver
+    description: Sanctions, approves or rejects the expense claims routed to them.
+    permissions:
+      - {entity: ExpenseClaim, read: true, write: true, submit: true, cancel: true}
+      - {entity: ExpenseClaimType, read: true}
+      - {entity: EmployeeAdvance, read: true}
+  - name: Attendance Device
+    description: For the API keys of biometric or RFID devices; they can only post check-ins.
+    permissions:
+      - {entity: EmployeeCheckin, create: true}
+
+seed:
+  - entity: EmploymentType
+    key: [employment_type_name]
+    records:
+      - {employment_type_name: Full-time}
+      - {employment_type_name: Part-time}
+      - {employment_type_name: Probation}
+      - {employment_type_name: Contract}
+      - {employment_type_name: Intern}
+      - {employment_type_name: Apprentice}
+  - entity: LeaveType
+    key: [leave_type_name]
+    records:
+      - {leave_type_name: Casual Leave, max_leaves_allowed: 12, max_continuous_days_allowed: 3}
+      - {leave_type_name: Sick Leave, max_leaves_allowed: 12}
+      - {leave_type_name: Privilege Leave, max_leaves_allowed: 18, applicable_after: 90, is_carry_forward: true, maximum_carry_forwarded_leaves: 30, allow_encashment: true, encashment_threshold_days: 10}
+      - {leave_type_name: Leave Without Pay, is_lwp: true}
+  - entity: ExpenseClaimType
+    key: [expense_type]
+    records:
+      - {expense_type: Travel}
+      - {expense_type: Food}
+      - {expense_type: Accommodation}
+      - {expense_type: Medical}
+      - {expense_type: Others}

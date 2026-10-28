@@ -1,0 +1,329 @@
+- name: SalaryComponentAccount
+  label: Salary Component Account
+  kind: child
+  fields:
+    - {name: company, type: link, to: Company, required: true, in_list: true}
+    - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}
+
+- name: SalaryComponent
+  label: Salary Component
+  kind: master
+  module: payroll
+  title_field: component_name
+  search_fields: [abbr]
+  description: An earning or deduction. Formulas are CEL over base, variable, gross, payment_days, working_days, lwp_days, absent_days and the abbreviations of the components above it.
+  fields:
+    - {name: component_name, type: data, required: true, unique: true, in_list: true}
+    - {name: abbr, type: data, required: true, unique: true, max_length: 30, label: Abbreviation, in_list: true, description: "Name used in formulas, e.g. BS"}
+    - {name: component_type, type: select, options: [Earning, Deduction], required: true, in_list: true, in_filter: true}
+    - {name: description, type: text}
+    - {name: amount_based_on_formula, type: check}
+    - {name: formula, type: code, visible_if: "doc.amount_based_on_formula", required_if: "doc.amount_based_on_formula", description: "e.g. base * 0.4 or gross > 21000 ? 0 : gross * 0.0075"}
+    - {name: amount, type: currency, min: "0", visible_if: "!doc.amount_based_on_formula", description: Fixed amount per period}
+    - {name: depends_on_payment_days, type: check, default: true, description: Prorated by payment days over working days}
+    - {name: is_tax_applicable, type: check, default: true, visible_if: "doc.component_type == 'Earning'", label: Taxable}
+    - {name: exempted_from_income_tax, type: check, visible_if: "doc.component_type == 'Deduction'", description: Lowers taxable income (e.g. provident fund)}
+    - {name: variable_based_on_taxable_salary, type: check, visible_if: "doc.component_type == 'Deduction'", label: Income Tax (from tax slabs)}
+    - {name: statistical_component, type: check, description: "Computed for use in formulas only; never paid, deducted or posted"}
+    - {name: round_to_the_nearest_integer, type: check}
+    - {name: accounts, type: table, of: SalaryComponentAccount}
+    - {name: disabled, type: check, in_filter: true}
+  rules:
+    - {name: abbr_identifier, check: "doc.abbr == null || doc.abbr.matches('^[A-Za-z_][A-Za-z0-9_]*$')", message: "The abbreviation must start with a letter or _ and contain only letters, digits and _"}
+    - {name: tax_is_a_deduction, check: "!doc.variable_based_on_taxable_salary || doc.component_type == 'Deduction'", message: "Only a deduction can be the income tax component"}
+  list: {columns: [component_name, abbr, component_type, statistical_component], sort: component_name asc}
+
+- name: SalaryDetail
+  label: Salary Detail
+  kind: child
+  fields:
+    - {name: salary_component, type: link, to: SalaryComponent, required: true, in_list: true}
+    - {name: abbr, type: data, fetch_from: salary_component.abbr, read_only: true, in_list: true}
+    - {name: amount_based_on_formula, type: check}
+    - {name: formula, type: code, description: Empty = the component's formula or amount}
+    - {name: condition, type: code, description: "CEL; the row applies only when it is true"}
+    - {name: amount, type: currency, currency: parent.currency, min: "0", in_list: true}
+    - {name: default_amount, type: currency, currency: parent.currency, read_only: true, description: Full-period amount before proration}
+    - {name: additional_amount, type: currency, currency: parent.currency, read_only: true, description: From additional salary}
+    - {name: depends_on_payment_days, type: check, read_only: true}
+    - {name: statistical_component, type: check, read_only: true}
+    - {name: is_tax_applicable, type: check, read_only: true}
+    - {name: exempted_from_income_tax, type: check, read_only: true}
+    - {name: variable_based_on_taxable_salary, type: check, read_only: true}
+
+- name: SalaryStructure
+  label: Salary Structure
+  kind: document
+  module: payroll
+  submittable: true
+  company_scoped: true
+  title_field: structure_name
+  description: Earnings are computed first, then deductions, each in row order; a formula may use the abbreviations of rows above it.
+  fields:
+    - {name: structure_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: currency, type: link, to: Currency, fetch_from: company.default_currency, read_only: true}
+    - {name: payroll_frequency, type: select, options: [Monthly, Fortnightly, Weekly], default: Monthly, required: true, in_list: true, in_filter: true}
+    - {name: is_active, type: check, default: true, read_only: true, in_list: true, in_filter: true}
+    - {name: earnings, type: table, of: SalaryDetail}
+    - {name: deductions, type: table, of: SalaryDetail}
+    - {name: leave_encashment_amount_per_day, type: currency, currency: currency, min: "0"}
+    - {name: payment_account, type: link, to: Account, link_filters: {is_group: false}, description: Bank or cash account salaries are paid from}
+    - {name: notes, type: text}
+  actions:
+    - {name: set_active, label: Activate / Deactivate, docstatus: [1], permission: submit}
+  list: {columns: [structure_name, payroll_frequency, is_active], sort: structure_name asc}
+
+- name: SalaryStructureAssignment
+  label: Salary Structure Assignment
+  kind: document
+  module: payroll
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  numbering: {template: "HR-SSA-{YYYY}-{seq:5}", date_field: from_date}
+  description: The assignment in force on a date is the latest submitted one starting on or before it.
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: salary_structure, type: link, to: SalaryStructure, required: true, in_list: true, in_filter: true}
+    - {name: from_date, type: date, required: true, in_list: true}
+    - {name: currency, type: link, to: Currency, fetch_from: salary_structure.currency, read_only: true}
+    - {name: base, type: currency, currency: currency, required: true, min: "0", in_list: true}
+    - {name: variable, type: currency, currency: currency, min: "0"}
+    - {name: income_tax_slab, type: link, to: IncomeTaxSlab}
+  list: {columns: [number, employee_name, salary_structure, from_date, base], sort: from_date desc}
+
+- name: PayrollPeriod
+  label: Payroll Period
+  kind: master
+  module: payroll
+  title_field: period_name
+  company_scoped: true
+  description: The tax year over which income tax is projected and spread.
+  fields:
+    - {name: period_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: start_date, type: date, required: true, in_list: true}
+    - {name: end_date, type: date, required: true, in_list: true}
+  unique: [[company, period_name]]
+  exclusion:
+    - {fields: [company], from: start_date, to: end_date}
+  rules:
+    - {name: ordered_dates, check: "doc.start_date == null || doc.end_date == null || doc.end_date > doc.start_date", message: "End date must be after start date"}
+  list: {sort: start_date desc}
+
+- name: TaxSlab
+  label: Tax Slab
+  kind: child
+  fields:
+    - {name: from_amount, type: currency, default: 0, min: "0", in_list: true}
+    - {name: to_amount, type: currency, min: "0", in_list: true, description: 0 = no upper limit}
+    - {name: percent_deduction, type: percent, required: true, min: "0", max: "100", in_list: true}
+  rules:
+    - {name: ordered, check: "doc.to_amount == 0.0 || doc.to_amount > doc.from_amount", message: "To amount must exceed from amount (or be 0 for no limit)"}
+
+- name: IncomeTaxSlab
+  label: Income Tax Slab
+  kind: master
+  module: payroll
+  title_field: slab_name
+  description: Progressive annual tax on taxable salary after the standard exemption and declared exemptions.
+  fields:
+    - {name: slab_name, type: data, required: true, unique: true, in_list: true}
+    - {name: effective_from, type: date, required: true, in_list: true}
+    - {name: standard_tax_exemption_amount, type: currency, min: "0"}
+    - {name: allow_tax_exemption, type: check, default: true, description: Deduct the employee's submitted exemption declaration}
+    - {name: slabs, type: table, of: TaxSlab, required: true}
+    - {name: disabled, type: check}
+  list: {columns: [slab_name, effective_from, standard_tax_exemption_amount], sort: effective_from desc}
+
+- name: EmployeeTaxExemptionCategory
+  label: Tax Exemption Category
+  label_plural: Tax Exemption Categories
+  kind: master
+  module: payroll
+  title_field: category_name
+  fields:
+    - {name: category_name, type: data, required: true, unique: true, in_list: true}
+    - {name: max_amount, type: currency, min: "0", in_list: true, description: Most that counts per payroll period (0 = no limit)}
+    - {name: description, type: text}
+  list: {sort: category_name asc}
+
+- name: TaxExemptionDeclarationRow
+  label: Declared Exemption
+  kind: child
+  fields:
+    - {name: exemption_category, type: link, to: EmployeeTaxExemptionCategory, required: true, in_list: true}
+    - {name: amount, type: currency, required: true, min: "0", in_list: true}
+    - {name: max_amount, type: currency, read_only: true, in_list: true}
+
+- name: EmployeeTaxExemptionDeclaration
+  label: Tax Exemption Declaration
+  kind: document
+  module: payroll
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-TXD-{YYYY}-{seq:5}"}
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: payroll_period, type: link, to: PayrollPeriod, required: true, in_list: true, in_filter: true}
+    - {name: declarations, type: table, of: TaxExemptionDeclarationRow, required: true}
+    - {name: total_declared_amount, type: currency, read_only: true, in_list: true}
+    - {name: total_exemption_amount, type: currency, read_only: true, description: Declared amounts capped by each category's limit}
+  list: {columns: [number, employee_name, payroll_period, total_exemption_amount], sort: created_at desc}
+
+- name: AdditionalSalary
+  label: Additional Salary
+  label_plural: Additional Salaries
+  kind: document
+  module: payroll
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  numbering: {template: "HR-ADS-{YYYY}-{seq:5}", date_field: payroll_date}
+  description: A one-off earning or deduction (bonus, arrears, recovery, leave encashment) paid in the salary slip covering its payroll date.
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: salary_component, type: link, to: SalaryComponent, required: true, link_filters: {disabled: false}, in_list: true}
+    - {name: component_type, type: data, fetch_from: salary_component.component_type, read_only: true, in_list: true}
+    - {name: amount, type: currency, required: true, min: "0", in_list: true}
+    - {name: payroll_date, type: date, required: true, in_list: true, in_filter: true}
+    - {name: overwrite_salary_structure_amount, type: check, description: Replace the structure's amount for this component instead of adding to it}
+    - {name: reason, type: text}
+    - {name: ref_doctype, type: data, read_only: true, label: Source Type}
+    - {name: ref_docname, type: data, read_only: true, label: Source}
+  rules:
+    - {name: positive, check: "doc.amount > 0.0", message: "The amount must be greater than zero"}
+  list: {columns: [number, employee_name, salary_component, amount, payroll_date], sort: payroll_date desc}
+
+- name: LeaveEncashment
+  label: Leave Encashment
+  kind: document
+  module: payroll
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-LEN-{YYYY}-{seq:5}", date_field: encashment_date}
+  description: Pays out unused leave through an additional salary in the next salary slip.
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: leave_type, type: link, to: LeaveType, required: true, link_filters: {allow_encashment: true}, in_list: true}
+    - {name: encashment_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: leave_allocation, type: link, to: LeaveAllocation, read_only: true}
+    - {name: leave_balance, type: decimal, read_only: true}
+    - {name: encashable_days, type: decimal, min: "0", in_list: true, description: Defaults to the balance above the leave type's threshold}
+    - {name: per_day_amount, type: currency, min: "0", description: Defaults to the salary structure's leave encashment amount per day}
+    - {name: encashment_amount, type: currency, read_only: true, in_list: true}
+    - {name: salary_component, type: link, to: SalaryComponent, required: true, link_filters: {component_type: Earning}}
+    - {name: additional_salary, type: link, to: AdditionalSalary, read_only: true, no_copy: true}
+  rules:
+    - {name: something_to_encash, check: "doc.encashable_days > 0.0", message: "There are no leaves to encash", on: submit}
+  list: {columns: [number, employee_name, leave_type, encashable_days, encashment_amount], sort: encashment_date desc}
+
+- name: PayrollEmployeeDetail
+  label: Payroll Employee
+  kind: child
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_list: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: department, type: link, to: Department, read_only: true, in_list: true}
+    - {name: designation, type: link, to: Designation, read_only: true}
+    - {name: salary_slip, type: link, to: SalarySlip, read_only: true, on_delete: set_null}
+    - {name: net_pay, type: currency, currency: parent.currency, read_only: true, in_list: true}
+
+- name: PayrollEntry
+  label: Payroll Entry
+  label_plural: Payroll Entries
+  kind: document
+  module: payroll
+  submittable: true
+  company_scoped: true
+  numbering: {template: "HR-PRUN-{YYYY}-{seq:4}", date_field: posting_date}
+  description: "Get employees, submit, create and submit the salary slips (one balanced accrual journal for all of them), then make the bank entry."
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: currency, type: link, to: Currency, fetch_from: company.default_currency, read_only: true}
+    - {name: payroll_frequency, type: select, options: [Monthly, Fortnightly, Weekly], default: Monthly, required: true, in_list: true}
+    - {name: start_date, type: date, required: true, in_list: true}
+    - {name: end_date, type: date, required: true, in_list: true}
+    - {name: department, type: link, to: Department, in_filter: true}
+    - {name: branch, type: link, to: Branch, in_filter: true}
+    - {name: designation, type: link, to: Designation, in_filter: true}
+    - {name: payment_account, type: link, to: Account, link_filters: {is_group: false}, description: Bank or cash account the salaries are paid from}
+    - {name: cost_center, type: link, to: CostCenter, link_filters: {is_group: false}, description: For employees without a payroll cost center of their own or their department's}
+    - {name: payroll_payable_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: employees, type: table, of: PayrollEmployeeDetail}
+    - {name: number_of_employees, type: int, read_only: true, in_list: true}
+    - {name: salary_slips_created, type: check, read_only: true, no_copy: true}
+    - {name: salary_slips_submitted, type: check, read_only: true, no_copy: true}
+    - {name: total_gross_pay, type: currency, currency: currency, read_only: true, no_copy: true}
+    - {name: total_deductions, type: currency, currency: currency, read_only: true, no_copy: true}
+    - {name: total_net_pay, type: currency, currency: currency, read_only: true, no_copy: true, in_list: true}
+    - {name: paid_amount, type: currency, currency: currency, read_only: true, no_copy: true}
+    - {name: status, type: select, options: [Draft, Submitted, Slips Created, Slips Submitted, Paid, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+  rules:
+    - {name: ordered_dates, check: "doc.start_date == null || doc.end_date == null || doc.end_date >= doc.start_date", message: "End date must not be before start date"}
+    - {name: has_employees, check: "size(doc.employees) > 0", message: "Get the employees before submitting", on: submit}
+  actions:
+    - {name: get_employees, label: Get Employees, docstatus: [0], permission: write}
+    - {name: create_salary_slips, label: Create Salary Slips, docstatus: [1], permission: submit, condition: "!doc.salary_slips_submitted"}
+    - {name: submit_salary_slips, label: Submit Salary Slips, docstatus: [1], permission: submit, condition: "doc.salary_slips_created && !doc.salary_slips_submitted"}
+    - {name: make_bank_entry, label: Make Bank Entry, docstatus: [1], permission: read, condition: "doc.salary_slips_submitted && doc.paid_amount < doc.total_net_pay"}
+  list: {columns: [number, start_date, end_date, number_of_employees, total_net_pay, status], sort: start_date desc}
+
+- name: SalarySlip
+  label: Salary Slip
+  kind: document
+  module: payroll
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "SAL-{YYYY}{MM}-{seq:5}", date_field: start_date}
+  description: Recomputed on every save from the salary structure assignment in force, attendance, leave without pay and additional salary.
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: department, type: link, to: Department, fetch_from: employee.department, read_only: true, in_filter: true}
+    - {name: designation, type: link, to: Designation, fetch_from: employee.designation, read_only: true}
+    - {name: branch, type: link, to: Branch, fetch_from: employee.branch, read_only: true}
+    - {name: posting_date, type: date, required: true, default_expr: today}
+    - {name: start_date, type: date, required: true, in_list: true, in_filter: true}
+    - {name: end_date, type: date, required: true, in_list: true}
+    - {name: payroll_frequency, type: select, options: [Monthly, Fortnightly, Weekly], read_only: true}
+    - {name: currency, type: link, to: Currency, read_only: true}
+    - {name: salary_structure, type: link, to: SalaryStructure, read_only: true}
+    - {name: salary_structure_assignment, type: link, to: SalaryStructureAssignment, read_only: true}
+    - {name: payroll_entry, type: link, to: PayrollEntry, read_only: true, in_filter: true}
+    - {name: total_working_days, type: decimal, read_only: true}
+    - {name: leave_without_pay, type: decimal, read_only: true}
+    - {name: absent_days, type: decimal, read_only: true}
+    - {name: payment_days, type: decimal, read_only: true, in_list: true}
+    - {name: earnings, type: table, of: SalaryDetail}
+    - {name: deductions, type: table, of: SalaryDetail}
+    - {name: gross_pay, type: currency, currency: currency, read_only: true, in_list: true}
+    - {name: total_deduction, type: currency, currency: currency, read_only: true}
+    - {name: net_pay, type: currency, currency: currency, read_only: true, in_list: true}
+    - {name: rounded_total, type: currency, currency: currency, read_only: true}
+    - {name: taxable_earnings, type: currency, currency: currency, read_only: true, description: Taxable earnings less tax-exempt deductions}
+    - {name: income_tax_deducted, type: currency, currency: currency, read_only: true}
+    - {name: status, type: select, options: [Draft, Submitted, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+  rules:
+    - {name: ordered_dates, check: "doc.start_date == null || doc.end_date == null || doc.end_date >= doc.start_date", message: "End date must not be before start date"}
+  list: {columns: [number, employee_name, start_date, end_date, net_pay, status], sort: start_date desc}

@@ -1,0 +1,229 @@
+- name: Department
+  label: Department
+  kind: master
+  module: hr
+  title_field: department_name
+  company_scoped: true
+  fields:
+    - {name: department_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_list: true, in_filter: true}
+    - {name: parent_department, type: link, to: Department, link_filters: {is_group: true}, in_filter: true}
+    - {name: is_group, type: check, in_list: true}
+    - {name: payroll_cost_center, type: link, to: CostCenter, link_filters: {is_group: false}, description: Salaries of the department's employees post here unless the employee has a cost center of their own}
+    - {name: disabled, type: check, in_filter: true}
+  unique: [[company, department_name]]
+  list: {columns: [department_name, parent_department, company, is_group], sort: department_name asc}
+
+- name: Designation
+  label: Designation
+  kind: master
+  module: hr
+  title_field: designation_name
+  fields:
+    - {name: designation_name, type: data, required: true, unique: true, in_list: true}
+    - {name: description, type: text}
+  list: {sort: designation_name asc}
+
+- name: Branch
+  label: Branch
+  label_plural: Branches
+  kind: master
+  module: hr
+  title_field: branch_name
+  fields:
+    - {name: branch_name, type: data, required: true, unique: true, in_list: true}
+    - {name: address, type: text}
+  list: {sort: branch_name asc}
+
+- name: EmployeeGrade
+  label: Employee Grade
+  kind: master
+  module: hr
+  title_field: grade_name
+  fields:
+    - {name: grade_name, type: data, required: true, unique: true, in_list: true}
+    - {name: description, type: text}
+  list: {sort: grade_name asc}
+
+- name: EmploymentType
+  label: Employment Type
+  kind: master
+  module: hr
+  title_field: employment_type_name
+  fields:
+    - {name: employment_type_name, type: data, required: true, unique: true, in_list: true}
+  list: {sort: employment_type_name asc}
+
+- name: Employee
+  label: Employee
+  kind: master
+  module: hr
+  title_field: employee_name
+  owner_fields: [user]
+  company_scoped: true
+  numbering: {template: "HR-EMP-{seq:5}"}
+  search_fields: [first_name, last_name, user, attendance_device_id]
+  description: A person employed by a company. The linked user sees this record and their own HR documents.
+  fields:
+    - {name: first_name, type: data, required: true}
+    - {name: middle_name, type: data}
+    - {name: last_name, type: data}
+    - {name: employee_name, type: data, read_only: true, in_list: true, description: Full name}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: status, type: select, options: [Active, Inactive, Suspended, Left], default: Active, required: true, in_list: true, in_filter: true}
+    - {name: user, type: email, unique: true, label: User (Sign-in Email), description: The employee's sign-in; through it they see their own HR records}
+    - {name: gender, type: select, options: [Male, Female, Other, Prefer not to say], in_filter: true}
+    - {name: date_of_birth, type: date}
+    - {name: date_of_joining, type: date, required: true, in_list: true}
+    - {name: relieving_date, type: date}
+    - {name: department, type: link, to: Department, in_list: true, in_filter: true}
+    - {name: designation, type: link, to: Designation, in_list: true, in_filter: true}
+    - {name: grade, type: link, to: EmployeeGrade, in_filter: true}
+    - {name: branch, type: link, to: Branch, in_filter: true}
+    - {name: employment_type, type: link, to: EmploymentType, in_filter: true}
+    - {name: reports_to, type: link, to: Employee, in_filter: true}
+    - {name: leave_approver, type: email, description: Defaults to the user of the employee this one reports to}
+    - {name: expense_approver, type: email, description: Defaults to the user of the employee this one reports to}
+    - {name: holiday_list, type: link, to: HolidayList, description: Defaults to the shift's or the company's holiday list}
+    - {name: default_shift, type: link, to: ShiftType}
+    - {name: attendance_device_id, type: data, unique: true, label: Attendance Device ID, description: The id biometric or RFID devices send with check-ins}
+    - {name: payroll_cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}
+    - {name: company_email, type: email}
+    - {name: personal_email, type: email}
+    - {name: cell_number, type: phone, label: Mobile}
+    - {name: current_address, type: text}
+    - {name: permanent_address, type: text}
+    - {name: emergency_contact_name, type: data}
+    - {name: emergency_phone, type: phone}
+    - {name: emergency_relation, type: data}
+    - {name: marital_status, type: select, options: [Single, Married, Divorced, Widowed]}
+    - {name: blood_group, type: select, options: [A+, A-, B+, B-, AB+, AB-, O+, O-]}
+    - {name: salary_mode, type: select, options: [Bank, Cash, Cheque], default: Bank, perm_group: bank}
+    - {name: bank_name, type: data, perm_group: bank}
+    - {name: bank_account_no, type: data, label: Bank Account No, perm_group: bank}
+    - {name: ifsc_code, type: data, label: IFSC / Routing Code, perm_group: bank}
+    - {name: iban, type: data, label: IBAN, perm_group: bank}
+    - {name: tax_id, type: data, label: Tax ID (PAN), perm_group: identity}
+    - {name: national_id, type: data, label: National ID, perm_group: identity}
+    - {name: passport_number, type: data, perm_group: identity}
+    - {name: passport_valid_upto, type: date, perm_group: identity}
+    - {name: notes, type: text}
+  rules:
+    - {name: joining_after_birth, check: "doc.date_of_birth == null || doc.date_of_joining == null || doc.date_of_joining > doc.date_of_birth", message: "Date of joining must be after the date of birth"}
+    - {name: relieving_after_joining, check: "doc.relieving_date == null || doc.date_of_joining == null || doc.relieving_date >= doc.date_of_joining", message: "Relieving date cannot be before the date of joining"}
+    - {name: left_needs_relieving_date, check: "doc.status != 'Left' || doc.relieving_date != null", message: "Set the relieving date of an employee who left"}
+  form:
+    - {label: Employee, fields: [first_name, middle_name, last_name, employee_name, company, status, user, gender, date_of_birth]}
+    - {label: Employment, fields: [date_of_joining, relieving_date, department, designation, grade, branch, employment_type, reports_to, leave_approver, expense_approver]}
+    - {label: Attendance, fields: [holiday_list, default_shift, attendance_device_id]}
+    - {label: Contact, collapsible: true, fields: [company_email, personal_email, cell_number, current_address, permanent_address]}
+    - {label: Emergency Contact, collapsible: true, fields: [emergency_contact_name, emergency_phone, emergency_relation]}
+    - {label: Personal Details, collapsible: true, fields: [marital_status, blood_group, tax_id, national_id, passport_number, passport_valid_upto]}
+    - {label: Salary Payment, collapsible: true, fields: [salary_mode, bank_name, bank_account_no, ifsc_code, iban, payroll_cost_center]}
+    - {label: Notes, collapsible: true, fields: [notes]}
+  list: {columns: [number, employee_name, department, designation, status], sort: employee_name asc}
+
+- name: EmployeeActivity
+  label: Activity
+  label_plural: Activities
+  kind: child
+  fields:
+    - {name: activity_name, type: data, required: true, in_list: true}
+    - {name: assignee, type: email, in_list: true}
+    - {name: due_date, type: date, in_list: true}
+    - {name: done, type: check, in_list: true}
+    - {name: completed_on, type: date, read_only: true, in_list: true}
+    - {name: notes, type: text}
+
+- name: EmployeeOnboarding
+  label: Employee Onboarding
+  kind: document
+  module: hr
+  company_scoped: true
+  title_field: employee_name
+  numbering: {template: "HR-ONB-{YYYY}-{seq:4}"}
+  fields:
+    - {name: job_applicant, type: link, to: JobApplicant}
+    - {name: job_offer, type: link, to: JobOffer}
+    - {name: employee, type: link, to: Employee, in_filter: true, description: Set once the employee record exists}
+    - {name: employee_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: department, type: link, to: Department}
+    - {name: designation, type: link, to: Designation}
+    - {name: date_of_joining, type: date, in_list: true}
+    - {name: status, type: select, options: [Pending, In Process, Completed], default: Pending, read_only: true, in_list: true, in_filter: true}
+    - {name: activities, type: table, of: EmployeeActivity}
+    - {name: notes, type: text}
+  list: {columns: [number, employee_name, date_of_joining, status], sort: created_at desc}
+
+- name: EmployeeSeparation
+  label: Employee Separation
+  kind: document
+  module: hr
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-SEP-{YYYY}-{seq:4}"}
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: resignation_letter_date, type: date}
+    - {name: relieving_date, type: date, in_list: true}
+    - {name: reason, type: select, options: [Resignation, Termination, Retirement, Contract End, Other], in_filter: true}
+    - {name: exit_interview, type: text}
+    - {name: status, type: select, options: [Pending, In Process, Completed], default: Pending, read_only: true, in_list: true, in_filter: true}
+    - {name: activities, type: table, of: EmployeeActivity}
+  list: {columns: [number, employee_name, relieving_date, status], sort: created_at desc}
+
+- name: EmployeePromotion
+  label: Employee Promotion
+  kind: document
+  module: hr
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-PRO-{YYYY}-{seq:4}", date_field: promotion_date}
+  description: On submit the employee takes the new designation, grade and department; the previous values stay on this document.
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: promotion_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: current_designation, type: link, to: Designation, read_only: true}
+    - {name: new_designation, type: link, to: Designation, in_list: true}
+    - {name: current_grade, type: link, to: EmployeeGrade, read_only: true}
+    - {name: new_grade, type: link, to: EmployeeGrade}
+    - {name: current_department, type: link, to: Department, read_only: true}
+    - {name: new_department, type: link, to: Department}
+    - {name: revised_ctc, type: currency, min: "0", label: Revised CTC}
+    - {name: remarks, type: text}
+  list: {columns: [number, employee_name, promotion_date, new_designation], sort: promotion_date desc}
+
+- name: EmployeeTransfer
+  label: Employee Transfer
+  kind: document
+  module: hr
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-TRF-{YYYY}-{seq:4}", date_field: transfer_date}
+  description: On submit the employee moves to the new department, branch and manager; the previous values stay on this document.
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: transfer_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: current_department, type: link, to: Department, read_only: true}
+    - {name: new_department, type: link, to: Department, in_list: true}
+    - {name: current_branch, type: link, to: Branch, read_only: true}
+    - {name: new_branch, type: link, to: Branch, in_list: true}
+    - {name: current_reports_to, type: link, to: Employee, read_only: true}
+    - {name: new_reports_to, type: link, to: Employee}
+    - {name: reason, type: text}
+  list: {columns: [number, employee_name, transfer_date, new_department, new_branch], sort: transfer_date desc}

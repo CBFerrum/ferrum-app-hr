@@ -1,0 +1,125 @@
+- name: ExpenseClaimAccount
+  label: Expense Claim Account
+  kind: child
+  fields:
+    - {name: company, type: link, to: Company, required: true, in_list: true}
+    - {name: default_account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}
+
+- name: ExpenseClaimType
+  label: Expense Claim Type
+  kind: master
+  module: expenses
+  title_field: expense_type
+  fields:
+    - {name: expense_type, type: data, required: true, unique: true, in_list: true}
+    - {name: description, type: text}
+    - {name: accounts, type: table, of: ExpenseClaimAccount, description: Expense account per company (otherwise the company's default expense account)}
+  list: {sort: expense_type asc}
+
+- name: ExpenseClaimDetail
+  label: Expense
+  kind: child
+  fields:
+    - {name: expense_date, type: date, required: true, in_list: true}
+    - {name: expense_type, type: link, to: ExpenseClaimType, required: true, in_list: true}
+    - {name: description, type: text}
+    - {name: amount, type: currency, currency: parent.currency, required: true, min: "0", in_list: true}
+    - {name: sanctioned_amount, type: currency, currency: parent.currency, min: "0", in_list: true, description: Defaults to the amount; the approver may lower it}
+    - {name: default_account, type: link, to: Account, read_only: true}
+    - {name: cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}
+    - {name: project, type: link, to: Project}
+  rules:
+    - {name: positive, check: "doc.amount > 0.0", message: "Amount must be greater than zero"}
+    - {name: sanction_within_claim, check: "doc.sanctioned_amount <= doc.amount", message: "The sanctioned amount cannot exceed the claimed amount"}
+
+- name: ExpenseClaimTax
+  label: Expense Tax
+  kind: child
+  fields:
+    - {name: account_head, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}
+    - {name: description, type: data, in_list: true}
+    - {name: rate, type: percent, min: "0", max: "100", description: Of the sanctioned amount (leave empty to enter the amount)}
+    - {name: tax_amount, type: currency, currency: parent.currency, min: "0", in_list: true}
+
+- name: ExpenseClaimAdvance
+  label: Advance Settled
+  kind: child
+  fields:
+    - {name: employee_advance, type: link, to: EmployeeAdvance, required: true, in_list: true}
+    - {name: posting_date, type: date, read_only: true}
+    - {name: advance_paid, type: currency, currency: parent.currency, read_only: true, in_list: true}
+    - {name: unclaimed_amount, type: currency, currency: parent.currency, read_only: true, in_list: true}
+    - {name: allocated_amount, type: currency, currency: parent.currency, min: "0", in_list: true}
+
+- name: ExpenseClaim
+  label: Expense Claim
+  kind: document
+  module: expenses
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-EXP-{YYYY}-{seq:5}", date_field: posting_date}
+  description: Approved through the Expense Approval workflow; approval posts the expenses against the employee payable and any advances settled.
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: department, type: link, to: Department, fetch_from: employee.department, read_only: true, in_filter: true}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
+    - {name: currency, type: link, to: Currency, read_only: true}
+    - {name: expense_approver, type: email, in_filter: true}
+    - {name: expenses, type: table, of: ExpenseClaimDetail, required: true}
+    - {name: taxes, type: table, of: ExpenseClaimTax}
+    - {name: advances, type: table, of: ExpenseClaimAdvance}
+    - {name: total_claimed_amount, type: currency, currency: currency, read_only: true, in_list: true}
+    - {name: total_sanctioned_amount, type: currency, currency: currency, read_only: true}
+    - {name: total_taxes_and_charges, type: currency, currency: currency, read_only: true}
+    - {name: grand_total, type: currency, currency: currency, read_only: true}
+    - {name: total_advance_amount, type: currency, currency: currency, read_only: true}
+    - {name: total_amount_reimbursed, type: currency, currency: currency, read_only: true, no_copy: true}
+    - {name: outstanding_amount, type: currency, currency: currency, read_only: true, no_copy: true, in_list: true}
+    - {name: payable_account, type: link, to: Account, link_filters: {is_group: false}, description: Defaults to the company's employee payable account}
+    - {name: cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}
+    - {name: project, type: link, to: Project}
+    - {name: status, type: select, options: [Draft, Unpaid, Paid, Rejected, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: remark, type: text}
+  rules:
+    - {name: something_to_claim, check: "doc.grand_total > 0.0", message: "Nothing is sanctioned on this claim", on: submit}
+  actions:
+    - {name: get_advances, label: Get Advances, docstatus: [0], permission: write}
+    - {name: make_payment_entry, label: Make Payment Entry, docstatus: [1], permission: read, condition: "doc.status == 'Unpaid' && doc.outstanding_amount > 0.0"}
+  list: {columns: [number, employee_name, posting_date, grand_total, outstanding_amount, status], sort: posting_date desc}
+
+- name: EmployeeAdvance
+  label: Employee Advance
+  kind: document
+  module: expenses
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-EAD-{YYYY}-{seq:5}", date_field: posting_date}
+  description: Money paid to an employee ahead of expenses; settled by expense claims or returned.
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: currency, type: link, to: Currency, read_only: true}
+    - {name: purpose, type: text, required: true}
+    - {name: advance_amount, type: currency, currency: currency, required: true, min: "0", in_list: true}
+    - {name: advance_account, type: link, to: Account, link_filters: {is_group: false}, description: Defaults to the company's employee advance account}
+    - {name: paid_amount, type: currency, currency: currency, read_only: true, no_copy: true}
+    - {name: claimed_amount, type: currency, currency: currency, read_only: true, no_copy: true}
+    - {name: return_amount, type: currency, currency: currency, read_only: true, no_copy: true, label: Returned Amount}
+    - {name: pending_amount, type: currency, currency: currency, read_only: true, no_copy: true, in_list: true, description: Paid but neither claimed nor returned}
+    - {name: status, type: select, options: [Draft, Unpaid, Paid, Claimed, Returned, Partly Claimed and Returned, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+  rules:
+    - {name: positive, check: "doc.advance_amount > 0.0", message: "The advance amount must be greater than zero"}
+  actions:
+    - {name: make_payment_entry, label: Make Payment Entry, docstatus: [1], permission: read, condition: "doc.paid_amount < doc.advance_amount"}
+    - {name: make_return_entry, label: Return Unused Advance, docstatus: [1], permission: read, condition: "doc.pending_amount > 0.0"}
+  list: {columns: [number, employee_name, posting_date, advance_amount, pending_amount, status], sort: posting_date desc}

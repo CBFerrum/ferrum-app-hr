@@ -1,0 +1,182 @@
+- name: JobOpening
+  label: Job Opening
+  kind: master
+  module: recruitment
+  title_field: job_title
+  company_scoped: true
+  numbering: {template: "HR-OPN-{YYYY}-{seq:4}"}
+  fields:
+    - {name: job_title, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: designation, type: link, to: Designation, required: true, in_list: true, in_filter: true}
+    - {name: department, type: link, to: Department, in_filter: true}
+    - {name: employment_type, type: link, to: EmploymentType}
+    - {name: branch, type: link, to: Branch}
+    - {name: status, type: select, options: [Open, Closed], default: Open, required: true, in_list: true, in_filter: true}
+    - {name: vacancies, type: int, default: 1, min: 1, required: true, in_list: true}
+    - {name: hired, type: int, read_only: true, no_copy: true, in_list: true, description: Employees created from accepted offers}
+    - {name: publish, type: check, label: Publish on Careers Page, in_filter: true}
+    - {name: posted_on, type: date, default_expr: today}
+    - {name: closes_on, type: date, description: The opening closes automatically after this date}
+    - {name: lower_range, type: currency, min: "0", label: Salary From}
+    - {name: upper_range, type: currency, min: "0", label: Salary To}
+    - {name: description, type: markdown}
+  rules:
+    - {name: salary_range, check: "doc.upper_range == 0.0 || doc.upper_range >= doc.lower_range", message: "Salary To must not be below Salary From"}
+  list: {columns: [number, job_title, designation, vacancies, hired, status], sort: created_at desc}
+
+- name: JobApplicant
+  label: Job Applicant
+  kind: master
+  module: recruitment
+  title_field: applicant_name
+  numbering: {template: "HR-APP-{YYYY}-{seq:5}"}
+  search_fields: [applicant_name, email_id]
+  fields:
+    - {name: applicant_name, type: data, required: true, in_list: true}
+    - {name: email_id, type: email, required: true, in_list: true}
+    - {name: phone_number, type: phone}
+    - {name: job_opening, type: link, to: JobOpening, in_list: true, in_filter: true}
+    - {name: designation, type: link, to: Designation, fetch_from: job_opening.designation, read_only: true, in_filter: true}
+    - {name: status, type: select, options: [Open, Replied, Rejected, Hold, Accepted], default: Open, required: true, in_list: true, in_filter: true}
+    - {name: source, type: select, options: [Campaign, Employee Referral, Walk In, Website Listing, Job Portal, Agency, Other], in_filter: true}
+    - {name: source_name, type: data, description: "Referrer, campaign or agency"}
+    - {name: resume_attachment, type: attach}
+    - {name: resume_link, type: url}
+    - {name: cover_letter, type: text}
+    - {name: notes, type: text}
+  unique: [[email_id, job_opening]]
+  list: {columns: [number, applicant_name, job_opening, status], sort: created_at desc}
+
+- name: InterviewDetail
+  label: Interviewer
+  kind: child
+  fields:
+    - {name: interviewer, type: email, required: true, in_list: true}
+
+- name: InterviewFeedback
+  label: Interview Feedback
+  kind: child
+  fields:
+    - {name: interviewer, type: email, required: true, in_list: true}
+    - {name: rating, type: int, required: true, min: 1, max: 5, in_list: true, description: 1 (poor) to 5 (excellent)}
+    - {name: result, type: select, options: [Cleared, Rejected], required: true, in_list: true}
+    - {name: feedback, type: text}
+
+- name: Interview
+  label: Interview
+  kind: master
+  module: recruitment
+  title_field: applicant_name
+  numbering: {template: "HR-INT-{YYYY}-{seq:5}", date_field: scheduled_on}
+  fields:
+    - {name: job_applicant, type: link, to: JobApplicant, required: true, in_filter: true}
+    - {name: applicant_name, type: data, fetch_from: job_applicant.applicant_name, read_only: true, in_list: true}
+    - {name: job_opening, type: link, to: JobOpening, fetch_from: job_applicant.job_opening, read_only: true, in_filter: true}
+    - {name: interview_round, type: data, required: true, in_list: true}
+    - {name: scheduled_on, type: datetime, required: true, in_list: true}
+    - {name: status, type: select, options: [Pending, Under Review, Cleared, Rejected], default: Pending, required: true, in_list: true, in_filter: true}
+    - {name: interviewers, type: table, of: InterviewDetail, required: true}
+    - {name: feedback, type: table, of: InterviewFeedback}
+    - {name: average_rating, type: decimal, read_only: true, in_list: true}
+    - {name: notes, type: text}
+  list: {columns: [number, applicant_name, interview_round, scheduled_on, status, average_rating], sort: scheduled_on desc}
+
+- name: JobOffer
+  label: Job Offer
+  kind: document
+  module: recruitment
+  submittable: true
+  company_scoped: true
+  title_field: applicant_name
+  numbering: {template: "HR-OFF-{YYYY}-{seq:5}", date_field: offer_date}
+  fields:
+    - {name: job_applicant, type: link, to: JobApplicant, required: true, in_filter: true}
+    - {name: applicant_name, type: data, fetch_from: job_applicant.applicant_name, read_only: true, in_list: true}
+    - {name: applicant_email, type: email, fetch_from: job_applicant.email_id, read_only: true}
+    - {name: job_opening, type: link, to: JobOpening, fetch_from: job_applicant.job_opening, read_only: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: designation, type: link, to: Designation, required: true, in_list: true}
+    - {name: department, type: link, to: Department}
+    - {name: offer_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: expected_joining_date, type: date}
+    - {name: ctc, type: currency, min: "0", label: CTC (annual)}
+    - {name: terms, type: markdown, label: Terms and Conditions}
+    - {name: status, type: select, options: [Awaiting Response, Accepted, Rejected], default: Awaiting Response, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: employee, type: link, to: Employee, read_only: true, no_copy: true}
+  actions:
+    - {name: accept, label: Mark Accepted, docstatus: [1], permission: submit, condition: "doc.status == 'Awaiting Response'"}
+    - {name: reject, label: Mark Rejected, docstatus: [1], permission: submit, condition: "doc.status == 'Awaiting Response'"}
+    - {name: make_employee, label: Create Employee, docstatus: [1], permission: read, condition: "doc.status == 'Accepted'"}
+  list: {columns: [number, applicant_name, designation, offer_date, status], sort: offer_date desc}
+
+- name: AppraisalCycle
+  label: Appraisal Cycle
+  kind: master
+  module: performance
+  title_field: cycle_name
+  company_scoped: true
+  fields:
+    - {name: cycle_name, type: data, required: true, unique: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: start_date, type: date, required: true, in_list: true}
+    - {name: end_date, type: date, required: true, in_list: true}
+    - {name: status, type: select, options: [Not Started, In Progress, Completed], default: Not Started, required: true, in_list: true, in_filter: true}
+    - {name: description, type: text}
+  rules:
+    - {name: ordered_dates, check: "doc.start_date == null || doc.end_date == null || doc.end_date >= doc.start_date", message: "End date must not be before start date"}
+  list: {sort: start_date desc}
+
+- name: AppraisalTemplateGoal
+  label: Template Goal
+  kind: child
+  fields:
+    - {name: kra, type: data, required: true, label: KRA / Goal, in_list: true}
+    - {name: per_weightage, type: percent, required: true, min: "0", max: "100", label: Weightage (%), in_list: true}
+    - {name: description, type: text}
+
+- name: AppraisalTemplate
+  label: Appraisal Template
+  kind: master
+  module: performance
+  title_field: template_title
+  fields:
+    - {name: template_title, type: data, required: true, unique: true, in_list: true}
+    - {name: goals, type: table, of: AppraisalTemplateGoal, required: true, label: KRAs / Goals}
+    - {name: description, type: text}
+  list: {sort: template_title asc}
+
+- name: AppraisalGoal
+  label: Appraisal Goal
+  kind: child
+  fields:
+    - {name: kra, type: data, required: true, label: KRA / Goal, in_list: true}
+    - {name: per_weightage, type: percent, required: true, min: "0", max: "100", label: Weightage (%), in_list: true}
+    - {name: self_score, type: decimal, min: "0", max: "5", in_list: true, description: 0 to 5}
+    - {name: self_comments, type: text}
+    - {name: manager_score, type: decimal, min: "0", max: "5", in_list: true, perm_group: review, description: 0 to 5}
+    - {name: manager_comments, type: text, perm_group: review}
+    - {name: score_earned, type: decimal, read_only: true, in_list: true, description: Manager score × weightage}
+
+- name: Appraisal
+  label: Appraisal
+  kind: document
+  module: performance
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-APR-{YYYY}-{seq:5}"}
+  description: The employee scores their goals; HR or the manager scores them too and submits. Weightages must total 100.
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: appraisal_cycle, type: link, to: AppraisalCycle, required: true, in_list: true, in_filter: true}
+    - {name: appraisal_template, type: link, to: AppraisalTemplate, description: Goals are copied from it when none are entered}
+    - {name: goals, type: table, of: AppraisalGoal}
+    - {name: self_score, type: decimal, read_only: true, label: Weighted Self Score}
+    - {name: final_score, type: decimal, read_only: true, in_list: true, label: Final Score (0-5)}
+    - {name: remarks, type: text, perm_group: review}
+  list: {columns: [number, employee_name, appraisal_cycle, final_score], sort: created_at desc}
