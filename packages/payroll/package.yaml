@@ -1,0 +1,81 @@
+package: payroll
+version: 0.1.0
+label: Payroll
+description: Salary components with CEL formulas, salary structures and assignments, payroll periods and progressive income tax with exemption declarations, salary slips prorated by payment days, payroll runs posting one balanced accrual journal and a bank entry, additional salary and leave encashment.
+depends: [hr, accounting]
+field_prefix: pay_
+
+overlays:
+  - entity: Company
+    ops:
+      - {op: add_field, field: {name: pay_payroll_payable_account, type: link, to: Account, label: Payroll Payable Account, link_filters: {is_group: false}, description: Credited with net pay when salary slips are submitted}}
+      - {op: add_field, field: {name: pay_salary_expense_account, type: link, to: Account, label: Default Salary Expense Account, link_filters: {is_group: false}, description: Earnings without an account of their own post here}}
+      - {op: add_field, field: {name: pay_exclude_holidays_from_working_days, type: check, label: Exclude Holidays from Working Days, description: "Off: every day of the payroll period is a working day"}}
+
+modules:
+  - name: payroll
+    label: Payroll
+    icon: banknote
+    order: 75
+    items: [PayrollEntry, SalarySlip, SalaryStructure, SalaryStructureAssignment, SalaryComponent, AdditionalSalary, LeaveEncashment, PayrollPeriod,
+            IncomeTaxSlab, EmployeeTaxExemptionDeclaration, EmployeeTaxExemptionCategory, report:salary_register, report:payroll_summary,
+            report:bank_remittance, report:income_tax_deductions]
+
+roles:
+  - name: Payroll Manager
+    description: Salary structures, payroll runs and payroll reports, including bank details.
+    permissions:
+      - {entity: SalaryComponent, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: SalaryStructure, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: SalaryStructureAssignment, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
+      - {entity: PayrollPeriod, read: true, write: true, create: true, delete: true}
+      - {entity: IncomeTaxSlab, read: true, write: true, create: true, delete: true}
+      - {entity: EmployeeTaxExemptionCategory, read: true, write: true, create: true, delete: true}
+      - {entity: EmployeeTaxExemptionDeclaration, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: AdditionalSalary, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
+      - {entity: LeaveEncashment, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
+      - {entity: PayrollEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: SalarySlip, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: Employee, read: true, read_groups: [bank, identity]}
+      - {entity: Department, read: true}
+      - {entity: Designation, read: true}
+      - {entity: Branch, read: true}
+      - {entity: LeaveType, read: true}
+      - {entity: LeaveAllocation, read: true}
+      - {entity: JournalEntry, read: true, create: true}
+      - {entity: Company, read: true}
+      - {entity: Account, read: true}
+      - {entity: CostCenter, read: true}
+      - {entity: Currency, read: true}
+  - name: HR Manager
+    permissions:
+      - {entity: SalaryComponent, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: SalaryStructure, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: SalaryStructureAssignment, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PayrollPeriod, read: true, write: true, create: true, delete: true}
+      - {entity: IncomeTaxSlab, read: true, write: true, create: true, delete: true}
+      - {entity: EmployeeTaxExemptionCategory, read: true, write: true, create: true, delete: true}
+      - {entity: EmployeeTaxExemptionDeclaration, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: AdditionalSalary, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: LeaveEncashment, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
+      - {entity: PayrollEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: SalarySlip, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+  - name: Employee
+    permissions:
+      - {entity: SalarySlip, read: true, if_owner: true}
+      - {entity: LeaveEncashment, read: true, if_owner: true}
+      - {entity: EmployeeTaxExemptionDeclaration, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: PayrollPeriod, read: true}
+      - {entity: EmployeeTaxExemptionCategory, read: true}
+
+seed:
+  - entity: SalaryComponent
+    key: [abbr]
+    records:
+      - {component_name: Basic, abbr: BS, component_type: Earning, amount_based_on_formula: true, formula: "base * 0.5", depends_on_payment_days: true, is_tax_applicable: true, description: Example - half of the assigned base}
+      - {component_name: House Rent Allowance, abbr: HRA, component_type: Earning, amount_based_on_formula: true, formula: "BS * 0.4", depends_on_payment_days: true, is_tax_applicable: true, description: Example - 40% of basic}
+      - {component_name: Special Allowance, abbr: SA, component_type: Earning, amount_based_on_formula: true, formula: "base - BS - HRA", depends_on_payment_days: true, is_tax_applicable: true, description: Example - the rest of the base}
+      - {component_name: Bonus, abbr: BON, component_type: Earning, depends_on_payment_days: false, is_tax_applicable: true, description: For additional salary}
+      - {component_name: Leave Encashment, abbr: LE, component_type: Earning, depends_on_payment_days: false, is_tax_applicable: true, description: Paid through leave encashments}
+      - {component_name: Provident Fund, abbr: PF, component_type: Deduction, amount_based_on_formula: true, formula: "min(BS, 15000) * 0.12", depends_on_payment_days: true, exempted_from_income_tax: true, description: Example - 12% of basic capped at 15000}
+      - {component_name: Income Tax, abbr: IT, component_type: Deduction, variable_based_on_taxable_salary: true, depends_on_payment_days: false, description: Computed from the employee's income tax slab}
