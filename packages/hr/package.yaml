@@ -75,6 +75,12 @@ workflows:
       - {action: Cancel, from: Approved, to: Cancelled, roles: [Expense Approver, HR Manager]}
       - {action: Cancel, from: Rejected, to: Cancelled, roles: [Expense Approver, HR Manager]}
 
+# What a personal-data request exports and erases for a person (their email). An employee keeps
+# their name and employment dates, which payroll and tax records need; their private contact,
+# family and bank details go. Applicants lose everything that names them.
+personal_data:
+  - {entity: Employee, match: personal_email, erase: [personal_email, cell_number, current_address, permanent_address, date_of_birth, emergency_contact_name, emergency_phone, emergency_relation, bank_name, bank_account_no, ifsc_code, iban]}
+  - {entity: JobApplicant, match: email_id, erase: [applicant_name, email_id, phone_number]}
 roles:
   - name: HR Manager
     description: Everything in HR, including bank and identity details.
