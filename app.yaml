@@ -1,6 +1,6 @@
 id: hr
 name: HR and Payroll
-version: 0.2.1
+version: 0.3.0
 publisher: cbferrum
 summary: Employees, attendance, shifts, leave, recruitment, appraisals, salary structures and payroll
 description: README.md
@@ -12,3 +12,23 @@ runtime: native
 platform: ">=0.3.2, <0.4"
 packages: [hr, payroll]
 uninstall: ask
+ui:
+  dist: ui/dist
+contributes:
+  shell.app:
+    - id: people
+      route: people
+      title: People
+      description: Leave, check-ins, approvals and the directory; employees, attendance, recruitment and payroll
+      icon: users
+      color: "#0e7490"
+      roles: [HR Manager, HR User, Employee, Leave Approver, Payroll Manager]
+  shell.open:
+    # HR's and payroll's records, and those the hr-erp connector adds (expense claims, payroll's
+    # accounts), in People's forms and lists.
+    - {id: hr, package: hr, path: "people/e/{entity}/{id}", list: "people/e/{entity}"}
+    - {id: payroll, package: payroll, path: "people/e/{entity}/{id}", list: "people/e/{entity}"}
+    - {id: hr_erp, package: hr_erp, path: "people/e/{entity}/{id}", list: "people/e/{entity}"}
+    - {id: payroll_erp, package: payroll_erp, path: "people/e/{entity}/{id}", list: "people/e/{entity}"}
+  shell.create:
+    - {id: leave, label: Leave request, path: people/e/LeaveApplication/new, entity: LeaveApplication}

@@ -44,6 +44,14 @@ cargo test
 `FERRUM_HR_TEST_DATABASE_URL` overrides the database URL. The app's metadata lives in `packages/` and is embedded
 at build time; `app.yaml` is its manifest (see Ferrum's `docs/plan/apps.md`).
 
+## Interface
+
+People, HR and Payroll's own interface at `/people/` (Ferrum docs/plan/apps-ui.md), is in `ui/`:
+self-service (check-in, leave balances and requests), approvals, who is away today, joiners,
+anniversaries and the directory; the other records are lists and forms in the records frame. It
+builds with Ferrum-Frontend's packages from the sibling checkout (`../../ferrum/web`), and
+`ui/dist` is committed and embedded in the crate (`cd ui && npm run build`; CI checks it).
+
 ## License
 
 AGPL-3.0-only, like the platform.
