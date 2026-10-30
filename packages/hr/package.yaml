@@ -88,7 +88,6 @@ roles:
       - {entity: Appraisal, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, read_groups: [review], write_groups: [review]}
       - {entity: AppraisalGoal, read_groups: [review], write_groups: [review]}
       - {entity: Company, read: true}
-      - {entity: Project, read: true}
       - {entity: Currency, read: true}
   - name: HR User
     description: Day-to-day HR work; no bank details and no approvals.
@@ -122,7 +121,6 @@ roles:
       - {entity: Appraisal, read: true, write: true, create: true, submit: true, read_groups: [review], write_groups: [review]}
       - {entity: AppraisalGoal, read_groups: [review], write_groups: [review]}
       - {entity: Company, read: true}
-      - {entity: Project, read: true}
   - name: Employee
     description: Self-service; sees and creates only their own records (the employee whose user is the signed-in user).
     permissions:
