@@ -16,11 +16,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Expense claims and advances are the `hr_erp` connector's (they post to the ledger): these
+/// hooks run only where it is installed.
 pub(crate) fn register(h: &mut HookRegistry) {
-    h.register("ExpenseClaimType", Arc::new(ClaimTypeHook))
-        .register("ExpenseClaim", Arc::new(ClaimHook))
-        .register("EmployeeAdvance", Arc::new(AdvanceHook))
-        .register("JournalEntry", Arc::new(PaymentHook));
+    h.scoped(&[crate::HR_ERP.to_string()], |h| {
+        h.register("ExpenseClaimType", Arc::new(ClaimTypeHook))
+            .register("ExpenseClaim", Arc::new(ClaimHook))
+            .register("EmployeeAdvance", Arc::new(AdvanceHook))
+            .register("JournalEntry", Arc::new(PaymentHook));
+    });
 }
 
 struct ClaimTypeHook;

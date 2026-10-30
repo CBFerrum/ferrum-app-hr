@@ -24,6 +24,11 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 /// Registers this package's document hooks.
+/// The connector packages with ERP: expense claims and advances (`hr_erp`) and payroll's postings
+/// (`payroll_erp`), which the connector app `hr-erp` installs.
+pub const HR_ERP: &str = "hr_erp";
+pub const PAYROLL_ERP: &str = "payroll_erp";
+
 pub fn register(h: &mut HookRegistry) {
     // First, so a refused self-service write fails before any other check. Every hook's
     // `before_validate` (which may derive the employee) still runs before any `validate`.
@@ -193,6 +198,9 @@ include!(concat!(env!("OUT_DIR"), "/packages.rs"));
 
 /// This app's manifest (`app.yaml`).
 pub const MANIFEST: &str = include_str!("../app.yaml");
+
+/// The manifest of the connector app with ERP (`connectors/erp/app.yaml`). It ships with HR.
+pub const CONNECTOR_MANIFEST: &str = include_str!("../connectors/erp/app.yaml");
 
 /// This app's metadata packages, embedded at build time.
 pub fn packages() -> std::result::Result<Vec<ferrum_meta::Package>, ferrum_meta::MetaError> {

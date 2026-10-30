@@ -1,15 +1,13 @@
 package: payroll
-version: 0.1.0
+version: 0.2.0
 label: Payroll
-description: Salary components with CEL formulas, salary structures and assignments, payroll periods and progressive income tax with exemption declarations, salary slips prorated by payment days, payroll runs posting one balanced accrual journal and a bank entry, additional salary and leave encashment.
-depends: [hr, accounting]
+description: Salary components with CEL formulas, salary structures and assignments, payroll periods and progressive income tax with exemption declarations, salary slips prorated by payment days, payroll runs, additional salary and leave encashment.
+depends: [hr]
 field_prefix: pay_
 
 overlays:
   - entity: Company
     ops:
-      - {op: add_field, field: {name: pay_payroll_payable_account, type: link, to: Account, label: Payroll Payable Account, link_filters: {is_group: false}, description: Credited with net pay when salary slips are submitted}}
-      - {op: add_field, field: {name: pay_salary_expense_account, type: link, to: Account, label: Default Salary Expense Account, link_filters: {is_group: false}, description: Earnings without an account of their own post here}}
       - {op: add_field, field: {name: pay_exclude_holidays_from_working_days, type: check, label: Exclude Holidays from Working Days, description: "Off: every day of the payroll period is a working day"}}
 
 modules:
@@ -42,10 +40,7 @@ roles:
       - {entity: Branch, read: true}
       - {entity: LeaveType, read: true}
       - {entity: LeaveAllocation, read: true}
-      - {entity: JournalEntry, read: true, create: true}
       - {entity: Company, read: true}
-      - {entity: Account, read: true}
-      - {entity: CostCenter, read: true}
       - {entity: Currency, read: true}
   - name: HR Manager
     permissions:

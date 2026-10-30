@@ -9,7 +9,6 @@
     - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_list: true, in_filter: true}
     - {name: parent_department, type: link, to: Department, link_filters: {is_group: true}, in_filter: true}
     - {name: is_group, type: check, in_list: true}
-    - {name: payroll_cost_center, type: link, to: CostCenter, link_filters: {is_group: false}, description: Salaries of the department's employees post here unless the employee has a cost center of their own}
     - {name: disabled, type: check, in_filter: true}
   unique: [[company, department_name]]
   list: {columns: [department_name, parent_department, company, is_group], sort: department_name asc}
@@ -87,7 +86,6 @@
     - {name: holiday_list, type: link, to: HolidayList, description: Defaults to the shift's or the company's holiday list}
     - {name: default_shift, type: link, to: ShiftType}
     - {name: attendance_device_id, type: data, unique: true, label: Attendance Device ID, description: The id biometric or RFID devices send with check-ins}
-    - {name: payroll_cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}
     - {name: company_email, type: email}
     - {name: personal_email, type: email}
     - {name: cell_number, type: phone, label: Mobile}

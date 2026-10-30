@@ -415,7 +415,7 @@ impl DocHook for SlipHook {
         let mut v = Doc::new();
         set(&mut v, "status", "Submitted");
         hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "SalarySlip", me, v).await?;
-        if id(doc, "payroll_entry").is_none() {
+        if id(doc, "payroll_entry").is_none() && super::posts(hc) {
             let cid = id(doc, "company").unwrap_or_default();
             let payable = crate::people::company_account(hc, cid, "pay_payroll_payable_account", "payroll payable account").await?;
             let on = opt_date(doc, "posting_date").unwrap_or_else(crate::today);
@@ -438,7 +438,7 @@ impl DocHook for SlipHook {
 
     async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let me = id(doc, "id").ok_or_else(|| Error::internal("slip without id"))?;
-        if id(doc, "payroll_entry").is_none() {
+        if id(doc, "payroll_entry").is_none() && super::posts(hc) {
             let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
             ledger::reverse(hc.tx, hc.ctx, "SalarySlip", me, crate::today(), co.precision).await?;
         }

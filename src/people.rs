@@ -30,8 +30,11 @@ pub(crate) const OWNED: &[&str] = &[
 ];
 
 pub(crate) fn register(h: &mut HookRegistry) {
-    h.register("Company", Arc::new(CompanyHook))
-        .register("Department", Arc::new(DepartmentHook))
+    // The company's HR and payroll accounts come with the connectors to ERP.
+    h.scoped(&[crate::HR_ERP.to_string(), crate::PAYROLL_ERP.to_string()], |h| {
+        h.register("Company", Arc::new(CompanyHook));
+    });
+    h.register("Department", Arc::new(DepartmentHook))
         .register("Employee", Arc::new(EmployeeHook))
         .register("EmployeeOnboarding", Arc::new(ChecklistHook))
         .register("EmployeeSeparation", Arc::new(ChecklistHook))

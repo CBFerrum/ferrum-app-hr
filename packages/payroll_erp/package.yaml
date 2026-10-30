@@ -1,0 +1,37 @@
+package: payroll_erp
+version: 0.1.0
+label: Payroll and ERP
+description: Salary components' accounts, payroll runs posting one balanced accrual journal and a bank entry, and the cost centers salaries post to.
+depends: [payroll, accounting]
+field_prefix: pay_
+
+overlays:
+  - entity: Company
+    ops:
+      - {op: add_field, field: {name: pay_payroll_payable_account, type: link, to: Account, label: Payroll Payable Account, link_filters: {is_group: false}, description: Credited with net pay when salary slips are submitted}}
+      - {op: add_field, field: {name: pay_salary_expense_account, type: link, to: Account, label: Default Salary Expense Account, link_filters: {is_group: false}, description: Earnings without an account of their own post here}}
+  - entity: Department
+    ops:
+      - {op: add_field, column: true, after: is_group, field: {name: payroll_cost_center, type: link, to: CostCenter, link_filters: {is_group: false}, description: Salaries of the department's employees post here unless the employee has a cost center of their own}}
+  - entity: Employee
+    ops:
+      - {op: add_field, column: true, after: attendance_device_id, field: {name: payroll_cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}}
+  - entity: SalaryComponent
+    ops:
+      - {op: add_field, column: true, after: round_to_the_nearest_integer, field: {name: accounts, type: table, of: SalaryComponentAccount}}
+  - entity: SalaryStructure
+    ops:
+      - {op: add_field, column: true, after: leave_encashment_amount_per_day, field: {name: payment_account, type: link, to: Account, link_filters: {is_group: false}, description: Bank or cash account salaries are paid from}}
+  - entity: PayrollEntry
+    ops:
+      - {op: add_field, column: true, after: designation, field: {name: payment_account, type: link, to: Account, link_filters: {is_group: false}, description: Bank or cash account the salaries are paid from}}
+      - {op: add_field, column: true, after: payment_account, field: {name: cost_center, type: link, to: CostCenter, link_filters: {is_group: false}, description: For employees without a payroll cost center of their own or their department's}}
+      - {op: add_field, column: true, after: cost_center, field: {name: payroll_payable_account, type: link, to: Account, link_filters: {is_group: false}}}
+      - {op: add_action, action: {name: make_bank_entry, label: Make Bank Entry, docstatus: [1], permission: read, condition: "doc.salary_slips_submitted && doc.paid_amount < doc.total_net_pay"}}
+
+roles:
+  - name: Payroll Manager
+    permissions:
+      - {entity: JournalEntry, read: true, create: true}
+      - {entity: Account, read: true}
+      - {entity: CostCenter, read: true}
