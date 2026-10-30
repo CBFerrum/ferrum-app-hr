@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Reading projects (for expense claims) comes with `hr_erp`, where the platform's shared
+  Project is within reach.
+
 ## 0.2.0
 
 - HR and payroll work without ERP: `hr` depends on the platform's core and `payroll` on `hr`

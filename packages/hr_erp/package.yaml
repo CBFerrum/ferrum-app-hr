@@ -48,12 +48,14 @@ roles:
       - {entity: JournalEntry, read: true, create: true}
       - {entity: Account, read: true}
       - {entity: CostCenter, read: true}
+      - {entity: Project, read: true}
   - name: HR User
     permissions:
       - {entity: ExpenseClaimType, read: true}
       - {entity: ExpenseClaim, read: true, write: true, create: true, delete: true}
       - {entity: EmployeeAdvance, read: true, write: true, create: true, delete: true, submit: true}
       - {entity: CostCenter, read: true}
+      - {entity: Project, read: true}
   - name: Employee
     permissions:
       - {entity: ExpenseClaim, read: true, write: true, create: true, delete: true, if_owner: true}
