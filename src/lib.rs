@@ -195,6 +195,7 @@ pub(crate) async fn notify(hc: &mut HookCtx<'_>, email: Option<&str>, title: &st
 }
 
 include!(concat!(env!("OUT_DIR"), "/packages.rs"));
+include!(concat!(env!("OUT_DIR"), "/ui.rs"));
 
 /// This app's manifest (`app.yaml`).
 pub const MANIFEST: &str = include_str!("../app.yaml");
@@ -205,4 +206,19 @@ pub const CONNECTOR_MANIFEST: &str = include_str!("../connectors/erp/app.yaml");
 /// This app's metadata packages, embedded at build time.
 pub fn packages() -> std::result::Result<Vec<ferrum_meta::Package>, ferrum_meta::MetaError> {
     ferrum_meta::catalog::load_embedded(EMBEDDED)
+}
+
+#[cfg(test)]
+mod interface_tests {
+    use super::*;
+
+    #[test]
+    fn the_interface_is_a_release_the_platform_takes() {
+        let m = ferrum_apps::AppManifest::parse(MANIFEST).expect("app.yaml");
+        assert_eq!(m.routes(), vec![("people".to_string(), vec![])]);
+        let files = UI.iter().map(|(p, b)| (p.to_string(), b.to_vec())).collect();
+        let ui = ferrum_apps::ui::prepare("hr", files).expect("ui/dist is an interface release");
+        assert!(UI.iter().any(|(p, _)| *p == "index.html") && !UI.iter().any(|(p, _)| p.starts_with('.')), "{}", ui.digest);
+        ferrum_apps::AppManifest::parse(CONNECTOR_MANIFEST).expect("connectors/erp/app.yaml");
+    }
 }

@@ -22,6 +22,7 @@ tracing = "0.1"
 uuid = { version = "1.10", features = ["v4", "v7", "serde"] }
 
 [dev-dependencies]
+ferrum-apps = { git = "https://github.com/CBFerrum/Ferrum", branch = "main" }
 tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 
 [lints.clippy]

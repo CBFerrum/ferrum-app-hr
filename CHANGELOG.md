@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0
+
+- People, an interface of its own at /people/ (Ferrum docs/plan/apps-ui.md U5), in `ui/` (built with
+  Ferrum-Frontend's packages, `dist` committed and embedded as `UI`). Its home: for the signed-in
+  employee, check in and out, leave balances, their leave requests and "Ask for leave"; the leave
+  requests waiting for their approval, approved or rejected in place; and, for those who see
+  everyone, who is away today, who joined this month, the work anniversaries of the next two
+  weeks, and the directory with search. Kept current by live updates. HR's and payroll's other
+  records are lists and forms in the records frame with their modules.
+- Launcher entry for HR Managers and Users, Employees, Leave Approvers and Payroll Managers; Leave
+  request in the Create menu; /open of HR's, payroll's and the hr-erp connector's records.
+
 ## 0.2.1
 
 - Reading projects (for expense claims) comes with `hr_erp`, where the platform's shared
