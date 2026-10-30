@@ -74,6 +74,57 @@ fn recruitment_lifecycle_and_appraisal() {
     run(talent_scenario());
 }
 
+#[test]
+fn hr_and_payroll_without_erp() {
+    run(alone_scenario());
+}
+
+/// HR and payroll in a workspace without ERP (Ferrum docs/plan/apps-ui.md §13): no expense claims,
+/// accounts or journals; a payroll run makes and submits salary slips and posts nothing.
+async fn alone_scenario() {
+    let t = T::with("hralone", &["payroll"]).await;
+    let schema = t.admin.schema.clone();
+    assert_eq!(schema.packages, ["core", "hr", "payroll"]);
+    for erp in ["Account", "JournalEntry", "ExpenseClaim", "EmployeeAdvance", "SalaryComponentAccount"] {
+        assert!(schema.entity(erp).is_none(), "{erp} without ERP");
+    }
+    let pe = schema.entity("PayrollEntry").unwrap();
+    assert!(pe.field("payroll_payable_account").is_none() && pe.def.actions.iter().all(|a| a.name != "make_bank_entry"));
+    assert!(schema.entity("Employee").unwrap().field("payroll_cost_center").is_none());
+
+    let asha = t.employee("Asha", json!({})).await;
+    let flat = t
+        .ins(
+            &t.admin,
+            "SalaryComponent",
+            json!({"component_name": "Flat Pay", "abbr": "FLAT", "component_type": "Earning", "amount": "30000", "depends_on_payment_days": false}),
+        )
+        .await;
+    let st = t
+        .ins_submit(
+            &t.admin,
+            "SalaryStructure",
+            json!({"structure_name": "Flat", "company": t.c(), "payroll_frequency": "Monthly", "earnings": [{"salary_component": flat["id"]}]}),
+        )
+        .await;
+    t.ins_submit(
+        &t.admin,
+        "SalaryStructureAssignment",
+        json!({"employee": asha["id"], "salary_structure": st["id"], "from_date": "2026-04-01", "base": "30000"}),
+    )
+    .await;
+    let pe =
+        t.ins(&t.admin, "PayrollEntry", json!({"company": t.c(), "posting_date": "2026-09-30", "start_date": "2026-09-01", "end_date": "2026-09-30"})).await;
+    let pe = t.act(&t.admin, "PayrollEntry", uid(&pe), "get_employees", json!({})).await;
+    let pe_id = vid(&pe);
+    t.submit(&t.admin, "PayrollEntry", pe_id).await;
+    t.act(&t.admin, "PayrollEntry", pe_id, "create_salary_slips", json!({})).await;
+    let done = t.act(&t.admin, "PayrollEntry", pe_id, "submit_salary_slips", json!({})).await;
+    assert_eq!(done["status"], json!("Slips Submitted"));
+    let slips = t.list(&t.admin, "SalarySlip", json!({"payroll_entry": pe_id.to_string()})).await;
+    assert_eq!((slips.len(), dec(&slips[0]["net_pay"])), (1, n("30000")));
+}
+
 // ───────────────────────────── helpers ─────────────────────────────
 
 fn obj(v: Value) -> Doc {
@@ -129,7 +180,12 @@ struct T {
 }
 
 impl T {
+    /// A workspace with HR and payroll and their connectors with ERP.
     async fn new(slug: &str) -> T {
+        T::with(slug, &["hr_erp", "payroll_erp"]).await
+    }
+
+    async fn with(slug: &str, packages: &[&str]) -> T {
         let k = kernel().await;
         let tenant = k
             .create_tenant(NewTenant {
@@ -138,7 +194,7 @@ impl T {
                 admin_email: format!("admin@{slug}.test"),
                 admin_password: PW.into(),
                 admin_name: None,
-                packages: ["core", "accounting", "hr", "payroll"].iter().map(|s| s.to_string()).collect(),
+                packages: packages.iter().map(|s| s.to_string()).collect(),
                 settings: Some(json!({"fiscal_year_start_month": 4, "timezone": "Asia/Kolkata"})),
             })
             .await

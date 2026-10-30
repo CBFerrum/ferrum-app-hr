@@ -1,22 +1,14 @@
 package: hr
-version: 0.1.0
+version: 0.2.0
 label: Human Resources
-description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, expense claims and employee advances posted to the ledger, recruitment, appraisals and the employee lifecycle.
-depends: [core, accounting]
+description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
+depends: [core]
 field_prefix: hr_
 
 overlays:
   - entity: Company
     ops:
       - {op: add_field, field: {name: hr_default_holiday_list, type: link, to: HolidayList, label: Default Holiday List}}
-      - {op: add_field, field: {name: hr_employee_payable_account, type: link, to: Account, label: Employee Payable Account, link_filters: {is_group: false}, description: Credited when expense claims are approved}}
-      - {op: add_field, field: {name: hr_employee_advance_account, type: link, to: Account, label: Employee Advance Account, link_filters: {is_group: false}}}
-      - {op: add_action, action: {name: setup_hr_accounts, label: Create HR and Payroll Accounts, permission: write}}
-  - entity: JournalEntry
-    ops:
-      - {op: add_field, field: {name: hr_reference_type, type: select, label: HR Reference Type, options: [Expense Claim, Employee Advance, Employee Advance Return, Payroll Entry], read_only: true, in_filter: true}}
-      - {op: add_field, field: {name: hr_reference, type: data, label: HR Reference, read_only: true, description: "Id of the expense claim, employee advance or payroll entry this entry settles"}}
-      - {op: add_field, field: {name: hr_reference_number, type: data, label: HR Reference No, read_only: true}}
 
 modules:
   - name: hr
@@ -31,11 +23,6 @@ modules:
     order: 71
     items: [Attendance, EmployeeCheckin, ShiftType, ShiftAssignment, HolidayList, LeaveApplication, LeaveAllocation, LeaveType, LeavePolicy,
             LeaveLedgerEntry, report:monthly_attendance_sheet, report:leave_balance]
-  - name: expenses
-    label: Expense Claims
-    icon: receipt
-    order: 72
-    items: [ExpenseClaim, EmployeeAdvance, ExpenseClaimType, report:expense_claim_summary]
   - name: recruitment
     label: Recruitment
     icon: user-plus
@@ -61,19 +48,6 @@ workflows:
       - {action: Reject, from: Open, to: Rejected, roles: [Leave Approver, HR Manager]}
       - {action: Cancel, from: Approved, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
       - {action: Cancel, from: Rejected, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
-  - name: Expense Approval
-    entity: ExpenseClaim
-    initial_state: Draft
-    states:
-      - {name: Draft, docstatus: 0}
-      - {name: Approved, docstatus: 1}
-      - {name: Rejected, docstatus: 1}
-      - {name: Cancelled, docstatus: 2}
-    transitions:
-      - {action: Approve, from: Draft, to: Approved, roles: [Expense Approver, HR Manager]}
-      - {action: Reject, from: Draft, to: Rejected, roles: [Expense Approver, HR Manager]}
-      - {action: Cancel, from: Approved, to: Cancelled, roles: [Expense Approver, HR Manager]}
-      - {action: Cancel, from: Rejected, to: Cancelled, roles: [Expense Approver, HR Manager]}
 
 # What a personal-data request exports and erases for a person (their email). An employee keeps
 # their name and employment dates, which payroll and tax records need; their private contact,
@@ -105,9 +79,6 @@ roles:
       - {entity: LeaveAllocation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
       - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
       - {entity: LeaveLedgerEntry, read: true, export: true}
-      - {entity: ExpenseClaimType, read: true, write: true, create: true, delete: true, export: true}
-      - {entity: ExpenseClaim, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
-      - {entity: EmployeeAdvance, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: JobOpening, read: true, write: true, create: true, delete: true, export: true}
       - {entity: JobApplicant, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Interview, read: true, write: true, create: true, delete: true, export: true}
@@ -116,10 +87,7 @@ roles:
       - {entity: AppraisalTemplate, read: true, write: true, create: true, delete: true}
       - {entity: Appraisal, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, read_groups: [review], write_groups: [review]}
       - {entity: AppraisalGoal, read_groups: [review], write_groups: [review]}
-      - {entity: JournalEntry, read: true, create: true}
       - {entity: Company, read: true}
-      - {entity: Account, read: true}
-      - {entity: CostCenter, read: true}
       - {entity: Project, read: true}
       - {entity: Currency, read: true}
   - name: HR User
@@ -145,9 +113,6 @@ roles:
       - {entity: LeaveAllocation, read: true, write: true, create: true, delete: true, submit: true}
       - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, cancel: true}
       - {entity: LeaveLedgerEntry, read: true}
-      - {entity: ExpenseClaimType, read: true}
-      - {entity: ExpenseClaim, read: true, write: true, create: true, delete: true}
-      - {entity: EmployeeAdvance, read: true, write: true, create: true, delete: true, submit: true}
       - {entity: JobOpening, read: true, write: true, create: true}
       - {entity: JobApplicant, read: true, write: true, create: true, delete: true, import: true}
       - {entity: Interview, read: true, write: true, create: true, delete: true}
@@ -157,15 +122,12 @@ roles:
       - {entity: Appraisal, read: true, write: true, create: true, submit: true, read_groups: [review], write_groups: [review]}
       - {entity: AppraisalGoal, read_groups: [review], write_groups: [review]}
       - {entity: Company, read: true}
-      - {entity: CostCenter, read: true}
       - {entity: Project, read: true}
   - name: Employee
     description: Self-service; sees and creates only their own records (the employee whose user is the signed-in user).
     permissions:
       - {entity: Employee, read: true, if_owner: true, read_groups: [bank, identity]}
       - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, if_owner: true}
-      - {entity: ExpenseClaim, read: true, write: true, create: true, delete: true, if_owner: true}
-      - {entity: EmployeeAdvance, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: EmployeeCheckin, read: true, create: true, if_owner: true}
       - {entity: Attendance, read: true, if_owner: true}
       - {entity: ShiftAssignment, read: true, if_owner: true}
@@ -179,7 +141,6 @@ roles:
       - {entity: LeaveType, read: true}
       - {entity: HolidayList, read: true}
       - {entity: ShiftType, read: true}
-      - {entity: ExpenseClaimType, read: true}
       - {entity: Department, read: true}
       - {entity: Designation, read: true}
       - {entity: Branch, read: true}
@@ -193,12 +154,6 @@ roles:
       - {entity: LeaveLedgerEntry, read: true}
       - {entity: LeaveType, read: true}
       - {entity: HolidayList, read: true}
-  - name: Expense Approver
-    description: Sanctions, approves or rejects the expense claims routed to them.
-    permissions:
-      - {entity: ExpenseClaim, read: true, write: true, submit: true, cancel: true}
-      - {entity: ExpenseClaimType, read: true}
-      - {entity: EmployeeAdvance, read: true}
   - name: Attendance Device
     description: For the API keys of biometric or RFID devices; they can only post check-ins.
     permissions:
@@ -221,11 +176,3 @@ seed:
       - {leave_type_name: Sick Leave, max_leaves_allowed: 12}
       - {leave_type_name: Privilege Leave, max_leaves_allowed: 18, applicable_after: 90, is_carry_forward: true, maximum_carry_forwarded_leaves: 30, allow_encashment: true, encashment_threshold_days: 10}
       - {leave_type_name: Leave Without Pay, is_lwp: true}
-  - entity: ExpenseClaimType
-    key: [expense_type]
-    records:
-      - {expense_type: Travel}
-      - {expense_type: Food}
-      - {expense_type: Accommodation}
-      - {expense_type: Medical}
-      - {expense_type: Others}

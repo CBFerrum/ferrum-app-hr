@@ -1,0 +1,6 @@
+- name: SalaryComponentAccount
+  label: Salary Component Account
+  kind: child
+  fields:
+    - {name: company, type: link, to: Company, required: true, in_list: true}
+    - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}

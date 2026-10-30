@@ -1,10 +1,3 @@
-- name: SalaryComponentAccount
-  label: Salary Component Account
-  kind: child
-  fields:
-    - {name: company, type: link, to: Company, required: true, in_list: true}
-    - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}
-
 - name: SalaryComponent
   label: Salary Component
   kind: master
@@ -26,7 +19,6 @@
     - {name: variable_based_on_taxable_salary, type: check, visible_if: "doc.component_type == 'Deduction'", label: Income Tax (from tax slabs)}
     - {name: statistical_component, type: check, description: "Computed for use in formulas only; never paid, deducted or posted"}
     - {name: round_to_the_nearest_integer, type: check}
-    - {name: accounts, type: table, of: SalaryComponentAccount}
     - {name: disabled, type: check, in_filter: true}
   rules:
     - {name: abbr_identifier, check: "doc.abbr == null || doc.abbr.matches('^[A-Za-z_][A-Za-z0-9_]*$')", message: "The abbreviation must start with a letter or _ and contain only letters, digits and _"}
@@ -68,7 +60,6 @@
     - {name: earnings, type: table, of: SalaryDetail}
     - {name: deductions, type: table, of: SalaryDetail}
     - {name: leave_encashment_amount_per_day, type: currency, currency: currency, min: "0"}
-    - {name: payment_account, type: link, to: Account, link_filters: {is_group: false}, description: Bank or cash account salaries are paid from}
     - {name: notes, type: text}
   actions:
     - {name: set_active, label: Activate / Deactivate, docstatus: [1], permission: submit}
@@ -263,9 +254,6 @@
     - {name: department, type: link, to: Department, in_filter: true}
     - {name: branch, type: link, to: Branch, in_filter: true}
     - {name: designation, type: link, to: Designation, in_filter: true}
-    - {name: payment_account, type: link, to: Account, link_filters: {is_group: false}, description: Bank or cash account the salaries are paid from}
-    - {name: cost_center, type: link, to: CostCenter, link_filters: {is_group: false}, description: For employees without a payroll cost center of their own or their department's}
-    - {name: payroll_payable_account, type: link, to: Account, link_filters: {is_group: false}}
     - {name: employees, type: table, of: PayrollEmployeeDetail}
     - {name: number_of_employees, type: int, read_only: true, in_list: true}
     - {name: salary_slips_created, type: check, read_only: true, no_copy: true}
@@ -282,7 +270,6 @@
     - {name: get_employees, label: Get Employees, docstatus: [0], permission: write}
     - {name: create_salary_slips, label: Create Salary Slips, docstatus: [1], permission: submit, condition: "!doc.salary_slips_submitted"}
     - {name: submit_salary_slips, label: Submit Salary Slips, docstatus: [1], permission: submit, condition: "doc.salary_slips_created && !doc.salary_slips_submitted"}
-    - {name: make_bank_entry, label: Make Bank Entry, docstatus: [1], permission: read, condition: "doc.salary_slips_submitted && doc.paid_amount < doc.total_net_pay"}
   list: {columns: [number, start_date, end_date, number_of_employees, total_net_pay, status], sort: start_date desc}
 
 - name: SalarySlip

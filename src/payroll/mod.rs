@@ -19,6 +19,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Whether this workspace posts payroll to the ledger: the `payroll_erp` connector with ERP. Without
+/// it, payroll runs compute and submit salary slips and post nothing.
+pub(crate) fn posts(hc: &HookCtx<'_>) -> bool {
+    hc.ctx.schema.packages.iter().any(|p| p == crate::PAYROLL_ERP)
+}
+
 pub(crate) fn register(h: &mut HookRegistry) {
     h.register("SalaryComponent", Arc::new(ComponentHook))
         .register("SalaryStructure", Arc::new(StructureHook))

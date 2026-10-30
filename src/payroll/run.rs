@@ -222,10 +222,12 @@ impl RunHook {
         if slips.is_empty() {
             return Err(Error::invalid("there are no salary slips to submit; create them first"));
         }
-        let cid = id(doc, "company").unwrap_or_default();
-        let payable = id(doc, "payroll_payable_account").ok_or_else(|| Error::field("payroll_payable_account", "is required"))?;
-        let on = opt_date(doc, "posting_date").unwrap_or_else(today);
-        post_accrual(hc, cid, ("PayrollEntry", me, s(doc, "number").map(str::to_string)), on, &slips, payable, id(doc, "cost_center")).await?;
+        if super::posts(hc) {
+            let cid = id(doc, "company").unwrap_or_default();
+            let payable = id(doc, "payroll_payable_account").ok_or_else(|| Error::field("payroll_payable_account", "is required"))?;
+            let on = opt_date(doc, "posting_date").unwrap_or_else(today);
+            post_accrual(hc, cid, ("PayrollEntry", me, s(doc, "number").map(str::to_string)), on, &slips, payable, id(doc, "cost_center")).await?;
+        }
         let mut flags = Doc::new();
         flags.insert("salary_slips_submitted".into(), json!(true));
         flags.insert("status".into(), json!("Slips Submitted"));
@@ -239,15 +241,18 @@ impl DocHook for RunHook {
         if doc.get("docstatus").and_then(Value::as_i64).unwrap_or(0) == 0 {
             set(doc, "status", "Draft");
         }
-        let Some(cid) = id(doc, "company") else { return Ok(()) };
-        if id(doc, "payroll_payable_account").is_none() {
-            let acc = company_account(hc, cid, "pay_payroll_payable_account", "payroll payable account").await?;
-            set(doc, "payroll_payable_account", acc.to_string());
-        }
-        let co = company(hc.kernel, hc.ctx, hc.tx, cid).await?;
-        for (field, default) in [("cost_center", "default_cost_center"), ("payment_account", "default_bank_account")] {
-            if id(doc, field).is_none() {
-                set(doc, field, co.account(default).map(|a| json!(a.to_string())).unwrap_or_default());
+        if let Some(cid) = id(doc, "company")
+            && super::posts(hc)
+        {
+            if id(doc, "payroll_payable_account").is_none() {
+                let acc = company_account(hc, cid, "pay_payroll_payable_account", "payroll payable account").await?;
+                set(doc, "payroll_payable_account", acc.to_string());
+            }
+            let co = company(hc.kernel, hc.ctx, hc.tx, cid).await?;
+            for (field, default) in [("cost_center", "default_cost_center"), ("payment_account", "default_bank_account")] {
+                if id(doc, field).is_none() {
+                    set(doc, field, co.account(default).map(|a| json!(a.to_string())).unwrap_or_default());
+                }
             }
         }
         let mut list = rows(doc, "employees");
@@ -312,8 +317,10 @@ impl DocHook for RunHook {
     /// Reverses the accrual, then cancels the submitted slips and removes the drafts.
     async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let me = id(doc, "id").unwrap_or_default();
-        let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
-        ledger::reverse(hc.tx, hc.ctx, "PayrollEntry", me, today(), co.precision).await?;
+        if super::posts(hc) {
+            let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
+            ledger::reverse(hc.tx, hc.ctx, "PayrollEntry", me, today(), co.precision).await?;
+        }
         let sctx = sys(hc.ctx);
         for (status, cancel) in [(1, true), (0, false)] {
             let found =

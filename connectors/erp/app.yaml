@@ -1,0 +1,18 @@
+# HR's connector with ERP (Ferrum docs/plan/apps-ui.md §13): expense claims and employee advances,
+# posted to the ledger and paid through it (package hr_erp), and payroll's accounts, accrual
+# journals and bank entries (package payroll_erp). Offered where both apps are installed; ships
+# with HR.
+id: hr-erp
+name: HR and ERP
+version: 0.1.0
+publisher: cbferrum
+summary: Expense claims, advances and payroll posted to ERP's ledger
+categories: [connector, hr, finance]
+license: AGPL-3.0-only
+homepage: https://github.com/CBFerrum/ferrum-app-hr
+support: https://github.com/CBFerrum/ferrum-app-hr/issues
+runtime: native
+platform: ">=0.3.2, <0.4"
+requires: {hr: ">=0.2", erp: ">=0.1"}
+packages: [hr_erp, payroll_erp]
+uninstall: ask
