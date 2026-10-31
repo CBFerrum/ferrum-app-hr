@@ -7,7 +7,7 @@
 use crate::people::company_account;
 use crate::{default_approver, lookup, notify, opt_date, require_approver, stamp_company, stored, today};
 use async_trait::async_trait;
-use ferrum_domain::ledger::{self, Entry, Line};
+use ferrum_app_erp::ledger::{self, Entry, Line};
 use ferrum_domain::util::{company, d, elevated, get, id, money, round, rows, s, set, sys};
 use ferrum_kernel::{Action, Doc, DocHook, Error, FieldError, HookCtx, HookRegistry, Result};
 use rust_decimal::Decimal;

@@ -9,7 +9,7 @@ use crate::people::company_account;
 use crate::{lookup, opt_date, today};
 use async_trait::async_trait;
 use chrono::NaiveDate;
-use ferrum_domain::ledger::{self, Entry, Line};
+use ferrum_app_erp::ledger::{self, Entry, Line};
 use ferrum_domain::util::{b, company, d, elevated, find, get, id, money, rows, s, set, sys};
 use ferrum_kernel::{Action, Doc, DocHook, Error, FieldError, Filter, HookCtx, Result};
 use rust_decimal::Decimal;
