@@ -298,7 +298,7 @@ CHANGELOG.md  what changed in each version
 | **0.3.4** | The interface starts faster: its first download holds the frame and the app's own pages, and lists, forms, reports and other apps' screens load … |
 | **0.3.3** | Record cards (the bar's previews on hover, Ferrum apps-ui.md U5) stay off your leave requests, the requests waiting for your approval and the … |
 | **0.3.2** | Rebuilt with Ferrum-Frontend a8d4dda: under the platform's bar the records frame no longer shows a second bell (the bar has notifications). |
-| **0.3.1** | Its notifications have kinds each person chooses for (Ferrum's bell, apps-ui.md U5): leave requests and expense claims waiting for your approval, … |
+| **0.3.1** | Its notifications have kinds each person chooses for (Ferrum's bell, apps-ui.md U5): leave requests and expense claims waiting for your approval … |
 
 Every version is in [CHANGELOG.md](CHANGELOG.md).
 
