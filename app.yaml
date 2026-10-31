@@ -1,6 +1,6 @@
 id: hr
 name: HR and Payroll
-version: 0.3.0
+version: 0.3.1
 publisher: cbferrum
 summary: Employees, attendance, shifts, leave, recruitment, appraisals, salary structures and payroll
 description: README.md
@@ -32,3 +32,8 @@ contributes:
     - {id: payroll_erp, package: payroll_erp, path: "people/e/{entity}/{id}", list: "people/e/{entity}"}
   shell.create:
     - {id: leave, label: Leave request, path: people/e/LeaveApplication/new, entity: LeaveApplication}
+  shell.notification:
+    - {id: leave_request, label: Leave requests waiting for your approval, default: [inapp, email]}
+    - {id: leave_decision, label: Decisions on your leave requests, default: [inapp, email]}
+    - {id: expense_request, label: Expense claims waiting for your approval, default: [inapp, email]}
+    - {id: expense_decision, label: Decisions on your expense claims, default: [inapp, email]}
