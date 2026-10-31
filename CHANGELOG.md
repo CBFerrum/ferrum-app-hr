@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4
+
+- The interface starts faster: its first download holds the frame and the app's own pages, and
+  lists, forms, reports and other apps' screens load when first opened (Ferrum
+  docs/plan/apps-ui.md §12.9). The build keeps it within the size budget.
+
 ## 0.3.3
 
 - Record cards (the bar's previews on hover, Ferrum apps-ui.md U5) stay off your leave requests, the requests waiting for your approval and the directory, whose rows
