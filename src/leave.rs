@@ -557,7 +557,7 @@ impl DocHook for ApplicationHook {
             s(doc, "from_date").unwrap_or_default(),
             s(doc, "to_date").unwrap_or_default()
         );
-        notify(hc, s(doc, "leave_approver"), &title, id(doc, "id").unwrap_or_default()).await
+        notify(hc, s(doc, "leave_approver"), crate::LEAVE_REQUEST, &title, id(doc, "id").unwrap_or_default()).await
     }
 
     async fn before_submit(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
@@ -572,7 +572,7 @@ impl DocHook for ApplicationHook {
         set(&mut v, "status", if rejected { "Rejected" } else { "Approved" });
         hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "LeaveApplication", me, v).await?;
         let title = format!("Your leave from {} was {}", s(doc, "from_date").unwrap_or_default(), if rejected { "rejected" } else { "approved" });
-        notify(hc, s(doc, "employee_user"), &title, me).await?;
+        notify(hc, s(doc, "employee_user"), crate::LEAVE_DECISION, &title, me).await?;
         if rejected {
             return Ok(());
         }

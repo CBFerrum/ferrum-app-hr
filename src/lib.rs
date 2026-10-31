@@ -182,15 +182,23 @@ pub(crate) fn require_approver(ctx: &Ctx, doc: &Doc, approver: Option<&str>, wha
     }))
 }
 
-/// An in-app notification to the user signing in with `email` (not to the caller themselves).
-pub(crate) async fn notify(hc: &mut HookCtx<'_>, email: Option<&str>, title: &str, record: Uuid) -> Result<()> {
+/// The notification kinds app.yaml declares (`shell.notification`), each in the bar and by email
+/// unless the person chose otherwise.
+pub const LEAVE_REQUEST: &str = "hr.leave_request";
+pub const LEAVE_DECISION: &str = "hr.leave_decision";
+pub const EXPENSE_REQUEST: &str = "hr.expense_request";
+pub const EXPENSE_DECISION: &str = "hr.expense_decision";
+
+/// A notification of `kind` to the user signing in with `email` (not to the caller themselves).
+pub(crate) async fn notify(hc: &mut HookCtx<'_>, email: Option<&str>, kind: &str, title: &str, record: Uuid) -> Result<()> {
     let Some(email) = email else { return Ok(()) };
     let Some(user) = user_id(hc, email).await? else { return Ok(()) };
     if user == hc.ctx.user {
         return Ok(());
     }
     let entity = hc.entity.def.name.clone();
-    ferrum_kernel::notify::send(hc.tx, hc.ctx.tenant, user, title, None, Some(&entity), Some(record)).await?;
+    let default = ferrum_kernel::notify::declared_default(&["inapp", "email"]);
+    ferrum_kernel::notify::send_kind(hc.tx, hc.ctx.tenant, user, kind, default, title, None, Some(&entity), Some(record)).await?;
     Ok(())
 }
 

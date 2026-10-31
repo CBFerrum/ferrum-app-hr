@@ -242,7 +242,7 @@ impl DocHook for ClaimHook {
             return Ok(());
         }
         let title = format!("Expense claim from {} awaits your approval", s(doc, "employee_name").unwrap_or_default());
-        notify(hc, s(doc, "expense_approver"), &title, id(doc, "id").unwrap_or_default()).await
+        notify(hc, s(doc, "expense_approver"), crate::EXPENSE_REQUEST, &title, id(doc, "id").unwrap_or_default()).await
     }
 
     async fn before_submit(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
@@ -254,7 +254,7 @@ impl DocHook for ClaimHook {
         let me = id(doc, "id").ok_or_else(|| Error::internal("claim without id"))?;
         let rejected = s(doc, "workflow_state") == Some("Rejected");
         let title = format!("Your expense claim {} was {}", s(doc, "number").unwrap_or_default(), if rejected { "rejected" } else { "approved" });
-        notify(hc, s(doc, "employee_user"), &title, me).await?;
+        notify(hc, s(doc, "employee_user"), crate::EXPENSE_DECISION, &title, me).await?;
         if rejected {
             let mut v = Doc::new();
             set(&mut v, "status", "Rejected");
