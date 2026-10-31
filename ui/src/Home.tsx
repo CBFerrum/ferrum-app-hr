@@ -98,7 +98,7 @@ function MyLeave({ employee }: { employee: Employee }) {
   if (!q.data) return <Spinner small label="Loading your requests" />;
   if (!q.data.length) return <p className="muted">You have not asked for leave yet.</p>;
   return (
-    <ul className="stack">
+    <ul className="stack" data-ferrum-nocard>
       {q.data.map((l) => (
         <li key={l.id}>
           <Link to={`e/LeaveApplication/${l.id}`}>{title(l, "leave_type") ?? "Leave"}</Link> <span className="faint">{when(l.from_date, l.to_date)} · {days(l.total_leave_days)}</span>{" "}
@@ -162,7 +162,7 @@ function Approvals({ me }: { me: string }) {
         <h2 id="ppl-approvals">Waiting for your approval ({q.data.length})</h2>
       </div>
       <div className="card-body">
-        <ul className="ppl-requests">
+        <ul className="ppl-requests" data-ferrum-nocard>
           {q.data.map((l) => (
             <li key={l.id}>
               <span>
@@ -288,7 +288,7 @@ function Directory() {
         <EmptyState title={search ? `Nobody matches “${search}”` : "No one here yet"} icon="user" />
       ) : (
         <>
-          <ul className="ppl-directory">
+          <ul className="ppl-directory" data-ferrum-nocard>
             {list.data.rows.map((e) => (
               <li key={e.id} className="ppl-person">
                 <span className="ppl-avatar" aria-hidden="true">
