@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3
+
+- Record cards (the bar's previews on hover, Ferrum apps-ui.md U5) stay off your leave requests, the requests waiting for your approval and the directory, whose rows
+  already show what a card would.
+
 ## 0.3.2
 
 - Rebuilt with Ferrum-Frontend a8d4dda: under the platform's bar the records frame no longer shows
