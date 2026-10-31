@@ -16,7 +16,7 @@ use crate::calendar::{employee_holidays, working_days};
 use crate::{lookup, opt_date, stamp_company};
 use async_trait::async_trait;
 use chrono::{Datelike, NaiveDate};
-use ferrum_domain::ledger;
+use ferrum_app_erp::ledger;
 use ferrum_domain::util::{Company, b, company, d, get, id, money, round, rows, s, set, sys};
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
 use rust_decimal::{Decimal, RoundingStrategy};
