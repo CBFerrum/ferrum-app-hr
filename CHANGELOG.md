@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- Rebuilt with Ferrum-Frontend a8d4dda: under the platform's bar the records frame no longer shows
+  a second bell (the bar has notifications).
+
 ## 0.3.1
 
 - Its notifications have kinds each person chooses for (Ferrum's bell, apps-ui.md U5): leave
