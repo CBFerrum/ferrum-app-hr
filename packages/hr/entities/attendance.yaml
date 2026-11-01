@@ -193,6 +193,7 @@
   fields:
     - {name: leave_type, type: link, to: LeaveType, required: true, in_list: true}
     - {name: annual_allocation, type: decimal, required: true, min: "0", in_list: true}
+    - {name: accrual, type: select, options: [Monthly, Quarterly, Half-yearly], label: Granted, in_list: true, description: "Empty: all at once, when the leaves are allocated. Otherwise a share at the start of each month, quarter or half-year, to the employees whose record names this policy"}
 
 - name: LeavePolicy
   label: Leave Policy
@@ -203,9 +204,11 @@
   fields:
     - {name: title, type: data, required: true, unique: true, in_list: true}
     - {name: leave_policy_details, type: table, of: LeavePolicyDetail, required: true, label: Leave Allocations}
+    - {name: year_starts, type: select, options: [January, February, March, April, May, June, July, August, September, October, November, December], default: January, label: Leave Year Starts In, description: "The year that accruing leaves are granted for; January when empty"}
     - {name: description, type: text}
   actions:
-    - {name: assign_allocations, label: Allocate Leaves, permission: read, confirm: "Create and submit leave allocations from this policy?"}
+    - {name: assign_allocations, label: Allocate Leaves, permission: read, confirm: "Create and submit leave allocations from this policy? Lines that accrue are left to Grant Accrued Leaves."}
+    - {name: accrue, label: Grant Accrued Leaves, permission: read, confirm: "Grant the leaves that the lines of this policy have accrued so far to the employees who have it? This also runs by itself every day."}
   list: {sort: title asc}
 
 - name: LeaveAllocation

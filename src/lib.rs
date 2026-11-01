@@ -48,7 +48,8 @@ pub fn reports() -> Vec<Arc<dyn ReportSource>> {
 
 /// Periodic upkeep: every minute, on one replica at a time (advisory lock); must be idempotent and cheap.
 /// Per tenant with HR installed: attendance from check-ins for finished shifts, expiry of ended
-/// leave allocations, and closing job openings past their closing date.
+/// leave allocations, the leaves that policies accrue (once a day), and closing job openings past
+/// their closing date.
 pub async fn maintenance(k: &Kernel) -> Result<()> {
     let tenants: Vec<Uuid> = {
         let mut tx = k.db.system_tx().await?;
@@ -57,26 +58,34 @@ pub async fn maintenance(k: &Kernel) -> Result<()> {
         t
     };
     for tenant in tenants {
-        let schema = match k.registry.schema(tenant).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(%tenant, "hr upkeep skipped: {e}");
-                continue;
-            }
-        };
-        if schema.entity("ShiftType").is_none() {
-            continue;
+        upkeep(k, tenant).await?;
+    }
+    Ok(())
+}
+
+/// One tenant's share of [`maintenance`]: a workspace without HR is left alone, and a job that
+/// fails is logged without stopping the others.
+pub async fn upkeep(k: &Kernel, tenant: Uuid) -> Result<()> {
+    let schema = match k.registry.schema(tenant).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(%tenant, "hr upkeep skipped: {e}");
+            return Ok(());
         }
-        let ctx = Ctx::system(tenant, schema);
-        let results = [
-            ("attendance", attendance::auto_attendance(k, &ctx).await),
-            ("leave expiry", leave::expire_allocations(k, &ctx).await),
-            ("job openings", talent::close_openings(k, &ctx).await),
-        ];
-        for (what, r) in results {
-            if let Err(e) = r {
-                tracing::warn!(%tenant, "hr upkeep ({what}) failed: {e}");
-            }
+    };
+    if schema.entity("ShiftType").is_none() {
+        return Ok(());
+    }
+    let ctx = Ctx::system(tenant, schema);
+    let results = [
+        ("attendance", attendance::auto_attendance(k, &ctx).await),
+        ("leave expiry", leave::expire_allocations(k, &ctx).await),
+        ("leave accrual", leave::accrue_leaves(k, &ctx).await),
+        ("job openings", talent::close_openings(k, &ctx).await),
+    ];
+    for (what, r) in results {
+        if let Err(e) = r {
+            tracing::warn!(%tenant, "hr upkeep ({what}) failed: {e}");
         }
     }
     Ok(())
