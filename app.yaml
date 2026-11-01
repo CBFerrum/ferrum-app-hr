@@ -1,6 +1,6 @@
 id: hr
 name: HR and Payroll
-version: 0.4.0
+version: 0.5.0
 publisher: cbferrum
 summary: Employees, attendance, shifts, leave, recruitment, appraisals, salary structures and payroll
 description: README.md
@@ -19,7 +19,7 @@ contributes:
     - id: people
       route: people
       title: People
-      description: Leave, check-ins, approvals and the directory; employees, attendance, recruitment and payroll
+      description: Your leave and check-ins, approvals, the team calendar and the people directory; employees, attendance, recruitment and payroll
       icon: users
       color: "#0e7490"
       roles: [HR Manager, HR User, Employee, Leave Approver, Payroll Manager]
