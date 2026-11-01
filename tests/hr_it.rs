@@ -711,7 +711,7 @@ async fn expense_scenario() {
 
     // A rejected claim posts nothing.
     let small = t
-        .ins(&me, "ExpenseClaim", json!({"employee": e["id"], "expenses": [{"expense_date": "2026-10-20", "expense_type": food["id"], "amount": "300"}]}))
+        .ins(&me, "ExpenseClaim", json!({"employee": e["id"], "posting_date": "2026-10-20", "expenses": [{"expense_date": "2026-10-20", "expense_type": food["id"], "amount": "300"}]}))
         .await;
     t.trans(&boss, "ExpenseClaim", uid(&small), "Reject").await.expect("reject");
     assert_eq!(t.get("ExpenseClaim", uid(&small)).await["status"], json!("Rejected"));
