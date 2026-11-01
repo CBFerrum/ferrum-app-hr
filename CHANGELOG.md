@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Personal data: a person's request now exports their salary slips, tax declarations and leave encashments, and says why they are kept: they are payroll and tax records.
+- Personal data: a person's request now reaches job offers, which an erasure blanks, and exports attendance, leave, movements and appraisals, saying why they are kept: they are employment records.
+
 ## 0.3.4
 
 - The interface starts faster: its first download holds the frame and the app's own pages, and
