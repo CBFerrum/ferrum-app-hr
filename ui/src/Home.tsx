@@ -1,39 +1,39 @@
-// People's home: for the signed-in person, their leave balances, check-in and own requests; the
-// leave requests waiting for their approval; and, for those who see everyone, who is away today,
-// who joined lately, the work anniversaries coming up, and the directory.
+// A person's own space, People's home: checking in, what is left of their leave, what is coming up
+// (their time off and the holidays), their requests of every kind in one list, the month's
+// attendance, their payslips and their documents. Everything is theirs: it reads what their own
+// rights reach. On a phone it is one column in the order a day goes. A manager sees, first, how many
+// requests wait for them.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import { lazy, Suspense, useCallback, useState } from "react";
 import { Link } from "react-router";
-import { api, errorMessage } from "@ferrum/client";
-import { Badge, Button, EmptyState, ErrorState, Spinner, statusTone, TabPanel, Tabs, toast, useDebounced, useLiveEntity, useShellTitle } from "@ferrum/kit";
-import { useMe, useMetaIndex } from "@ferrum/records";
-import { anniversaries, covers, days, type Employee, inDaysLabel, type Leave, localDay, nextLogType, type Checkin } from "./people";
+import { api, errorMessage, todayIso } from "@ferrum/client";
+import { Badge, Button, EmptyState, ErrorState, Spinner, statusTone, toast, useLiveEntity, useShellTitle } from "@ferrum/kit";
+import { useMe } from "@ferrum/records";
+import type { Holiday } from "./calendar";
+import { f, rows, title, useCanRead } from "./data";
+import { addDays, span } from "./dates";
+import { Nav, useInbox } from "./Nav";
+import { days, nextLogType, type Checkin, type Employee } from "./people";
+import { type BalanceRow, comingUp, meter, requests, type Time, when } from "./space";
 
-const rows = <T,>(entity: string, query: Record<string, string | number>, signal?: AbortSignal) =>
-  api.get<{ rows: T[]; total?: number }>(`/api/v1/${entity}`, { titles: "true", ...query }, signal);
-const f = (filters: unknown[]) => JSON.stringify(filters);
-const title = (r: { _titles?: Record<string, string> }, field: string) => r._titles?.[field];
-const when = (from?: string | null, to?: string | null) => (from === to || !to ? (from ?? "") : `${from} – ${to}`);
+const Month = lazy(() => import("./Month").then((m) => ({ default: m.Month })));
+const Pay = lazy(() => import("./Pay").then((m) => ({ default: m.Pay })));
+const Fix = lazy(() => import("./Fix").then((m) => ({ default: m.Fix })));
 
-interface Balance {
-  leave_type: string;
-  available: string;
-  balance: string;
-  pending: string;
-}
-
-function useMine(me: string | undefined) {
+/** The signed-in person's employee record, if there is one. */
+function useMine(email: string | undefined) {
   return useQuery({
-    queryKey: ["people", "me", me],
-    enabled: !!me,
-    queryFn: ({ signal }) => rows<Employee & { company?: string }>("Employee", { filters: f([["user", "=", me]]), limit: 1, fields: "employee_name,department,designation,date_of_joining,user" }, signal).then((r) => r.rows[0] ?? null),
+    queryKey: ["people", "me", email],
+    enabled: !!email,
+    queryFn: ({ signal }) =>
+      rows<Employee>("Employee", { filters: f([["user", "=", email]]), limit: 1, fields: "employee_name,department,designation,date_of_joining,user" }, signal).then((r) => r.rows[0] ?? null),
   });
 }
 
 function CheckIn({ employee }: { employee: Employee }) {
   const qc = useQueryClient();
-  const today = localDay(new Date());
+  const today = todayIso();
   const last = useQuery({
     queryKey: ["people", "checkin", employee.id],
     queryFn: ({ signal }) => rows<Checkin>("EmployeeCheckin", { filters: f([["employee", "=", employee.id]]), sort: "log_time desc", limit: 1, fields: "log_type,log_time" }, signal).then((r) => r.rows[0]),
@@ -70,302 +70,215 @@ function CheckIn({ employee }: { employee: Employee }) {
 function Balances({ employee }: { employee: Employee }) {
   const q = useQuery({
     queryKey: ["people", "balance", employee.id],
-    queryFn: ({ signal }) => api.get<{ rows: Balance[] }>("/api/reports/leave_balance", { employee: employee.id }, signal).then((r) => r.rows),
+    queryFn: ({ signal }) => api.get<{ rows: BalanceRow[] }>("/api/reports/leave_balance", { employee: employee.id }, signal).then((r) => r.rows),
   });
-  if (q.error) return <p className="muted">Your leave balance cannot be shown ({errorMessage(q.error)}).</p>;
-  if (!q.data) return <Spinner small label="Loading your leave balance" />;
-  if (!q.data.length) return <p className="muted">No leave allocated to you this period.</p>;
+  if (q.error) return <ErrorState error={q.error} title="Your leave cannot be shown" onRetry={() => void q.refetch()} />;
+  if (!q.data) return <Spinner label="Loading your leave" />;
+  if (!q.data.length) return <p className="muted">No leave is allocated to you for this period yet.</p>;
   return (
-    <div className="ppl-balances">
-      {q.data.map((b) => (
-        <div key={b.leave_type} className="ppl-balance">
-          <strong>{days(b.available)}</strong>
-          <span>{b.leave_type}</span>
-          {Number(b.pending) > 0 && <span className="faint">{days(b.pending)} waiting for approval</span>}
-        </div>
-      ))}
-    </div>
+    <ul className="ppl-balances" data-ferrum-nocard>
+      {q.data.map((b) => {
+        const m = meter(b);
+        return (
+          <li key={b.leave_type} className="ppl-balance">
+            <div className="ppl-balance-head">
+              <strong className="ppl-balance-days">{days(b.available)}</strong>
+              <span>{b.leave_type}</span>
+            </div>
+            <div className="ppl-meter" role="img" aria-label={`${b.leave_type}: ${days(b.allocated)} in all, ${days(b.pending)} waiting for approval, ${days(b.available)} left`}>
+              <span data-part="spent" style={{ width: `${m.spent}%` }} />
+              <span data-part="asked" style={{ width: `${m.asked}%` }} />
+              <span data-part="left" style={{ width: `${m.left}%` }} />
+            </div>
+            <span className="faint">
+              of {days(b.allocated)}
+              {Number(b.pending) > 0 && ` · ${days(b.pending)} waiting for approval`}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
-function MyLeave({ employee }: { employee: Employee }) {
+/** The next time off, and the holidays to come. */
+function Coming({ employee }: { employee: Employee }) {
+  const today = todayIso();
   const q = useQuery({
-    queryKey: ["people", "my-leave", employee.id],
-    queryFn: ({ signal }) =>
-      rows<Leave>("LeaveApplication", { filters: f([["employee", "=", employee.id]]), sort: "from_date desc", limit: 5, fields: "leave_type,from_date,to_date,status,total_leave_days" }, signal).then((r) => r.rows),
+    queryKey: ["people", "coming", employee.id, today],
+    queryFn: async ({ signal }) => {
+      const [leave, cal] = await Promise.all([
+        rows<Time>("LeaveApplication", { filters: f([["employee", "=", employee.id], ["to_date", ">=", today], ["docstatus", "<", 2]]), sort: "from_date asc", limit: 20, fields: "leave_type,from_date,to_date,status" }, signal),
+        api.get<{ holidays: Holiday[] }>("/api/app/hr/calendar", { from: today, to: addDays(today, 60) }, signal).catch(() => ({ holidays: [] as Holiday[] })),
+      ]);
+      return comingUp(
+        leave.rows.map((l) => ({ ...l, leave_type: title(l, "leave_type") ?? l.leave_type })),
+        cal.holidays,
+        today,
+      );
+    },
   });
-  if (q.error) return null;
-  if (!q.data) return <Spinner small label="Loading your requests" />;
-  if (!q.data.length) return <p className="muted">You have not asked for leave yet.</p>;
+  if (q.error) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
+  if (!q.data) return <Spinner label="Loading what is coming up" />;
+  if (!q.data.length) return <p className="muted">No time off or holidays in the next two months.</p>;
   return (
-    <ul className="stack" data-ferrum-nocard>
-      {q.data.map((l) => (
-        <li key={l.id}>
-          <Link to={`e/LeaveApplication/${l.id}`}>{title(l, "leave_type") ?? "Leave"}</Link> <span className="faint">{when(l.from_date, l.to_date)} · {days(l.total_leave_days)}</span>{" "}
-          <Badge tone={statusTone(l.status)}>{l.status}</Badge>
+    <ul className="ppl-coming" data-ferrum-nocard>
+      {q.data.map((u) => (
+        <li key={u.key} data-kind={u.kind}>
+          <span className="ppl-when">{span(u.from, u.to)}</span>
+          <span className="ppl-coming-what">
+            {u.label}
+            {u.note && <span className="faint"> · {u.note}</span>}
+          </span>
+          <span className="faint">{when(u, today)}</span>
         </li>
       ))}
     </ul>
   );
 }
 
-function Me({ employee }: { employee: Employee }) {
-  return (
-    <section className="card" aria-labelledby="ppl-me">
-      <div className="card-head">
-        <h2 id="ppl-me">{employee.employee_name}</h2>
-        <span className="faint">{[title(employee, "designation"), title(employee, "department")].filter(Boolean).join(" · ")}</span>
-      </div>
-      <div className="card-body stack">
-        <CheckIn employee={employee} />
-        <Balances employee={employee} />
-        <div className="row ppl-head-row">
-          <h3>Your leave</h3>
-          <Link to={`e/LeaveApplication/new?employee=${employee.id}`}>
-            <Button size="sm" icon="plus">
-              Ask for leave
-            </Button>
-          </Link>
-        </div>
-        <MyLeave employee={employee} />
-      </div>
-    </section>
-  );
-}
-
-function Approvals({ me }: { me: string }) {
-  const qc = useQueryClient();
+/** Leave, attendance requests and expense claims together. */
+function Requests({ employee, onFix }: { employee: Employee; onFix: () => void }) {
+  const attendance = useCanRead("AttendanceRequest");
+  const claims = useCanRead("ExpenseClaim");
   const q = useQuery({
-    queryKey: ["people", "approvals", me],
-    queryFn: ({ signal }) =>
-      rows<Leave>("LeaveApplication", { filters: f([["leave_approver", "=", me], ["status", "=", "Open"]]), sort: "from_date asc", limit: 50, fields: "employee_name,leave_type,from_date,to_date,total_leave_days,status" }, signal).then(
-        (r) => r.rows,
-      ),
+    queryKey: ["people", "requests", employee.id, attendance, claims],
+    enabled: attendance !== undefined && claims !== undefined,
+    queryFn: async ({ signal }) => {
+      const mine = f([["employee", "=", employee.id]]);
+      const [leave, asked, claimed] = await Promise.all([
+        rows<{ id: string; leave_type?: string; from_date: string; to_date: string; status: string }>("LeaveApplication", { filters: mine, sort: "from_date desc", limit: 6, fields: "leave_type,from_date,to_date,status" }, signal),
+        attendance
+          ? rows<{ id: string; reason?: string; from_date: string; to_date: string; status: string }>("AttendanceRequest", { filters: mine, sort: "from_date desc", limit: 6, fields: "reason,from_date,to_date,status" }, signal)
+          : Promise.resolve({ rows: [] }),
+        claims
+          ? rows<{ id: string; posting_date: string; total_claimed_amount?: string; status: string }>("ExpenseClaim", { filters: mine, sort: "posting_date desc", limit: 6, fields: "posting_date,total_claimed_amount,status" }, signal)
+          : Promise.resolve({ rows: [] }),
+      ]);
+      return requests(
+        leave.rows.map((l) => ({ ...l, leave_type: title(l, "leave_type") ?? l.leave_type })),
+        asked.rows,
+        claimed.rows,
+      );
+    },
   });
-  const [busy, setBusy] = useState<string | null>(null);
-  const act = async (l: Leave, action: "Approve" | "Reject") => {
-    setBusy(l.id);
-    try {
-      await api.post(`/api/v1/LeaveApplication/${l.id}/workflow/${action}`);
-      toast(`${action === "Approve" ? "Approved" : "Rejected"}: ${l.employee_name}, ${when(l.from_date, l.to_date)}`);
-      await qc.invalidateQueries({ queryKey: ["people"] });
-    } catch (err) {
-      toast(errorMessage(err), "error");
-    } finally {
-      setBusy(null);
-    }
-  };
-  if (q.error || !q.data?.length) return null;
   return (
-    <section className="card" aria-labelledby="ppl-approvals">
-      <div className="card-head">
-        <h2 id="ppl-approvals">Waiting for your approval ({q.data.length})</h2>
+    <div className="stack ppl-tight">
+      <div className="row ppl-actions">
+        <Link className="btn btn-primary btn-sm" to={`/e/LeaveApplication/new?employee=${employee.id}`}>
+          Ask for leave
+        </Link>
+        {attendance && (
+          <Button size="sm" onClick={onFix}>
+            Fix attendance
+          </Button>
+        )}
+        {claims && (
+          <Link className="btn btn-default btn-sm" to={`/e/ExpenseClaim/new?employee=${employee.id}`}>
+            Claim expenses
+          </Link>
+        )}
       </div>
-      <div className="card-body">
+      {q.error ? (
+        <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+      ) : !q.data ? (
+        <Spinner label="Loading your requests" />
+      ) : !q.data.length ? (
+        <p className="muted">You have not asked for anything yet.</p>
+      ) : (
         <ul className="ppl-requests" data-ferrum-nocard>
-          {q.data.map((l) => (
-            <li key={l.id}>
-              <span>
-                <Link to={`e/LeaveApplication/${l.id}`}>{l.employee_name}</Link>{" "}
-                <span className="faint">
-                  {title(l, "leave_type") ?? "Leave"} · {when(l.from_date, l.to_date)} · {days(l.total_leave_days)}
-                </span>
-              </span>
-              <span className="row">
-                <Button size="sm" variant="primary" loading={busy === l.id} onClick={() => void act(l, "Approve")}>
-                  Approve
-                </Button>
-                <Button size="sm" disabled={busy === l.id} onClick={() => void act(l, "Reject")}>
-                  Reject
-                </Button>
-              </span>
+          {q.data.map((r) => (
+            <li key={r.key}>
+              <span className="faint ppl-kind">{r.kind}</span>
+              <Link to={`/e/${r.entity}/${r.id}`}>{r.title}</Link>
+              <Badge tone={statusTone(r.status)}>{r.status}</Badge>
             </li>
           ))}
         </ul>
-      </div>
-    </section>
-  );
-}
-
-function Today() {
-  const today = localDay(new Date());
-  const monthAgo = localDay(new Date(Date.now() - 30 * 86_400_000));
-  const away = useQuery({
-    queryKey: ["people", "away", today],
-    queryFn: ({ signal }) =>
-      rows<Leave>("LeaveApplication", { filters: f([["status", "=", "Approved"], ["from_date", "<=", today], ["to_date", ">=", today]]), limit: 100, fields: "employee,employee_name,leave_type,from_date,to_date,half_day" }, signal).then((r) =>
-        r.rows.filter((l) => covers(l, today)),
-      ),
-  });
-  const team = useQuery({
-    queryKey: ["people", "active"],
-    queryFn: ({ signal }) => rows<Employee>("Employee", { filters: f([["status", "=", "Active"]]), limit: 500, count: "true", fields: "employee_name,date_of_joining,department" }, signal),
-  });
-  if (away.error || team.error) return <ErrorState error={away.error ?? team.error} onRetry={() => void Promise.all([away.refetch(), team.refetch()])} />;
-  if (!away.data || !team.data) return <Spinner label="Loading today" />;
-  const joined = team.data.rows.filter((e) => (e.date_of_joining ?? "") >= monthAgo && (e.date_of_joining ?? "") <= today);
-  const coming = anniversaries(team.data.rows, today);
-  return (
-    <div className="ppl-columns">
-      <section className="card" aria-labelledby="ppl-away">
-        <div className="card-head">
-          <h2 id="ppl-away">Away today ({away.data.length})</h2>
-          <span className="faint">of {team.data.total ?? team.data.rows.length} people</span>
-        </div>
-        <div className="card-body">
-          {away.data.length ? (
-            <ul className="stack">
-              {away.data.map((l) => (
-                <li key={l.id}>
-                  {l.employee_name} <span className="faint">{title(l, "leave_type")}{l.half_day ? ", half a day" : ""}, until {l.to_date}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="muted">Everyone is in.</p>
-          )}
-        </div>
-      </section>
-      <section className="card" aria-labelledby="ppl-joined">
-        <div className="card-head">
-          <h2 id="ppl-joined">Joined this month</h2>
-        </div>
-        <div className="card-body">
-          {joined.length ? (
-            <ul className="stack">
-              {joined.map((e) => (
-                <li key={e.id}>
-                  <Link to={`e/Employee/${e.id}`}>{e.employee_name}</Link> <span className="faint">{[title(e, "department"), e.date_of_joining].filter(Boolean).join(" · ")}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="muted">Nobody new in the last 30 days.</p>
-          )}
-        </div>
-      </section>
-      <section className="card" aria-labelledby="ppl-anniversaries">
-        <div className="card-head">
-          <h2 id="ppl-anniversaries">Work anniversaries</h2>
-        </div>
-        <div className="card-body">
-          {coming.length ? (
-            <ul className="stack">
-              {coming.map((a) => (
-                <li key={a.employee.id}>
-                  {a.employee.employee_name}{" "}
-                  <span className="faint">
-                    {a.years} {a.years === 1 ? "year" : "years"}, {inDaysLabel(a.inDays)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="muted">None in the next two weeks.</p>
-          )}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function Directory() {
-  const [q, setQ] = useState("");
-  const search = useDebounced(q.trim(), 250);
-  const list = useQuery({
-    queryKey: ["people", "directory", search],
-    queryFn: ({ signal }) =>
-      rows<Employee>("Employee", { filters: f([["status", "=", "Active"]]), ...(search ? { search } : {}), sort: "employee_name asc", limit: 60, count: "true", fields: "employee_name,department,designation,company_email,cell_number" }, signal),
-  });
-  return (
-    <div className="stack">
-      <input className="input ppl-search" type="search" placeholder="Search people by name" aria-label="Search people" value={q} onChange={(e) => setQ(e.target.value)} />
-      {list.error ? (
-        <ErrorState error={list.error} onRetry={() => void list.refetch()} />
-      ) : !list.data ? (
-        <Spinner label="Loading people" />
-      ) : !list.data.rows.length ? (
-        <EmptyState title={search ? `Nobody matches “${search}”` : "No one here yet"} icon="user" />
-      ) : (
-        <>
-          <ul className="ppl-directory" data-ferrum-nocard>
-            {list.data.rows.map((e) => (
-              <li key={e.id} className="ppl-person">
-                <span className="ppl-avatar" aria-hidden="true">
-                  {(e.employee_name ?? "?")
-                    .split(/\s+/)
-                    .slice(0, 2)
-                    .map((w) => w[0]?.toUpperCase())
-                    .join("")}
-                </span>
-                <span className="ppl-person-text">
-                  <Link to={`e/Employee/${e.id}`}>{e.employee_name}</Link>
-                  <span className="faint">{[title(e, "designation"), title(e, "department")].filter(Boolean).join(" · ")}</span>
-                  {e.company_email && <a href={`mailto:${e.company_email}`}>{e.company_email}</a>}
-                  {e.cell_number && <a href={`tel:${e.cell_number}`}>{e.cell_number}</a>}
-                </span>
-              </li>
-            ))}
-          </ul>
-          {(list.data.total ?? 0) > list.data.rows.length && <p className="muted">Showing {list.data.rows.length} of {list.data.total}: search to find someone.</p>}
-        </>
       )}
     </div>
   );
 }
 
+function Section({ id, heading, children }: { id: string; heading: string; children: React.ReactNode }) {
+  return (
+    <section className="card" aria-labelledby={id}>
+      <div className="card-head">
+        <h2 id={id}>{heading}</h2>
+      </div>
+      <div className="card-body">{children}</div>
+    </section>
+  );
+}
+
+const Loading = ({ label }: { label: string }) => <Spinner label={label} />;
+
 export function PeopleHome() {
-  useShellTitle("People");
-  const me = useMe().data?.user.email;
-  const meta = useMetaIndex().data;
-  const read = (e: string) => meta?.entities.find((x) => x.name === e)?.permissions.read ?? "none";
-  const everyone = read("Employee") === "all";
-  const mine = useMine(me);
-  const [tab, setTab] = useState<"overview" | "directory">("overview");
+  useShellTitle("My space");
   const qc = useQueryClient();
+  const me = useMe().data;
+  const mine = useMine(me?.user.email);
+  const waiting = useInbox().data?.length ?? 0;
+  const [fixing, setFixing] = useState<string | null | false>(false);
   const refresh = useCallback(() => void qc.invalidateQueries({ queryKey: ["people"] }), [qc]);
   useLiveEntity("LeaveApplication", refresh);
+  useLiveEntity("AttendanceRequest", refresh);
   useLiveEntity("EmployeeCheckin", refresh);
-  if (meta && read("Employee") === "none") {
-    return (
-      <EmptyState title="Nothing here for you yet" icon="user">
-        <p className="muted">Ask an administrator for an HR role, or to link your sign-in to your employee record.</p>
-      </EmptyState>
-    );
-  }
-  const overview = (
-    <div className="stack">
-      {mine.data && <Me employee={mine.data} />}
-      {mine.data === null && !everyone && <p className="muted">Your sign-in is not linked to an employee record yet; HR can link it.</p>}
-      {me && read("LeaveApplication") !== "none" && <Approvals me={me} />}
-      {everyone && <Today />}
-    </div>
-  );
+  useLiveEntity("Attendance", refresh);
+
+  const person = mine.data;
+  const sub = person ? [title(person, "designation"), title(person, "department")].filter(Boolean).join(" · ") : "";
   return (
-    <div className="stack">
-      <div className="page-head">
+    <div className="ppl-page">
+      <header className="ppl-head">
         <div>
-          <h1 className="page-title">People</h1>
-          <p className="page-sub">{everyone ? "Your leave and check-ins, what waits for you, and who is in today." : "Your leave and check-ins."}</p>
+          <Nav />
+          <p className="page-sub">{person ? [person.employee_name, sub].filter(Boolean).join(" · ") : " "}</p>
         </div>
-      </div>
-      {everyone ? (
-        <>
-          <Tabs
-            id="ppl"
-            value={tab}
-            onChange={(v) => setTab(v as "overview" | "directory")}
-            tabs={[
-              { id: "overview", label: "Overview" },
-              { id: "directory", label: "Directory" },
-            ]}
-          />
-          <TabPanel id="ppl" tab={tab}>
-            {tab === "overview" ? overview : <Directory />}
-          </TabPanel>
-        </>
+      </header>
+      {waiting > 0 && (
+        <Link className="ppl-banner" to="/approvals">
+          <strong>{waiting === 1 ? "1 request is" : `${waiting} requests are`} waiting for your decision</strong>
+          <span>Review them</span>
+        </Link>
+      )}
+      {mine.error ? (
+        <ErrorState error={mine.error} onRetry={() => void mine.refetch()} />
+      ) : mine.isLoading || !me ? (
+        <Spinner label="Loading your space" />
+      ) : !person ? (
+        <EmptyState title="Your sign-in is not linked to an employee record" icon="user">
+          <p className="muted">HR can link it. Then your leave, attendance and payslips are here.</p>
+          <Link to="/calendar">See who is away</Link>
+        </EmptyState>
       ) : (
-        overview
+        <div className="ppl-space">
+          <div className="ppl-col">
+            <Section id="ppl-today" heading="Today">
+              <CheckIn employee={person} />
+            </Section>
+            <Section id="ppl-leave" heading="Your leave">
+              <Balances employee={person} />
+            </Section>
+            <Section id="ppl-coming" heading="Coming up">
+              <Coming employee={person} />
+            </Section>
+            <Section id="ppl-requests" heading="Your requests">
+              <Requests employee={person} onFix={() => setFixing(null)} />
+            </Section>
+          </div>
+          <div className="ppl-col">
+            <Suspense fallback={<Loading label="Loading your attendance" />}>
+              <Month employee={person} onFix={(day) => setFixing(day)} />
+              <Pay employee={person} />
+            </Suspense>
+          </div>
+        </div>
+      )}
+      {fixing !== false && person && (
+        <Suspense fallback={null}>
+          <Fix employee={person.id} day={fixing} onClose={() => setFixing(false)} />
+        </Suspense>
       )}
     </div>
   );
