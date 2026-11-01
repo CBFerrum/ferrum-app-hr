@@ -186,3 +186,61 @@
     - {name: final_score, type: decimal, read_only: true, in_list: true, label: Final Score (0-5)}
     - {name: remarks, type: text, perm_group: review}
   list: {columns: [number, employee_name, appraisal_cycle, final_score], sort: created_at desc}
+
+- name: TrainingProgram
+  label: Training Program
+  kind: master
+  module: performance
+  title_field: program_name
+  company_scoped: true
+  fields:
+    - {name: program_name, type: data, label: Name, required: true, unique: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: valid_for_months, type: int, min: 1, in_list: true, description: "How long completing it counts; empty: for good"}
+    - {name: mandatory, type: check, in_list: true, in_filter: true}
+    - {name: description, type: text}
+  list: {columns: [program_name, valid_for_months, mandatory], sort: program_name asc}
+
+- name: TrainingAttendee
+  label: Training Attendee
+  kind: child
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_list: true}
+    - {name: result, type: select, options: [Pending, Passed, Failed, Absent], required: true, default: Pending, in_list: true}
+
+- name: TrainingEvent
+  label: Training Session
+  kind: document
+  submittable: true
+  module: performance
+  title_field: title
+  company_scoped: true
+  numbering: {template: "HR-TRN-{YYYY}-{seq:5}", on: submit}
+  description: "A session of a program. Submitting it records who passed: mark everyone first."
+  fields:
+    - {name: title, type: data, required: true, in_list: true}
+    - {name: program, type: link, to: TrainingProgram, required: true, in_list: true, in_filter: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: held_on, type: date, required: true, in_list: true}
+    - {name: trainer, type: data, in_list: true}
+    - {name: attendees, type: table, of: TrainingAttendee, required: true}
+  list: {columns: [number, title, program, held_on, trainer], sort: held_on desc}
+
+- name: TrainingRecord
+  label: Training Record
+  kind: master
+  module: performance
+  title_field: program_name
+  company_scoped: true
+  owner_fields: [employee_user]
+  description: "What someone has completed, and until when it counts. Sessions make these."
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, read_only: true, in_list: true, in_filter: true, index: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: program, type: link, to: TrainingProgram, required: true, read_only: true, in_filter: true}
+    - {name: program_name, type: data, read_only: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: session, type: link, to: TrainingEvent, read_only: true}
+    - {name: completed_on, type: date, read_only: true, in_list: true}
+    - {name: valid_until, type: date, read_only: true, in_list: true, in_filter: true}
+  list: {columns: [employee, program_name, completed_on, valid_until], sort: completed_on desc}

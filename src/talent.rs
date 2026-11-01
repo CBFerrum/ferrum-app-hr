@@ -15,7 +15,60 @@ pub(crate) fn register(h: &mut HookRegistry) {
         .register("Interview", Arc::new(InterviewHook))
         .register("JobOffer", Arc::new(OfferHook))
         .register("AppraisalTemplate", Arc::new(TemplateHook))
-        .register("Appraisal", Arc::new(AppraisalHook));
+        .register("Appraisal", Arc::new(AppraisalHook))
+        .register("TrainingEvent", Arc::new(TrainingHook));
+}
+
+pub struct TrainingHook;
+
+/// When completing a program on `held` stops counting, for one valid for `months`.
+pub(crate) fn valid_until(held: chrono::NaiveDate, months: Option<i64>) -> Option<chrono::NaiveDate> {
+    months.and_then(|m| held.checked_add_months(chrono::Months::new(u32::try_from(m).ok()?)))
+}
+
+#[async_trait]
+impl DocHook for TrainingHook {
+    async fn validate(&self, _hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let mut seen = HashSet::new();
+        for (i, row) in rows(doc, "attendees").iter().enumerate() {
+            if !seen.insert(id(row, "employee")) {
+                return Err(Error::Validation(vec![FieldError::new("employee", "is on this session twice").in_row("attendees", i)]));
+            }
+        }
+        Ok(())
+    }
+
+    async fn before_submit(&self, _hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        if rows(doc, "attendees").iter().any(|r| s(r, "result").unwrap_or("Pending") == "Pending") {
+            return Err(Error::invalid("mark how everyone did first"));
+        }
+        Ok(())
+    }
+
+    /// What was passed goes on each person's record; cancelling the session takes it off.
+    async fn on_submit(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let sctx = sys(hc.ctx);
+        let program = get(hc.kernel, &sctx, hc.tx, "TrainingProgram", id(doc, "program").unwrap_or_default()).await?;
+        let months = program.get("valid_for_months").and_then(Value::as_i64);
+        let held = s(doc, "held_on").and_then(|d| d.parse().ok());
+        for row in rows(doc, "attendees").iter().filter(|r| s(r, "result") == Some("Passed")) {
+            let record = json!({
+                "employee": row.get("employee"), "program": doc.get("program"), "program_name": program.get("program_name"), "company": doc.get("company"),
+                "session": doc.get("id"), "completed_on": doc.get("held_on"), "valid_until": held.and_then(|h| valid_until(h, months)).map(|d| d.to_string()),
+            });
+            hc.kernel.insert_tx(&sctx, hc.tx, "TrainingRecord", record.as_object().cloned().unwrap_or_default()).await?;
+        }
+        Ok(())
+    }
+
+    async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        sqlx::query("delete from e_training_record where tenant_id = $1 and session = $2")
+            .bind(hc.ctx.tenant)
+            .bind(id(doc, "id"))
+            .execute(&mut **hc.tx)
+            .await?;
+        Ok(())
+    }
 }
 
 /// Maintenance: openings past their closing date close.
@@ -256,5 +309,18 @@ impl DocHook for AppraisalHook {
             .map(|(i, _)| FieldError::new("manager_score", "score every goal before submitting").in_row("goals", i))
             .collect();
         if missing.is_empty() { Ok(()) } else { Err(Error::Validation(missing)) }
+    }
+}
+
+#[cfg(test)]
+mod training_tests {
+    use super::valid_until;
+
+    #[test]
+    fn what_counts_until_when() {
+        let d = |s: &str| s.parse::<chrono::NaiveDate>().unwrap();
+        assert_eq!(valid_until(d("2026-01-31"), Some(1)), Some(d("2026-02-28")));
+        assert_eq!(valid_until(d("2026-01-31"), Some(12)), Some(d("2027-01-31")));
+        assert_eq!(valid_until(d("2026-01-31"), None), None, "for good");
     }
 }

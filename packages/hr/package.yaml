@@ -32,7 +32,7 @@ modules:
     label: Performance
     icon: target
     order: 74
-    items: [Appraisal, AppraisalCycle, AppraisalTemplate]
+    items: [Appraisal, AppraisalCycle, AppraisalTemplate, TrainingProgram, TrainingEvent, TrainingRecord]
 
 workflows:
   - name: Leave Approval
@@ -70,6 +70,9 @@ roles:
   - name: HR Manager
     description: Everything in HR, including bank and identity details.
     permissions:
+      - {entity: TrainingProgram, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: TrainingEvent, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: TrainingRecord, read: true, export: true}
       - {entity: Employee, read: true, write: true, create: true, delete: true, export: true, import: true, read_groups: [bank, identity], write_groups: [bank, identity]}
       - {entity: Department, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Designation, read: true, write: true, create: true, delete: true, export: true, import: true}
@@ -147,6 +150,8 @@ roles:
       - {entity: EmployeePromotion, read: true, if_owner: true}
       - {entity: EmployeeTransfer, read: true, if_owner: true}
       - {entity: EmployeeSeparation, read: true, if_owner: true}
+      - {entity: TrainingRecord, read: true, if_owner: true}
+      - {entity: TrainingProgram, read: true}
       - {entity: LeaveType, read: true}
       - {entity: HolidayList, read: true}
       - {entity: ShiftType, read: true}
