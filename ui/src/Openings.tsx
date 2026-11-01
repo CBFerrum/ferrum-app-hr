@@ -53,7 +53,7 @@ function Form({ slug, opening, onSent }: { slug: string; opening: Opening; onSen
       <h2 id="apply-title" className="ppl-sub">
         Apply for this role
       </h2>
-      {send.error && !(send.error instanceof ApiError && send.error.fields.length) && <Alert tone="error">{errorMessage(send.error)}</Alert>}
+      {send.error && !(send.error instanceof ApiError && send.error.fields.length && send.error.fields.every((f) => f.field in EMPTY)) && <Alert tone="error">{errorMessage(send.error)}</Alert>}
       <Field label="Your name" htmlFor="apply-name" required error={field("name")}>
         <input id="apply-name" className="input" autoComplete="name" maxLength={LIMITS.name} value={a.name} onChange={set("name")} aria-invalid={field("name") ? true : undefined} />
       </Field>

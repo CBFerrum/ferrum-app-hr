@@ -870,10 +870,16 @@ async fn site_scenario() {
         (applicant["applicant_name"].clone(), applicant["email_id"].clone(), applicant["source"].clone(), applicant["status"].clone()),
         (json!("Asha Rao"), json!("asha.rao@example.com"), json!("Website Listing"), json!("Open"))
     );
-    assert!(matches!(call(&t, None, "POST", &apply, &[], form.clone()).await, Err(Error::Conflict(_))), "once for each opening");
+    // Once for each opening, in whatever case; the second time is thanked and says nothing about the first.
+    assert_eq!(call(&t, None, "POST", &apply, &[], form.clone()).await.expect("again")["received"], json!(true));
     let mut shouty = form.clone();
     shouty["email"] = json!("ASHA.RAO@EXAMPLE.COM");
-    assert!(matches!(call(&t, None, "POST", &apply, &[], shouty).await, Err(Error::Conflict(_))), "whatever the case");
+    assert_eq!(call(&t, None, "POST", &apply, &[], shouty).await.expect("shouting")["received"], json!(true));
+    assert_eq!(t.list(&t.admin, "JobApplicant", json!({"job_opening": open["id"]})).await.len(), 1);
+    let mut phone = form.clone();
+    phone["email"] = json!("pia@example.com");
+    phone["phone"] = json!("call me");
+    refused(call(&t, None, "POST", &apply, &[], phone).await, "phone: ");
     let mut bad = form.clone();
     bad["email"] = json!("not an address");
     refused(call(&t, None, "POST", &apply, &[], bad).await, "email");
