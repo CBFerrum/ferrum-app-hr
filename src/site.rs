@@ -14,7 +14,7 @@ use crate::opt_date;
 use async_trait::async_trait;
 use chrono::{NaiveDate, NaiveDateTime};
 use ferrum_domain::util::{b, d, id, money, rows, s, set, sys};
-use ferrum_kernel::{Access, Action, Ctx, Doc, Error, Filter, Kernel, ListQuery, Result, Site, SiteRequest, SiteResponse, Tx, with_retry};
+use ferrum_kernel::{Access, Action, Ctx, Doc, Error, FieldError, Filter, Kernel, ListQuery, Result, Site, SiteRequest, SiteResponse, Tx, with_retry};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -587,6 +587,16 @@ fn clean_link(raw: &str) -> Option<String> {
         .then(|| l.to_string())
 }
 
+/// The application form's name for a field of the applicant record.
+fn form_field(name: &str) -> &str {
+    match name {
+        "applicant_name" => "name",
+        "email_id" => "email",
+        "phone_number" => "phone",
+        other => other,
+    }
+}
+
 /// `POST careers/{opening}/apply`: an application for a published opening, from anyone. It keeps
 /// the person's name, address, phone, a link to their CV and a few words; the recruiters take it
 /// from there, as with any applicant. The same address applies to an opening once.
@@ -626,8 +636,9 @@ async fn apply(k: &Kernel, req: &SiteRequest, open: Uuid) -> Result<Value> {
                 .bind(&email)
                 .fetch_one(&mut *tx)
                 .await?;
+        // A second application from the same address is thanked and not kept twice, and does not say that the address applied before.
         if again {
-            return Err(Error::Conflict("you have already applied for this opening; we have your application".into()));
+            return Ok(json!({"received": true}));
         }
         let mut a = Doc::new();
         set(&mut a, "applicant_name", name.clone());
@@ -637,7 +648,14 @@ async fn apply(k: &Kernel, req: &SiteRequest, open: Uuid) -> Result<Value> {
         set(&mut a, "source", "Website Listing");
         set(&mut a, "cover_letter", letter.clone().map(Value::String).unwrap_or_default());
         set(&mut a, "resume_link", link.clone().map(Value::String).unwrap_or_default());
-        k.insert_tx(&sctx, &mut tx, "JobApplicant", a).await?;
+        match k.insert_tx(&sctx, &mut tx, "JobApplicant", a).await {
+            Ok(_) => {}
+            // What is wrong is told in the form's own names for its fields.
+            Err(Error::Validation(found)) => {
+                return Err(Error::Validation(found.into_iter().map(|e| FieldError::new(form_field(&e.field), e.message)).collect()));
+            }
+            Err(e) => return Err(e),
+        }
         tx.commit().await?;
         Ok(json!({"received": true}))
     })
@@ -650,6 +668,8 @@ mod tests {
 
     #[test]
     fn applicants_are_taken_at_their_word_but_not_blindly() {
+        assert_eq!(form_field("email_id"), "email");
+        assert_eq!(form_field("job_opening"), "job_opening");
         assert_eq!(clean_email("  Asha.Rao@Example.com "), Some("asha.rao@example.com".into()));
         for bad in ["asha", "asha@", "@example.com", "a@b", "a b@example.com", "a@@example.com", "a@example.", "a@.example.com"] {
             assert_eq!(clean_email(bad), None, "{bad}");
