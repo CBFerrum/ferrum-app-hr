@@ -74,3 +74,7 @@ seed:
       - {component_name: Leave Encashment, abbr: LE, component_type: Earning, depends_on_payment_days: false, is_tax_applicable: true, description: Paid through leave encashments}
       - {component_name: Provident Fund, abbr: PF, component_type: Deduction, amount_based_on_formula: true, formula: "min(BS, 15000) * 0.12", depends_on_payment_days: true, exempted_from_income_tax: true, description: Example - 12% of basic capped at 15000}
       - {component_name: Income Tax, abbr: IT, component_type: Deduction, variable_based_on_taxable_salary: true, depends_on_payment_days: false, description: Computed from the employee's income tax slab}
+personal_data:
+  - {entity: SalarySlip, match: employee_user, retain: "Payroll and tax records"}
+  - {entity: EmployeeTaxExemptionDeclaration, match: employee_user, retain: "Payroll and tax records"}
+  - {entity: LeaveEncashment, match: employee_user, retain: "Payroll and tax records"}

@@ -55,6 +55,17 @@ workflows:
 personal_data:
   - {entity: Employee, match: personal_email, erase: [personal_email, cell_number, current_address, permanent_address, date_of_birth, emergency_contact_name, emergency_phone, emergency_relation, bank_name, bank_account_no, ifsc_code, iban]}
   - {entity: JobApplicant, match: email_id, erase: [applicant_name, email_id, phone_number]}
+  - {entity: JobOffer, match: applicant_email, erase: [applicant_name, applicant_email]}
+  - {entity: Attendance, match: employee_user, retain: "Employment records"}
+  - {entity: EmployeeCheckin, match: employee_user, retain: "Employment records"}
+  - {entity: ShiftAssignment, match: employee_user, retain: "Employment records"}
+  - {entity: LeaveAllocation, match: employee_user, retain: "Employment records"}
+  - {entity: LeaveApplication, match: employee_user, retain: "Employment records"}
+  - {entity: LeaveLedgerEntry, match: employee_user, retain: "Employment records"}
+  - {entity: EmployeeSeparation, match: employee_user, retain: "Employment records"}
+  - {entity: EmployeePromotion, match: employee_user, retain: "Employment records"}
+  - {entity: EmployeeTransfer, match: employee_user, retain: "Employment records"}
+  - {entity: Appraisal, match: employee_user, retain: "Employment records"}
 roles:
   - name: HR Manager
     description: Everything in HR, including bank and identity details.
