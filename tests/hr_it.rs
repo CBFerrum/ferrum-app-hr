@@ -802,8 +802,10 @@ async fn site_scenario() {
     let work = call(&t, Some(&boss), "GET", "work", &[], Value::Null).await.expect("work");
     assert_eq!(work["items"].as_array().unwrap().len(), 3);
     assert_eq!(work["items"][0]["url"], json!("/people/approvals"));
-    // A decision takes the request off the page.
-    t.trans(&boss, "LeaveApplication", uid(&eshas), "Approve").await.expect("approve");
+    // A decision, on the version the page showed, takes the request off the page; on an older one it is refused.
+    assert!(items.iter().all(|i| i["version"].as_i64().is_some()), "every card carries the version it was read at");
+    refused(t.k.transition(&boss, "LeaveApplication", uid(&eshas), "Approve", l["version"].as_i64().map(|v| v - 1)).await, "changed");
+    t.k.transition(&boss, "LeaveApplication", uid(&eshas), "Approve", l["version"].as_i64()).await.expect("approve");
     let after = call(&t, Some(&boss), "GET", "inbox", &[], Value::Null).await.unwrap();
     assert_eq!(after["items"].as_array().unwrap().len(), 2);
 
