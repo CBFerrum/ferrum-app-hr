@@ -584,7 +584,9 @@ static ACCRUED_FOR: Mutex<BTreeMap<(Uuid, Uuid), (NaiveDate, i64)>> = Mutex::new
 /// again on the next round.
 pub(crate) async fn accrue_leaves(k: &Kernel, ctx: &Ctx) -> Result<()> {
     let Some(ent) = ctx.schema.entity("LeaveAllocation").cloned() else { return Ok(()) };
-    if ctx.schema.entity("LeavePolicy").is_none() {
+    // A workspace that has not taken the upgrade that brought accrual has nothing to accrue.
+    let has = |entity: &str, field: &str| ctx.schema.entity(entity).is_some_and(|e| e.field(field).is_some());
+    if !has("Employee", "leave_policy") || !has("LeavePolicyDetail", "accrual") {
         return Ok(());
     }
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
