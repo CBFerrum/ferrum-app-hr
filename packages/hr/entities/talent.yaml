@@ -28,6 +28,7 @@
 - name: JobApplicant
   label: Job Applicant
   kind: master
+  internal: true
   reference: restricted
   module: recruitment
   title_field: applicant_name
@@ -86,6 +87,7 @@
 - name: JobOffer
   label: Job Offer
   kind: document
+  internal: true
   reference: restricted
   module: recruitment
   submittable: true
@@ -163,6 +165,7 @@
 - name: Appraisal
   label: Appraisal
   kind: document
+  internal: true
   reference: restricted
   module: performance
   submittable: true
