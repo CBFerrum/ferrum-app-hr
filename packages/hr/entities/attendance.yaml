@@ -121,6 +121,7 @@
     - {name: status, type: select, options: [Present, Absent, Half Day, On Leave, Work From Home], default: Present, required: true, in_list: true, in_filter: true}
     - {name: leave_type, type: link, to: LeaveType, required_if: "doc.status == 'On Leave'", visible_if: "doc.status == 'On Leave' || doc.status == 'Half Day'"}
     - {name: leave_application, type: link, to: LeaveApplication, read_only: true}
+    - {name: attendance_request, type: link, to: AttendanceRequest, read_only: true}
     - {name: shift, type: link, to: ShiftType}
     - {name: in_time, type: datetime}
     - {name: out_time, type: datetime}
@@ -129,6 +130,40 @@
     - {name: early_exit, type: check}
     - {name: remarks, type: text}
   list: {columns: [number, employee_name, attendance_date, status], sort: attendance_date desc}
+
+- name: AttendanceRequest
+  label: Attendance Request
+  kind: document
+  module: attendance
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-ATR-{YYYY}-{seq:5}", date_field: from_date}
+  description: A missed check-in put right, or days worked from home or away on duty. Approved through the Attendance Request Approval workflow by the approver (or an HR manager); the decision marks the attendance.
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: department, type: link, to: Department, fetch_from: employee.department, read_only: true, in_filter: true}
+    - {name: reason, type: select, options: [Missed Check-in, Work From Home, On Duty], default: Missed Check-in, required: true, in_list: true, in_filter: true}
+    - {name: from_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: to_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: half_day, type: check}
+    - {name: half_day_date, type: date, visible_if: "doc.half_day", description: Defaults to the from date}
+    - {name: in_time, type: data, max_length: 5, label: Came In At, description: "HH:MM, for a single day"}
+    - {name: out_time, type: data, max_length: 5, label: Left At, description: "HH:MM, for a single day"}
+    - {name: explanation, type: text, required: true, label: What Happened}
+    - {name: approver, type: email, in_filter: true, description: "Defaults to the employee's leave approver, else the user of the employee they report to"}
+    - {name: posting_date, type: date, required: true, default_expr: today}
+    - {name: status, type: select, options: [Open, Approved, Rejected, Cancelled], default: Open, read_only: true, no_copy: true, in_list: true, in_filter: true}
+  rules:
+    - {name: ordered_dates, check: "doc.from_date == null || doc.to_date == null || doc.to_date >= doc.from_date", message: "To date must not be before from date"}
+    - {name: half_day_in_range, check: "!doc.half_day || doc.half_day_date == null || (doc.half_day_date >= doc.from_date && doc.half_day_date <= doc.to_date)", message: "The half day must fall within the dates"}
+    - {name: in_format, check: "doc.in_time == null || doc.in_time == '' || doc.in_time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')", message: "Came in at must look like 09:00"}
+    - {name: out_format, check: "doc.out_time == null || doc.out_time == '' || doc.out_time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')", message: "Left at must look like 18:00"}
+  list: {columns: [number, employee_name, reason, from_date, to_date, status], sort: from_date desc}
 
 - name: LeaveType
   label: Leave Type

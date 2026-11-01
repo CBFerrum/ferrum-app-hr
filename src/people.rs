@@ -14,6 +14,7 @@ use uuid::Uuid;
 pub(crate) const OWNED: &[&str] = &[
     "EmployeeCheckin",
     "Attendance",
+    "AttendanceRequest",
     "ShiftAssignment",
     "LeaveAllocation",
     "LeaveApplication",

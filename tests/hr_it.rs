@@ -66,6 +66,11 @@ fn attendance_from_checkins() {
 }
 
 #[test]
+fn attendance_requests() {
+    run(attendance_request_scenario());
+}
+
+#[test]
 fn expense_claims_and_advances() {
     run(expense_scenario());
 }
@@ -489,6 +494,111 @@ async fn leave_scenario() {
     assert_eq!((first["created"].clone(), first["skipped"].clone()), (json!(4), json!(0)));
     let again = t.act(&hr, "LeavePolicy", uid(&policy), "assign_allocations", params).await;
     assert_eq!((again["created"].clone(), again["skipped"].clone()), (json!(0), json!(4)));
+}
+
+// ───────────────────────────── attendance requests ─────────────────────────────
+
+/// A missed check-in put right, and days worked from home: asked for by the employee, decided by
+/// their approver, and written to attendance by the decision.
+async fn attendance_request_scenario() {
+    let t = T::new("hrareq").await;
+    let hr = t.user("hr@hrareq.test", &["HR Manager"]).await;
+    let boss = t.user("boss@hrareq.test", &["Employee", "Leave Approver"]).await;
+    let other = t.user("other@hrareq.test", &["Employee", "Leave Approver"]).await;
+    let me = t.user("me@hrareq.test", &["Employee"]).await;
+    let m = t.employee("Maya", json!({"user": "boss@hrareq.test"})).await;
+    let e = t.employee("Esha", json!({"user": "me@hrareq.test", "reports_to": m["id"]})).await;
+    let (eid, mid) = (uid(&e), uid(&m));
+    let ask = |reason: &str, from: &str, to: &str| json!({"employee": eid.to_string(), "reason": reason, "from_date": from, "to_date": to, "explanation": "Forgot to punch"});
+
+    // Tuesday 6 October was marked absent for want of a check-in; she asks for it to be put right.
+    t.ins_submit(&hr, "Attendance", json!({"employee": eid.to_string(), "attendance_date": "2026-10-06", "status": "Absent", "remarks": "No check-in"})).await;
+    let mut fix = ask("Missed Check-in", "2026-10-06", "2026-10-06");
+    fix["in_time"] = json!("09:05");
+    fix["out_time"] = json!("18:10");
+    let r1 = t.ins(&me, "AttendanceRequest", fix).await;
+    assert_eq!(
+        (r1["status"].clone(), r1["approver"].clone(), r1["employee_user"].clone()),
+        (json!("Open"), json!("boss@hrareq.test"), json!("me@hrareq.test"))
+    );
+    let told = t.scalar_i64("select count(*) from notification where tenant_id = $1 and user_id = $2", boss.user).await;
+    assert!(told >= 1, "the approver is told");
+    // Employees cannot pick their approver, or ask for a colleague.
+    let mut pick = ask("Work From Home", "2026-10-07", "2026-10-07");
+    pick["approver"] = json!("other@hrareq.test");
+    let picked = t.ins(&me, "AttendanceRequest", pick).await;
+    assert_eq!(picked["approver"], json!("boss@hrareq.test"));
+    t.k.delete(&me, "AttendanceRequest", uid(&picked), None).await.expect("withdraw a request");
+    let mut colleague = ask("Work From Home", "2026-10-07", "2026-10-07");
+    colleague["employee"] = json!(mid.to_string());
+    forbidden(t.try_ins(&me, "AttendanceRequest", colleague).await);
+
+    // What cannot be asked for.
+    refused(t.try_ins(&me, "AttendanceRequest", ask("Missed Check-in", "2099-01-05", "2099-01-05")).await, "future");
+    refused(t.try_ins(&me, "AttendanceRequest", ask("Work From Home", "2026-10-03", "2026-10-04")).await, "holiday or weekly off");
+    refused(t.try_ins(&me, "AttendanceRequest", ask("Work From Home", "2026-08-01", "2026-09-30")).await, "at most 31 days");
+    refused(t.try_ins(&me, "AttendanceRequest", ask("Missed Check-in", "2026-10-06", "2026-10-06")).await, "already asked");
+    let mut timed = ask("Work From Home", "2026-10-07", "2026-10-08");
+    timed["in_time"] = json!("09:00");
+    refused(t.try_ins(&me, "AttendanceRequest", timed).await, "single day");
+    let mut backwards = ask("Missed Check-in", "2026-10-07", "2026-10-07");
+    backwards["in_time"] = json!("18:00");
+    backwards["out_time"] = json!("09:00");
+    refused(t.try_ins(&me, "AttendanceRequest", backwards).await, "after the time came in");
+    let mut sloppy = ask("Missed Check-in", "2026-10-07", "2026-10-07");
+    sloppy["in_time"] = json!("9am");
+    refused(t.try_ins(&me, "AttendanceRequest", sloppy).await, "09:00");
+    let casual = t.one("LeaveType", json!({"leave_type_name": "Casual Leave"})).await["id"].as_str().unwrap().to_string();
+    t.ins_submit(
+        &hr,
+        "LeaveAllocation",
+        json!({"employee": eid.to_string(), "leave_type": casual, "from_date": "2026-01-01", "to_date": "2026-12-31", "new_leaves_allocated": "5"}),
+    )
+    .await;
+    let leave =
+        t.ins(&me, "LeaveApplication", json!({"employee": eid.to_string(), "leave_type": casual, "from_date": "2026-10-08", "to_date": "2026-10-08"})).await;
+    t.trans(&boss, "LeaveApplication", uid(&leave), "Approve").await.expect("approve leave");
+    refused(t.try_ins(&me, "AttendanceRequest", ask("Work From Home", "2026-10-08", "2026-10-09")).await, "is on leave");
+
+    // Only the approver (or an HR manager) decides.
+    forbidden(t.trans(&me, "AttendanceRequest", uid(&r1), "Approve").await);
+    forbidden(t.trans(&other, "AttendanceRequest", uid(&r1), "Approve").await);
+    let done = t.trans(&boss, "AttendanceRequest", uid(&r1), "Approve").await.expect("approve");
+    assert_eq!(done["workflow_state"], json!("Approved"));
+    assert_eq!(t.get("AttendanceRequest", uid(&r1)).await["status"], json!("Approved"));
+    let day = t.list(&t.admin, "Attendance", json!({"employee": eid.to_string(), "attendance_date": "2026-10-06"})).await;
+    let live: Vec<&Doc> = day.iter().filter(|a| a["docstatus"].as_i64() == Some(1)).collect();
+    assert_eq!(live.len(), 1, "one live mark for the day: {day:?}");
+    assert_eq!((live[0]["status"].clone(), live[0]["attendance_request"].clone()), (json!("Present"), r1["id"].clone()));
+    assert_eq!(dec(&live[0]["working_hours"]), n("9.08"), "09:05 to 18:10");
+    assert!(!live[0]["in_time"].is_null() && !live[0]["out_time"].is_null());
+    assert!(day.iter().any(|a| a["docstatus"].as_i64() == Some(2) && a["status"] == json!("Absent")), "the absent mark was cancelled, not kept beside it");
+    assert!(t.scalar_i64("select count(*) from notification where tenant_id = $1 and user_id = $2", me.user).await >= 1, "the employee is told");
+
+    // A week at home: the weekend is off.
+    let wfh = t.ins(&me, "AttendanceRequest", ask("Work From Home", "2026-10-12", "2026-10-18")).await;
+    t.trans(&boss, "AttendanceRequest", uid(&wfh), "Approve").await.expect("approve a week at home");
+    let week = t.list(&t.admin, "Attendance", json!({"employee": eid.to_string(), "attendance_request": wfh["id"], "docstatus": 1})).await;
+    let mut dates: Vec<&str> = week.iter().map(|a| a["attendance_date"].as_str().unwrap()).collect();
+    dates.sort();
+    assert_eq!(dates, ["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16"]);
+    assert!(week.iter().all(|a| a["status"] == json!("Work From Home")));
+    // Cancelling it takes the marks off.
+    t.trans(&boss, "AttendanceRequest", uid(&wfh), "Cancel").await.expect("cancel");
+    assert_eq!(t.get("AttendanceRequest", uid(&wfh)).await["status"], json!("Cancelled"));
+    assert!(t.list(&t.admin, "Attendance", json!({"employee": eid.to_string(), "attendance_request": wfh["id"], "docstatus": 1})).await.is_empty());
+
+    // A half day; a refusal marks nothing and does not stand in the way of asking again.
+    let mut half = ask("Missed Check-in", "2026-10-21", "2026-10-21");
+    half["half_day"] = json!(true);
+    let half = t.ins(&me, "AttendanceRequest", half).await;
+    t.trans(&boss, "AttendanceRequest", uid(&half), "Approve").await.expect("approve half day");
+    assert_eq!(t.one("Attendance", json!({"employee": eid.to_string(), "attendance_date": "2026-10-21", "docstatus": 1})).await["status"], json!("Half Day"));
+    let no = t.ins(&me, "AttendanceRequest", ask("On Duty", "2026-10-20", "2026-10-20")).await;
+    t.trans(&boss, "AttendanceRequest", uid(&no), "Reject").await.expect("reject");
+    assert_eq!(t.get("AttendanceRequest", uid(&no)).await["status"], json!("Rejected"));
+    assert!(t.list(&t.admin, "Attendance", json!({"employee": eid.to_string(), "attendance_date": "2026-10-20"})).await.is_empty());
+    t.ins(&me, "AttendanceRequest", ask("On Duty", "2026-10-20", "2026-10-20")).await;
 }
 
 // ───────────────────────────── attendance ─────────────────────────────
