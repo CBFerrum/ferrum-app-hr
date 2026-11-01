@@ -21,6 +21,7 @@ pub(crate) const OWNED: &[&str] = &[
     "ExpenseClaim",
     "EmployeeAdvance",
     "Appraisal",
+    "TrainingRecord",
     "EmployeePromotion",
     "EmployeeTransfer",
     "EmployeeSeparation",

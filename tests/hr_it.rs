@@ -1139,4 +1139,26 @@ async fn talent_scenario() {
     let ev = t.report(&hr, "employee_events", &[("from_date", "2026-10-29"), ("days", "30")]).await.expect("events");
     let b = row(&ev, "event", "Birthday");
     assert_eq!((b["date"].clone(), b["years"].clone()), (json!("2026-11-05"), json!(36)));
+
+    // ───────────── training ─────────────
+    let asha = t.employee("Training Asha", json!({})).await;
+    let ravi = t.employee("Training Ravi", json!({})).await;
+    let program = t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c(), "valid_for_months": 12, "mandatory": true})).await;
+    let session = t
+        .ins(
+            &t.admin,
+            "TrainingEvent",
+            json!({"title": "Fire safety, March", "program": program["id"], "company": t.c(), "held_on": "2026-03-31",
+                   "attendees": [{"employee": asha["id"], "result": "Passed"}, {"employee": ravi["id"]}]}),
+        )
+        .await;
+    assert!(t.k.submit(&t.admin, "TrainingEvent", uid(&session), None).await.is_err(), "everyone has to be marked first");
+    let marks = json!({"attendees": [{"employee": asha["id"], "result": "Passed"}, {"employee": ravi["id"], "result": "Failed"}]});
+    t.k.update(&t.admin, "TrainingEvent", uid(&session), marks.as_object().cloned().unwrap(), None).await.expect("marked");
+    t.submit(&t.admin, "TrainingEvent", uid(&session)).await;
+    let records = t.list(&t.admin, "TrainingRecord", json!({"program": program["id"]})).await;
+    assert_eq!(records.len(), 1, "who passed: {records:?}");
+    assert_eq!((records[0]["employee"].clone(), records[0]["valid_until"].as_str()), (asha["id"].clone(), Some("2027-03-31")));
+    t.k.cancel(&t.admin, "TrainingEvent", uid(&session), None).await.expect("cancelled");
+    assert!(t.list(&t.admin, "TrainingRecord", json!({"program": program["id"]})).await.is_empty(), "cancelling it takes it off");
 }
