@@ -157,6 +157,7 @@
 - name: EmployeeSeparation
   label: Employee Separation
   kind: document
+  reference: restricted
   module: hr
   company_scoped: true
   title_field: employee_name

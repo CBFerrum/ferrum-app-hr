@@ -185,3 +185,7 @@ seed:
       - {leave_type_name: Sick Leave, max_leaves_allowed: 12}
       - {leave_type_name: Privilege Leave, max_leaves_allowed: 18, applicable_after: 90, is_carry_forward: true, maximum_carry_forwarded_leaves: 30, allow_encashment: true, encashment_threshold_days: 10}
       - {leave_type_name: Leave Without Pay, is_lwp: true}
+handover:
+  - {entity: Employee, field: leave_approver}
+  - {entity: Employee, field: expense_approver}
+  - {entity: LeaveApplication, field: leave_approver, where: {status: Open}}
