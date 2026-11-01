@@ -14,6 +14,7 @@ mod leave;
 mod payroll;
 mod people;
 mod reports;
+mod site;
 mod talent;
 
 use chrono::NaiveDate;
@@ -39,6 +40,7 @@ pub fn register(h: &mut HookRegistry) {
     expense::register(h);
     talent::register(h);
     payroll::register(h);
+    h.add_site("hr", Arc::new(site::HrSite));
 }
 
 /// This package's reports.

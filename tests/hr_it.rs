@@ -76,6 +76,11 @@ fn leave_accrual() {
 }
 
 #[test]
+fn approvals_calendar_directory_and_careers() {
+    run(site_scenario());
+}
+
+#[test]
 fn expense_claims_and_advances() {
     run(expense_scenario());
 }
@@ -699,6 +704,188 @@ async fn accrual_scenario() {
     );
     ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("maintenance again");
     assert_eq!(t.list(&t.admin, "LeaveAllocation", json!({"employee": ann["id"], "leave_type": casual, "from_date": format!("{year}-01-01")})).await.len(), 1);
+}
+
+// ───────────────────────────── the screens' endpoints ─────────────────────────────
+
+/// A call to HR's endpoints as `who` (`/api/app/hr/{path}`), or as the public (`/api/site/{workspace}/hr/{path}`).
+async fn call(t: &T, who: Option<&Ctx>, method: &str, path: &str, query: &[(&str, &str)], body: Value) -> ferrum_kernel::Result<Value> {
+    let site = t.k.hooks.site("hr").expect("HR's endpoints").clone();
+    let req = ferrum_kernel::SiteRequest {
+        tenant: t.tenant,
+        user: who.cloned(),
+        method: method.into(),
+        path: format!("/{path}"),
+        query: query.iter().map(|(k, v)| (k.to_string(), json!(v))).collect(),
+        headers: Default::default(),
+        body: if body.is_null() { vec![] } else { body.to_string().into_bytes() },
+        client_ip: "203.0.113.7".into(),
+    };
+    let r = site.handle(&t.k, req).await?;
+    Ok(serde_json::from_slice(&r.body).unwrap())
+}
+
+/// What a manager's approvals page and a team's calendar are drawn from: the requests routed to
+/// the manager, with what a decision needs beside each; who is away, and when; the directory, with
+/// what each person may see; and the careers page anyone may open.
+async fn site_scenario() {
+    let t = T::new("hrsite").await;
+    let hr = t.user("hr@hrsite.test", &["HR Manager"]).await;
+    let boss = t.user("boss@hrsite.test", &["Employee", "Leave Approver", "Expense Approver"]).await;
+    let me = t.user("me@hrsite.test", &["Employee"]).await;
+    let omar_user = t.user("omar@hrsite.test", &["Employee"]).await;
+    let support = t.ins(&hr, "Department", json!({"department_name": "Support", "company": t.c()})).await;
+    let team = json!({"department": support["id"], "company": t.c()});
+    let with = |extra: Value| {
+        let mut v = obj(team.clone());
+        v.extend(obj(extra));
+        Value::Object(v)
+    };
+    let m = t.employee("Maya", with(json!({"user": "boss@hrsite.test"}))).await;
+    let e = t.employee("Esha", with(json!({"user": "me@hrsite.test", "reports_to": m["id"]}))).await;
+    let o = t
+        .employee("Omar", with(json!({"user": "omar@hrsite.test", "reports_to": m["id"], "cell_number": "+919845012345", "company_email": "omar@work.test"})))
+        .await;
+    t.employee("Neel", with(json!({"reports_to": m["id"]}))).await;
+    t.employee("Zed", json!({})).await;
+    let casual = t.one("LeaveType", json!({"leave_type_name": "Casual Leave"})).await["id"].as_str().unwrap().to_string();
+    for emp in [&e, &o] {
+        t.ins_submit(
+            &hr,
+            "LeaveAllocation",
+            json!({"employee": emp["id"], "leave_type": casual, "from_date": "2026-01-01", "to_date": "2026-12-31", "new_leaves_allocated": "10"}),
+        )
+        .await;
+    }
+    let leave =
+        |emp: &Doc, from: &str, to: &str| json!({"employee": emp["id"], "leave_type": casual, "from_date": from, "to_date": to, "reason": "Family wedding"});
+    // Omar will be off on the 13th; Esha asks for the 12th to the 14th, and for a day at home.
+    let omars = t.ins(&omar_user, "LeaveApplication", leave(&o, "2026-10-13", "2026-10-13")).await;
+    t.trans(&boss, "LeaveApplication", uid(&omars), "Approve").await.expect("approve Omar's leave");
+    let eshas = t.ins(&me, "LeaveApplication", leave(&e, "2026-10-12", "2026-10-14")).await;
+    t.ins(&hr, "EmployeeCheckin", json!({"employee": e["id"], "log_type": "IN", "log_time": "2026-10-15T09:40:00+05:30"})).await;
+    let wfh = t
+        .ins(&me, "AttendanceRequest", json!({"employee": e["id"], "reason": "Missed Check-in", "from_date": "2026-10-15", "to_date": "2026-10-15", "explanation": "Left without punching out"}))
+        .await;
+    let travel = t.one("ExpenseClaimType", json!({"expense_type": "Travel"})).await;
+    let claim = t
+        .ins(&me, "ExpenseClaim", json!({"employee": e["id"], "posting_date": "2026-10-16", "expenses": [{"expense_date": "2026-10-15", "expense_type": travel["id"], "amount": "1200", "description": "Cab to the client"}]}))
+        .await;
+
+    // The manager's page: all three, oldest first, with what a decision needs.
+    let inbox = call(&t, Some(&boss), "GET", "inbox", &[], Value::Null).await.expect("inbox");
+    let items = inbox["items"].as_array().unwrap();
+    let kinds: Vec<&str> = items.iter().map(|i| i["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds.len(), 3, "{inbox}");
+    for kind in ["leave", "attendance", "expense"] {
+        assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
+    }
+    let waiting: Vec<&str> = items.iter().map(|i| i["waiting_since"].as_str().unwrap()).collect();
+    assert!(waiting.windows(2).all(|w| w[0] <= w[1]), "oldest first: {waiting:?}");
+    let pick = |kind: &str| items.iter().find(|i| i["kind"] == json!(kind)).unwrap();
+    let l = pick("leave");
+    assert_eq!((l["id"].clone(), l["employee"]["name"].clone(), l["reason"].clone()), (eshas["id"].clone(), json!("Esha Test"), json!("Family wedding")));
+    assert_eq!((l["summary"]["leave_type"].clone(), dec(&l["summary"]["days"])), (json!("Casual Leave"), n("3")));
+    assert_eq!((dec(&l["context"]["balance_before"]), dec(&l["context"]["balance_after"])), (n("10"), n("7")), "what is left once it is granted");
+    let team_away = &l["context"]["team"];
+    assert_eq!((team_away["label"].clone(), team_away["size"].clone(), team_away["away_count"].clone()), (json!("Support"), json!(4), json!(1)), "{team_away}");
+    assert_eq!(team_away["away"][0]["name"], json!("Omar Test"));
+    let a = pick("attendance");
+    assert_eq!((a["id"].clone(), a["summary"]["reason"].clone()), (wfh["id"].clone(), json!("Missed Check-in")));
+    assert_eq!(a["context"]["punches"][0]["at"], json!("2026-10-15T09:40"), "the punch, on the clock the tenant keeps");
+    let x = pick("expense");
+    assert_eq!((x["id"].clone(), x["summary"]["lines"][0]["type"].clone(), dec(&x["summary"]["claimed"])), (claim["id"].clone(), json!("Travel"), n("1200")));
+    // Each is the approver's alone to see; nothing is waiting for the one who asked, and the page is for signed-in people.
+    assert!(call(&t, Some(&me), "GET", "inbox", &[], Value::Null).await.unwrap()["items"].as_array().unwrap().is_empty());
+    assert!(matches!(call(&t, None, "GET", "inbox", &[], Value::Null).await, Err(Error::Unauthorized(_))));
+    // Home's My work lists them without the detail.
+    let work = call(&t, Some(&boss), "GET", "work", &[], Value::Null).await.expect("work");
+    assert_eq!(work["items"].as_array().unwrap().len(), 3);
+    assert_eq!(work["items"][0]["url"], json!("/people/approvals"));
+    // A decision takes the request off the page.
+    t.trans(&boss, "LeaveApplication", uid(&eshas), "Approve").await.expect("approve");
+    let after = call(&t, Some(&boss), "GET", "inbox", &[], Value::Null).await.unwrap();
+    assert_eq!(after["items"].as_array().unwrap().len(), 2);
+
+    // The team calendar: Esha sees her team's approved leave (not the type), the holiday and the weekly offs.
+    let month = [("from", "2026-10-01"), ("to", "2026-10-31")];
+    let cal = call(&t, Some(&me), "GET", "calendar", &month, Value::Null).await.expect("calendar");
+    assert_eq!((cal["scope"].clone(), cal["everyone_allowed"].clone(), cal["size"].clone()), (json!("team"), json!(false), json!(4)), "{cal}");
+    let away: Vec<(&str, &str)> = cal["away"].as_array().unwrap().iter().map(|a| (a["name"].as_str().unwrap(), a["from_date"].as_str().unwrap())).collect();
+    assert_eq!(away, vec![("Esha Test", "2026-10-12"), ("Omar Test", "2026-10-13")]);
+    assert!(cal["away"][0]["leave_type"].is_null(), "colleagues' leave types are theirs");
+    let holidays = cal["holidays"].as_array().unwrap();
+    assert!(holidays.iter().any(|h| h["date"] == json!("2026-10-02") && h["name"] == json!("Gandhi Jayanti") && h["weekly_off"] == json!(false)));
+    assert!(holidays.iter().any(|h| h["date"] == json!("2026-10-03") && h["weekly_off"] == json!(true)));
+    let all = call(&t, Some(&me), "GET", "calendar", &[("from", "2026-10-01"), ("to", "2026-10-31"), ("scope", "all")], Value::Null).await.unwrap();
+    assert_eq!(all["scope"], json!("team"), "everyone is for those who may see everyone");
+    let hr_cal = call(&t, Some(&hr), "GET", "calendar", &[("from", "2026-10-01"), ("to", "2026-10-31"), ("scope", "all")], Value::Null).await.unwrap();
+    assert_eq!((hr_cal["scope"].clone(), hr_cal["size"].clone(), hr_cal["away"].as_array().unwrap().len()), (json!("all"), json!(5), 2));
+    assert_eq!(hr_cal["away"][0]["leave_type"], json!("Casual Leave"));
+    assert!(
+        call(&t, Some(&me), "GET", "calendar", &[("from", "2026-01-01"), ("to", "2026-12-31")], Value::Null).await.is_err(),
+        "a year at a time is too much"
+    );
+
+    // The directory: everyone's name, role and work email; phone numbers only for those who see every employee.
+    let dir = call(&t, Some(&me), "GET", "directory", &[], Value::Null).await.expect("directory");
+    assert_eq!((dir["people"].as_array().unwrap().len(), dir["detail"].clone()), (5, json!(false)));
+    let omar = dir["people"].as_array().unwrap().iter().find(|p| p["name"] == json!("Omar Test")).unwrap();
+    assert_eq!((omar["manager"].clone(), omar["department"].clone(), omar["email"].clone()), (m["id"].clone(), json!("Support"), json!("omar@work.test")));
+    assert!(omar["phone"].is_null());
+    let full = call(&t, Some(&hr), "GET", "directory", &[], Value::Null).await.unwrap();
+    assert_eq!(full["people"].as_array().unwrap().iter().find(|p| p["name"] == json!("Omar Test")).unwrap()["phone"], json!("+919845012345"));
+
+    // Careers: only what is published and open; an application from anyone, once.
+    let engineer = t.ins(&hr, "Designation", json!({"designation_name": "Engineer"})).await;
+    let post = |title: &str, extra: Value| {
+        let mut v = obj(
+            json!({"job_title": title, "designation": engineer["id"], "company": t.c(), "department": support["id"], "description": "Help **people** with their printers."}),
+        );
+        v.extend(obj(extra));
+        t.ins(&hr, "JobOpening", Value::Object(v))
+    };
+    let open = post("Support Engineer", json!({"publish": true})).await;
+    post("Quiet search", json!({"publish": false})).await;
+    post("Last week's", json!({"publish": true, "closes_on": "2026-01-31"})).await;
+    let list = call(&t, None, "GET", "careers", &[], Value::Null).await.expect("careers");
+    let openings = list["openings"].as_array().unwrap();
+    assert_eq!(openings.len(), 1, "{list}");
+    assert_eq!(
+        (openings[0]["title"].clone(), openings[0]["department"].clone(), openings[0]["company"].clone()),
+        (json!("Support Engineer"), json!("Support"), json!("hrsite Pvt Ltd"))
+    );
+    assert!(openings[0]["description"].is_null(), "the list leaves the description to the opening");
+    let one = call(&t, None, "GET", &format!("careers/{}", open["id"].as_str().unwrap()), &[], Value::Null).await.expect("one opening");
+    assert_eq!(one["description"], json!("Help **people** with their printers."));
+    let hidden = t.one("JobOpening", json!({"job_title": "Quiet search"})).await;
+    assert!(matches!(call(&t, None, "GET", &format!("careers/{}", hidden["id"].as_str().unwrap()), &[], Value::Null).await, Err(Error::NotFound(_))));
+    let apply = format!("careers/{}/apply", open["id"].as_str().unwrap());
+    let form = json!({"name": "  Asha Rao ", "email": "Asha.Rao@Example.com", "phone": "+91 98450 12345", "cover_letter": "I like printers.", "resume_link": "https://example.com/asha.pdf"});
+    assert_eq!(call(&t, None, "POST", &apply, &[], form.clone()).await.expect("apply")["received"], json!(true));
+    let applicant = t.one("JobApplicant", json!({"job_opening": open["id"]})).await;
+    assert_eq!(
+        (applicant["applicant_name"].clone(), applicant["email_id"].clone(), applicant["source"].clone(), applicant["status"].clone()),
+        (json!("Asha Rao"), json!("asha.rao@example.com"), json!("Website Listing"), json!("Open"))
+    );
+    assert!(matches!(call(&t, None, "POST", &apply, &[], form.clone()).await, Err(Error::Conflict(_))), "once for each opening");
+    let mut shouty = form.clone();
+    shouty["email"] = json!("ASHA.RAO@EXAMPLE.COM");
+    assert!(matches!(call(&t, None, "POST", &apply, &[], shouty).await, Err(Error::Conflict(_))), "whatever the case");
+    let mut bad = form.clone();
+    bad["email"] = json!("not an address");
+    refused(call(&t, None, "POST", &apply, &[], bad).await, "email");
+    let mut link = form.clone();
+    link["email"] = json!("ravi@example.com");
+    link["resume_link"] = json!("javascript:alert(1)");
+    refused(call(&t, None, "POST", &apply, &[], link).await, "https");
+    let mut bot = form.clone();
+    bot["email"] = json!("bot@example.com");
+    bot["website"] = json!("http://spam.test");
+    call(&t, None, "POST", &apply, &[], bot).await.expect("a program is thanked");
+    assert_eq!(t.list(&t.admin, "JobApplicant", json!({"job_opening": open["id"]})).await.len(), 1, "and kept out");
+    let hidden_apply = format!("careers/{}/apply", hidden["id"].as_str().unwrap());
+    assert!(matches!(call(&t, None, "POST", &hidden_apply, &[], form).await, Err(Error::NotFound(_))), "nobody applies to what is not published");
 }
 
 // ───────────────────────────── attendance ─────────────────────────────
