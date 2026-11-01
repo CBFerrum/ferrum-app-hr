@@ -28,6 +28,7 @@
 - name: JobApplicant
   label: Job Applicant
   kind: master
+  reference: restricted
   module: recruitment
   title_field: applicant_name
   numbering: {template: "HR-APP-{YYYY}-{seq:5}"}
@@ -85,6 +86,7 @@
 - name: JobOffer
   label: Job Offer
   kind: document
+  reference: restricted
   module: recruitment
   submittable: true
   company_scoped: true
@@ -161,6 +163,7 @@
 - name: Appraisal
   label: Appraisal
   kind: document
+  reference: restricted
   module: performance
   submittable: true
   company_scoped: true
