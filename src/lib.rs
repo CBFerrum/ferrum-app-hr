@@ -188,6 +188,8 @@ pub const LEAVE_REQUEST: &str = "hr.leave_request";
 pub const LEAVE_DECISION: &str = "hr.leave_decision";
 pub const EXPENSE_REQUEST: &str = "hr.expense_request";
 pub const EXPENSE_DECISION: &str = "hr.expense_decision";
+pub const ATTENDANCE_REQUEST: &str = "hr.attendance_request";
+pub const ATTENDANCE_DECISION: &str = "hr.attendance_decision";
 
 /// A notification of `kind` to the user signing in with `email` (not to the caller themselves).
 pub(crate) async fn notify(hc: &mut HookCtx<'_>, email: Option<&str>, kind: &str, title: &str, record: Uuid) -> Result<()> {

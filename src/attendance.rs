@@ -3,8 +3,8 @@
 //! tenant's time zone: punches inside the shift's window count, working hours decide between
 //! present, half day and absent, and late entry / early exit are flagged against the grace periods.
 
-use crate::calendar::{days, weekday, weekday_name};
-use crate::{lookup, opt_date, stamp_company};
+use crate::calendar::{days, employee_holidays, weekday, weekday_name, working_days};
+use crate::{default_approver, employee_of, lookup, notify, opt_date, require_approver, stamp_company};
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use ferrum_domain::util::{b, d, find, get, id, money, rows, s, set, sys};
@@ -23,7 +23,8 @@ pub(crate) fn register(h: &mut HookRegistry) {
         .register("ShiftType", Arc::new(ShiftTypeHook))
         .register("ShiftAssignment", Arc::new(ShiftAssignmentHook))
         .register("EmployeeCheckin", Arc::new(CheckinHook))
-        .register("Attendance", Arc::new(AttendanceHook));
+        .register("Attendance", Arc::new(AttendanceHook))
+        .register("AttendanceRequest", Arc::new(RequestHook));
 }
 
 // ───────────────────────────── holiday lists ─────────────────────────────
@@ -535,6 +536,238 @@ impl DocHook for AttendanceHook {
     }
 }
 
+// ───────────────────────────── attendance requests ─────────────────────────────
+
+/// The most days one request covers; a longer stretch is asked for in parts.
+const MOST_REQUESTED_DAYS: i64 = 31;
+
+/// A time of day typed as `HH:MM`.
+fn clock(doc: &Doc, k: &str) -> Option<NaiveTime> {
+    s(doc, k).and_then(|t| NaiveTime::parse_from_str(t, "%H:%M").ok())
+}
+
+/// What a requested day is marked as: the half day, a day worked from home, or present (a missed
+/// check-in, or a day on duty).
+fn requested_status(reason: Option<&str>, half: bool) -> &'static str {
+    if half {
+        "Half Day"
+    } else if reason == Some("Work From Home") {
+        "Work From Home"
+    } else {
+        "Present"
+    }
+}
+
+/// "2026-10-06", or "2026-10-06 to 2026-10-08".
+fn span(doc: &Doc) -> String {
+    let (from, to) = (s(doc, "from_date").unwrap_or_default(), s(doc, "to_date").unwrap_or_default());
+    if from == to || to.is_empty() { from.to_string() } else { format!("{from} to {to}") }
+}
+
+/// A date and time on the tenant's wall clock, as the instant it is.
+async fn local_instant(tx: &mut Tx, tz: &str, at: NaiveDateTime) -> Result<DateTime<Utc>> {
+    Ok(sqlx::query_scalar("select ($1::timestamp at time zone $2)::timestamptz").bind(at).bind(tz).fetch_one(&mut **tx).await?)
+}
+
+/// A missed check-in put right, or days worked from home or on duty: asked for by the employee,
+/// decided by their approver (or an HR manager). Approval marks the attendance of each working
+/// day asked for, in place of whatever the day had; cancelling takes those marks off again.
+struct RequestHook;
+
+#[async_trait]
+impl DocHook for RequestHook {
+    async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        let emp = stamp_company(hc, doc).await?;
+        if doc.get("docstatus").and_then(Value::as_i64).unwrap_or(0) == 0 {
+            set(doc, "status", "Open");
+        }
+        if !b(doc, "half_day") {
+            set(doc, "half_day_date", Value::Null);
+        } else if s(doc, "half_day_date").is_none() {
+            let from = doc.get("from_date").cloned().unwrap_or_default();
+            set(doc, "half_day_date", from);
+        }
+        let Some(emp) = emp else { return Ok(()) };
+        if s(doc, "approver").is_none() || crate::self_service(hc.ctx, "AttendanceRequest") {
+            let approver = default_approver(hc, &emp, "leave_approver").await?;
+            set(doc, "approver", approver.map(Value::String).unwrap_or_default());
+        }
+        Ok(())
+    }
+
+    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let (Some(from), Some(to)) = (opt_date(doc, "from_date"), opt_date(doc, "to_date")) else { return Ok(()) };
+        if to < from {
+            return Ok(());
+        }
+        let emp = employee_of(hc, doc).await?;
+        let emp_id = id(&emp, "id").unwrap_or_default();
+        let name = s(&emp, "employee_name").unwrap_or_default().to_string();
+        if (to - from).num_days() >= MOST_REQUESTED_DAYS {
+            return Err(Error::field("to_date", format!("a request covers at most {MOST_REQUESTED_DAYS} days; ask for the rest separately")));
+        }
+        if opt_date(&emp, "date_of_joining").is_some_and(|j| from < j) || opt_date(&emp, "relieving_date").is_some_and(|r| to > r) {
+            return Err(Error::field("from_date", format!("{name} is not employed on all of these days")));
+        }
+        if crate::is_future(hc, to).await? {
+            return Err(Error::field("to_date", "attendance cannot be marked for a future date"));
+        }
+        let holidays = employee_holidays(hc.tx, hc.ctx.tenant, emp_id, from, to).await?;
+        if working_days(from, to, &holidays) == 0 {
+            return Err(Error::field("to_date", "every selected day is a holiday or weekly off; there is nothing to put right"));
+        }
+        let (came, left) = (clock(doc, "in_time"), clock(doc, "out_time"));
+        if (came.is_some() || left.is_some()) && from != to {
+            return Err(Error::field("in_time", "give the times for a single day; ask for several days without them"));
+        }
+        if let (Some(a), Some(z)) = (came, left)
+            && z <= a
+        {
+            return Err(Error::field("out_time", "must be after the time came in"));
+        }
+        let clash: Option<String> = sqlx::query_scalar(
+            "select coalesce(number, id::text) from e_attendance_request where tenant_id = $1 and employee = $2 and id <> $3 \
+             and docstatus < 2 and status in ('Open', 'Approved') and from_date <= $5 and to_date >= $4 limit 1",
+        )
+        .bind(hc.ctx.tenant)
+        .bind(emp_id)
+        .bind(id(doc, "id"))
+        .bind(from)
+        .bind(to)
+        .fetch_optional(&mut **hc.tx)
+        .await?;
+        if let Some(n) = clash {
+            return Err(Error::field("from_date", format!("{name} already asked about some of these days ({n})")));
+        }
+        let on_leave: Option<NaiveDate> = sqlx::query_scalar(
+            "select attendance_date from e_attendance where tenant_id = $1 and employee = $2 and docstatus = 1 \
+             and leave_application is not null and attendance_date between $3 and $4 order by attendance_date limit 1",
+        )
+        .bind(hc.ctx.tenant)
+        .bind(emp_id)
+        .bind(from)
+        .bind(to)
+        .fetch_optional(&mut **hc.tx)
+        .await?;
+        if let Some(day) = on_leave {
+            return Err(Error::field("from_date", format!("{name} is on leave on {day}")));
+        }
+        Ok(())
+    }
+
+    /// New requests (and new approvers) are announced to the approver.
+    async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
+        if old.is_some_and(|o| s(o, "approver") == s(doc, "approver")) {
+            return Ok(());
+        }
+        let title = format!("Attendance request from {} ({}) awaits your approval", s(doc, "employee_name").unwrap_or_default(), span(doc));
+        notify(hc, s(doc, "approver"), crate::ATTENDANCE_REQUEST, &title, id(doc, "id").unwrap_or_default()).await
+    }
+
+    async fn before_submit(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        require_approver(hc.ctx, doc, s(doc, "approver"), "attendance")
+    }
+
+    /// Approval or rejection (the workflow submits the request in either case).
+    async fn on_submit(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let me = id(doc, "id").ok_or_else(|| Error::internal("attendance request without id"))?;
+        let rejected = s(doc, "workflow_state") == Some("Rejected");
+        let mut v = Doc::new();
+        set(&mut v, "status", if rejected { "Rejected" } else { "Approved" });
+        hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "AttendanceRequest", me, v).await?;
+        let title = format!("Your attendance request for {} was {}", span(doc), if rejected { "rejected" } else { "approved" });
+        notify(hc, s(doc, "employee_user"), crate::ATTENDANCE_DECISION, &title, me).await?;
+        if rejected {
+            return Ok(());
+        }
+        mark_requested(hc, doc).await
+    }
+
+    async fn before_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        if hc.ctx.has_role("HR User") {
+            return Ok(());
+        }
+        require_approver(hc.ctx, doc, s(doc, "approver"), "attendance")
+    }
+
+    /// Takes the marks off. The days stay unmarked (what they had before is not brought back):
+    /// HR marks them if they need to be.
+    async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let me = id(doc, "id").ok_or_else(|| Error::internal("attendance request without id"))?;
+        let sctx = sys(hc.ctx);
+        let made = find(hc.kernel, hc.ctx, hc.tx, "Attendance", vec![Filter::eq("attendance_request", me.to_string()), Filter::eq("docstatus", 1)], None, 1000)
+            .await?;
+        for a in made {
+            hc.kernel.cancel_tx(&sctx, hc.tx, "Attendance", id(&a, "id").unwrap_or_default(), None).await?;
+        }
+        let mut v = Doc::new();
+        set(&mut v, "status", "Cancelled");
+        hc.kernel.set_values_tx(&sctx, hc.tx, "AttendanceRequest", me, v).await
+    }
+}
+
+/// Marks each working day of an approved request, replacing what the day had (never a day of
+/// approved leave: that must be cancelled first).
+async fn mark_requested(hc: &mut HookCtx<'_>, req: &Doc) -> Result<()> {
+    let sctx = sys(hc.ctx);
+    let me = id(req, "id").ok_or_else(|| Error::internal("attendance request without id"))?;
+    let emp = id(req, "employee").ok_or_else(|| Error::internal("attendance request without employee"))?;
+    let (Some(from), Some(to)) = (opt_date(req, "from_date"), opt_date(req, "to_date")) else {
+        return Err(Error::internal("attendance request without dates"));
+    };
+    let name = s(req, "employee_name").unwrap_or_default().to_string();
+    let half = opt_date(req, "half_day_date");
+    let (came, left) = (clock(req, "in_time"), clock(req, "out_time"));
+    let tz = timezone(hc.tx, hc.ctx.tenant).await?;
+    let holidays = employee_holidays(hc.tx, hc.ctx.tenant, emp, from, to).await?;
+    for day in days(from, to).filter(|d| !holidays.contains(d)) {
+        let existing = find(
+            hc.kernel,
+            hc.ctx,
+            hc.tx,
+            "Attendance",
+            vec![
+                Filter::eq("employee", emp.to_string()),
+                Filter::eq("attendance_date", day.to_string()),
+                Filter { field: "docstatus".into(), op: Op::Lt, value: json!(2) },
+            ],
+            None,
+            10,
+        )
+        .await?;
+        if existing.iter().any(|a| id(a, "leave_application").is_some()) {
+            return Err(Error::invalid(format!("{name} is on leave on {day}; cancel the leave first")));
+        }
+        for a in existing {
+            let aid = id(&a, "id").ok_or_else(|| Error::internal("attendance without id"))?;
+            if d(&a, "docstatus") == Decimal::ONE {
+                hc.kernel.cancel_tx(&sctx, hc.tx, "Attendance", aid, None).await?;
+            } else {
+                hc.kernel.delete_tx(&sctx, hc.tx, "Attendance", aid, None).await?;
+            }
+        }
+        let mut a = Doc::new();
+        set(&mut a, "employee", emp.to_string());
+        set(&mut a, "attendance_date", day.to_string());
+        set(&mut a, "status", requested_status(s(req, "reason"), Some(day) == half));
+        set(&mut a, "attendance_request", me.to_string());
+        set(&mut a, "remarks", format!("Attendance request {}: {}", s(req, "number").unwrap_or_default(), s(req, "reason").unwrap_or_default()));
+        // Times are given for a single day only (the request refuses them otherwise).
+        if let Some(t) = came {
+            set(&mut a, "in_time", local_instant(hc.tx, &tz, day.and_time(t)).await?.to_rfc3339());
+        }
+        if let Some(t) = left {
+            set(&mut a, "out_time", local_instant(hc.tx, &tz, day.and_time(t)).await?.to_rfc3339());
+        }
+        if let (Some(i), Some(o)) = (came, left) {
+            set(&mut a, "working_hours", money((Decimal::from((o - i).num_minutes()) / Decimal::from(60)).round_dp(2)));
+        }
+        let created = hc.kernel.insert_tx(&sctx, hc.tx, "Attendance", a).await?;
+        hc.kernel.submit_tx(&sctx, hc.tx, "Attendance", id(&created, "id").unwrap_or_default(), None).await?;
+    }
+    Ok(())
+}
+
 /// Engine-made attendance for each day of an approved leave, replacing what was there.
 pub(crate) async fn mark_leave(hc: &mut HookCtx<'_>, app: &Doc, days_off: &[(NaiveDate, &'static str)]) -> Result<()> {
     let sctx = sys(hc.ctx);
@@ -653,5 +886,23 @@ mod tests {
         assert_eq!((m.working_hours, m.status, m.early_exit), (Decimal::from(6), "Present", true));
         let untyped: Vec<Punch> = ps.iter().map(|p| Punch { log_type: None, ..p.clone() }).collect();
         assert_eq!(r.mark(day("2026-10-05"), &untyped).unwrap().working_hours, Decimal::from(6));
+    }
+
+    #[test]
+    fn requested_days_are_marked_by_why_they_were_asked_for() {
+        assert_eq!(requested_status(Some("Missed Check-in"), false), "Present");
+        assert_eq!(requested_status(Some("On Duty"), false), "Present");
+        assert_eq!(requested_status(Some("Work From Home"), false), "Work From Home");
+        assert_eq!(requested_status(Some("Work From Home"), true), "Half Day");
+        let mut doc = Doc::new();
+        set(&mut doc, "in_time", "09:05");
+        set(&mut doc, "out_time", "9am");
+        assert_eq!(clock(&doc, "in_time"), NaiveTime::from_hms_opt(9, 5, 0));
+        assert_eq!(clock(&doc, "out_time"), None);
+        set(&mut doc, "from_date", "2026-10-06");
+        set(&mut doc, "to_date", "2026-10-06");
+        assert_eq!(span(&doc), "2026-10-06");
+        set(&mut doc, "to_date", "2026-10-08");
+        assert_eq!(span(&doc), "2026-10-06 to 2026-10-08");
     }
 }

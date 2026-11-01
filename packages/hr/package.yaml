@@ -21,7 +21,7 @@ modules:
     label: Attendance & Leave
     icon: calendar
     order: 71
-    items: [Attendance, EmployeeCheckin, ShiftType, ShiftAssignment, HolidayList, LeaveApplication, LeaveAllocation, LeaveType, LeavePolicy,
+    items: [Attendance, AttendanceRequest, EmployeeCheckin, ShiftType, ShiftAssignment, HolidayList, LeaveApplication, LeaveAllocation, LeaveType, LeavePolicy,
             LeaveLedgerEntry, report:monthly_attendance_sheet, report:leave_balance]
   - name: recruitment
     label: Recruitment
@@ -48,6 +48,19 @@ workflows:
       - {action: Reject, from: Open, to: Rejected, roles: [Leave Approver, HR Manager]}
       - {action: Cancel, from: Approved, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
       - {action: Cancel, from: Rejected, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
+  - name: Attendance Request Approval
+    entity: AttendanceRequest
+    initial_state: Open
+    states:
+      - {name: Open, docstatus: 0}
+      - {name: Approved, docstatus: 1}
+      - {name: Rejected, docstatus: 1}
+      - {name: Cancelled, docstatus: 2}
+    transitions:
+      - {action: Approve, from: Open, to: Approved, roles: [Leave Approver, HR Manager]}
+      - {action: Reject, from: Open, to: Rejected, roles: [Leave Approver, HR Manager]}
+      - {action: Cancel, from: Approved, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
+      - {action: Cancel, from: Rejected, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
 
 # What a personal-data request exports and erases for a person (their email). An employee keeps
 # their name and employment dates, which payroll and tax records need; their private contact,
@@ -57,6 +70,7 @@ personal_data:
   - {entity: JobApplicant, match: email_id, erase: [applicant_name, email_id, phone_number]}
   - {entity: JobOffer, match: applicant_email, erase: [applicant_name, applicant_email]}
   - {entity: Attendance, match: employee_user, retain: "Employment records"}
+  - {entity: AttendanceRequest, match: employee_user, retain: "Employment records"}
   - {entity: EmployeeCheckin, match: employee_user, retain: "Employment records"}
   - {entity: ShiftAssignment, match: employee_user, retain: "Employment records"}
   - {entity: LeaveAllocation, match: employee_user, retain: "Employment records"}
@@ -88,6 +102,7 @@ roles:
       - {entity: ShiftAssignment, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
       - {entity: EmployeeCheckin, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Attendance, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
+      - {entity: AttendanceRequest, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: LeaveType, read: true, write: true, create: true, delete: true, export: true}
       - {entity: LeavePolicy, read: true, write: true, create: true, delete: true, export: true}
       - {entity: LeaveAllocation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
@@ -121,6 +136,7 @@ roles:
       - {entity: ShiftAssignment, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
       - {entity: EmployeeCheckin, read: true, write: true, create: true, delete: true, import: true}
       - {entity: Attendance, read: true, write: true, create: true, delete: true, submit: true, cancel: true, import: true}
+      - {entity: AttendanceRequest, read: true, write: true, create: true, delete: true, cancel: true}
       - {entity: LeaveType, read: true}
       - {entity: LeavePolicy, read: true}
       - {entity: LeaveAllocation, read: true, write: true, create: true, delete: true, submit: true}
@@ -142,6 +158,7 @@ roles:
       - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: EmployeeCheckin, read: true, create: true, if_owner: true}
       - {entity: Attendance, read: true, if_owner: true}
+      - {entity: AttendanceRequest, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: ShiftAssignment, read: true, if_owner: true}
       - {entity: LeaveAllocation, read: true, if_owner: true}
       - {entity: LeaveLedgerEntry, read: true, if_owner: true}
@@ -161,9 +178,10 @@ roles:
       - {entity: AppraisalCycle, read: true}
       - {entity: JobOpening, read: true}
   - name: Leave Approver
-    description: Approves or rejects the leave applications routed to them.
+    description: Approves or rejects the leave applications and attendance requests routed to them.
     permissions:
       - {entity: LeaveApplication, read: true, write: true, submit: true, cancel: true}
+      - {entity: AttendanceRequest, read: true, write: true, submit: true, cancel: true}
       - {entity: LeaveAllocation, read: true}
       - {entity: LeaveLedgerEntry, read: true}
       - {entity: LeaveType, read: true}
@@ -194,3 +212,4 @@ handover:
   - {entity: Employee, field: leave_approver}
   - {entity: Employee, field: expense_approver}
   - {entity: LeaveApplication, field: leave_approver, where: {status: Open}}
+  - {entity: AttendanceRequest, field: approver, where: {status: Open}}
