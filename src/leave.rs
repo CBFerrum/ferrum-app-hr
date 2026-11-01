@@ -7,12 +7,14 @@ use crate::attendance::{mark_leave, unmark_leave};
 use crate::calendar::{days, employee_holidays, leave_days, working_days};
 use crate::{default_approver, employee_of, notify, opt_date, require_approver, stamp_company, today};
 use async_trait::async_trait;
-use chrono::NaiveDate;
-use ferrum_domain::util::{b, d, elevated, find, get, id, money, rows, s, set, sys};
+use chrono::{Datelike, Months, NaiveDate};
+use ferrum_domain::util::{b, d, elevated, find, get, id, money, round, rows, s, set, sys};
 use ferrum_kernel::{Action, Ctx, Doc, DocHook, Error, Filter, HookCtx, HookRegistry, Kernel, Result, Tx};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use uuid::Uuid;
 
 pub(crate) fn register(h: &mut HookRegistry) {
@@ -351,12 +353,23 @@ impl DocHook for AllocationHook {
 }
 
 /// Allocates a policy's leaves to employees for a period (submitting each allocation), skipping
-/// employees who already have an allocation of the type in that period.
+/// employees who already have an allocation of the type in that period; and grants what its
+/// accruing lines have earned.
 struct PolicyHook;
 
 #[async_trait]
 impl DocHook for PolicyHook {
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if name == "accrue" {
+            hc.ctx.require("LeaveAllocation", Action::Create)?;
+            hc.ctx.require("LeaveAllocation", Action::Submit)?;
+            let on = match params.get("on").and_then(Value::as_str) {
+                Some(v) => ferrum_kernel::value::parse_date(v).map_err(|m| Error::field("on", m))?,
+                None => local_today(hc.tx, hc.ctx.tenant).await?,
+            };
+            let (granted, skipped) = accrue_policy(hc, doc, on).await?;
+            return Ok(Some(json!({"granted": granted, "skipped": skipped, "on": on})));
+        }
         if name != "assign_allocations" {
             return Ok(None);
         }
@@ -389,7 +402,8 @@ impl DocHook for PolicyHook {
         let (mut created, mut skipped) = (0, 0);
         for emp in employees {
             for row in rows(doc, "leave_policy_details") {
-                let Some(lt) = id(&row, "leave_type") else { continue };
+                // A line that accrues is granted as it accrues, not all at once.
+                let Some(lt) = id(&row, "leave_type").filter(|_| s(&row, "accrual").is_none()) else { continue };
                 let exists: bool = sqlx::query_scalar(
                     "select exists (select 1 from e_leave_allocation where tenant_id = $1 and employee = $2 and leave_type = $3 and docstatus = 1 \
                      and from_date <= $5 and to_date >= $4)",
@@ -420,6 +434,197 @@ impl DocHook for PolicyHook {
         }
         Ok(Some(json!({"created": created, "skipped": skipped})))
     }
+}
+
+// ───────────────────────────── accrual ─────────────────────────────
+
+const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/// How many shares a policy line grants in a year, by how often it grants one.
+fn shares_a_year(accrual: &str) -> Option<u32> {
+    match accrual {
+        "Monthly" => Some(12),
+        "Quarterly" => Some(4),
+        "Half-yearly" => Some(2),
+        _ => None,
+    }
+}
+
+/// The leave year that contains `on`, for a year starting in `start_month` (1 to 12): its first and
+/// last day.
+fn leave_year(on: NaiveDate, start_month: u32) -> (NaiveDate, NaiveDate) {
+    let year = if on.month() >= start_month { on.year() } else { on.year() - 1 };
+    let first = NaiveDate::from_ymd_opt(year, start_month, 1).unwrap_or(on);
+    let last = first.checked_add_months(Months::new(12)).and_then(|d| d.pred_opt()).unwrap_or(first);
+    (first, last)
+}
+
+/// The days the shares of a leave year that starts on `first` begin.
+fn share_days(first: NaiveDate, shares: u32) -> Vec<NaiveDate> {
+    (0..shares).filter_map(|i| first.checked_add_months(Months::new(i * (12 / shares)))).collect()
+}
+
+/// What a line has earned once `begun` of its `shares` have begun: the year's amount in
+/// proportion (rounded as a whole, so the last share lands on the year's amount exactly), never
+/// above what one allocation may hold (`cap`; 0 = no limit).
+fn accrued(annual: Decimal, shares: u32, begun: usize, cap: Decimal) -> Decimal {
+    let earned = round(annual * Decimal::from(begun as u64) / Decimal::from(shares), 2);
+    if cap > Decimal::ZERO { earned.min(cap) } else { earned }
+}
+
+/// Today on the tenant's wall clock.
+pub(crate) async fn local_today(tx: &mut Tx, tenant: Uuid) -> Result<NaiveDate> {
+    let tz = crate::attendance::timezone(tx, tenant).await?;
+    Ok(sqlx::query_scalar("select (now() at time zone $1)::date").bind(tz).fetch_one(&mut **tx).await?)
+}
+
+/// Grants what the accruing lines of `policy` have earned by `on` to the employees whose record
+/// names it: opens their allocation for the leave year when they have none, and tops up the one
+/// this policy opened. What was granted is counted first, so running it again changes nothing, and
+/// a changed policy catches up on the next run. An allocation made another way is left alone.
+/// Returns how many allocations were opened or topped up, and how many were left alone.
+pub(crate) async fn accrue_policy(hc: &mut HookCtx<'_>, policy: &Doc, on: NaiveDate) -> Result<(usize, usize)> {
+    let pid = id(policy, "id").ok_or_else(|| Error::internal("policy without id"))?;
+    let start_month = MONTHS.iter().position(|m| Some(*m) == s(policy, "year_starts")).map_or(1, |i| i as u32 + 1);
+    let (first, last) = leave_year(on, start_month);
+    let lines: Vec<(Uuid, Decimal, u32)> = rows(policy, "leave_policy_details")
+        .iter()
+        .filter_map(|r| Some((id(r, "leave_type")?, d(r, "annual_allocation"), shares_a_year(s(r, "accrual")?)?)))
+        .collect();
+    if lines.is_empty() {
+        return Ok((0, 0));
+    }
+    let people: Vec<(Uuid, NaiveDate)> = sqlx::query_as(
+        "select id, date_of_joining from e_employee where tenant_id = $1 and leave_policy = $2 and status = 'Active' \
+         and date_of_joining <= $3 and (relieving_date is null or relieving_date >= $3) order by id",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(pid)
+    .bind(on)
+    .fetch_all(&mut **hc.tx)
+    .await?;
+    let user = elevated(hc.ctx);
+    let (mut granted, mut left_alone) = (0, 0);
+    for (emp, joined) in people {
+        for (lt, annual, shares) in &lines {
+            let ltd = get(hc.kernel, hc.ctx, hc.tx, "LeaveType", *lt).await?;
+            if b(&ltd, "is_lwp") || b(&ltd, "disabled") {
+                continue;
+            }
+            // Shares begin on the first day of their month, quarter or half-year; someone who joined
+            // part-way through one starts with the next.
+            let begun = share_days(first, *shares).into_iter().filter(|day| *day <= on && *day >= joined).count();
+            let earned = accrued(*annual, *shares, begun, d(&ltd, "max_leaves_allowed"));
+            if earned <= Decimal::ZERO {
+                continue;
+            }
+            let Some((alloc, from, to)) = allocation_on(hc.tx, hc.ctx.tenant, emp, *lt, on).await? else {
+                let mut a = Doc::new();
+                set(&mut a, "employee", emp.to_string());
+                set(&mut a, "leave_type", lt.to_string());
+                set(&mut a, "from_date", first.to_string());
+                set(&mut a, "to_date", last.to_string());
+                set(&mut a, "new_leaves_allocated", money(earned));
+                set(&mut a, "carry_forward", true);
+                set(&mut a, "leave_policy", pid.to_string());
+                let made = hc.kernel.insert_tx(&user, hc.tx, "LeaveAllocation", a).await?;
+                hc.kernel.submit_tx(&user, hc.tx, "LeaveAllocation", id(&made, "id").unwrap_or_default(), None).await?;
+                granted += 1;
+                continue;
+            };
+            let a = get(hc.kernel, hc.ctx, hc.tx, "LeaveAllocation", alloc).await?;
+            if id(&a, "leave_policy") != Some(pid) {
+                left_alone += 1;
+                continue;
+            }
+            let had: Decimal = sqlx::query_scalar(
+                "select coalesce(sum(leaves), 0) from e_leave_ledger_entry where tenant_id = $1 and allocation = $2 \
+                 and transaction_type = 'Leave Allocation' and not is_carry_forward",
+            )
+            .bind(hc.ctx.tenant)
+            .bind(alloc)
+            .fetch_one(&mut **hc.tx)
+            .await?;
+            let more = earned - had;
+            if more <= Decimal::ZERO {
+                continue;
+            }
+            let entry = LedgerEntry {
+                employee: emp,
+                leave_type: *lt,
+                kind: "Leave Allocation".into(),
+                transaction: alloc,
+                number: s(&a, "number").map(str::to_string),
+                allocation: Some(alloc),
+                leaves: more,
+                from,
+                to,
+                carry_forward: false,
+                lwp: false,
+                reversal: false,
+            };
+            post(hc, entry).await?;
+            let mut v = Doc::new();
+            set(&mut v, "new_leaves_allocated", money(earned));
+            set(&mut v, "total_leaves_allocated", money(earned + d(&a, "unused_leaves")));
+            hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "LeaveAllocation", alloc, v).await?;
+            granted += 1;
+        }
+    }
+    Ok((granted, left_alone))
+}
+
+/// What each policy's accrual last ran for: the day (the tenant's) and how many employees had the
+/// policy then. The minute-by-minute upkeep does the work once a day, and again when someone is
+/// given or loses the policy. A restart runs it once more, which changes nothing.
+static ACCRUED_FOR: Mutex<BTreeMap<(Uuid, Uuid), (NaiveDate, i64)>> = Mutex::new(BTreeMap::new());
+
+/// Maintenance: grants the accrued leaves of every policy that has accruing lines, each policy in
+/// a transaction of its own. A policy that fails is logged and does not stop the rest; it is tried
+/// again on the next round.
+pub(crate) async fn accrue_leaves(k: &Kernel, ctx: &Ctx) -> Result<()> {
+    let Some(ent) = ctx.schema.entity("LeaveAllocation").cloned() else { return Ok(()) };
+    if ctx.schema.entity("LeavePolicy").is_none() {
+        return Ok(());
+    }
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let on = local_today(&mut tx, ctx.tenant).await?;
+    let policies: Vec<(Uuid, i64)> = sqlx::query_as(
+        "select p.parent_id, (select count(*) from e_employee e where e.tenant_id = $1 and e.leave_policy = p.parent_id and e.status = 'Active') \
+         from (select distinct parent_id from e_leave_policy__leave_policy_details where tenant_id = $1 and accrual is not null) p",
+    )
+    .bind(ctx.tenant)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let mut first_error = None;
+    for (policy, people) in policies {
+        let key = (ctx.tenant, policy);
+        if ACCRUED_FOR.lock().is_ok_and(|m| m.get(&key) == Some(&(on, people))) {
+            continue;
+        }
+        let done = async {
+            let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+            let doc = k.get_tx(&sys(ctx), &mut tx, "LeavePolicy", policy, false).await?;
+            let mut hc = HookCtx { kernel: k, ctx, tx: &mut tx, entity: &ent };
+            accrue_policy(&mut hc, &doc, on).await?;
+            tx.commit().await?;
+            Ok::<_, Error>(())
+        }
+        .await;
+        match done {
+            Ok(()) => {
+                if let Ok(mut m) = ACCRUED_FOR.lock() {
+                    m.insert(key, (on, people));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(tenant = %ctx.tenant, %policy, "leave accrual failed: {e}");
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 // ───────────────────────────── applications ─────────────────────────────
@@ -675,5 +880,25 @@ mod tests {
         let marks = leave_marks(d("2026-10-02"), d("2026-10-05"), Some(d("2026-10-05")), &hol, false);
         assert_eq!(marks, vec![(d("2026-10-02"), "On Leave"), (d("2026-10-05"), "Half Day")]);
         assert_eq!(leave_marks(d("2026-10-02"), d("2026-10-05"), None, &hol, true).len(), 4);
+    }
+
+    #[test]
+    fn leave_accrues_in_shares_from_the_year_a_policy_starts() {
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        // A year starting in April, seen from January, is the one that began the April before.
+        assert_eq!(leave_year(d("2026-01-15"), 4), (d("2025-04-01"), d("2026-03-31")));
+        assert_eq!(leave_year(d("2026-04-01"), 4), (d("2026-04-01"), d("2027-03-31")));
+        assert_eq!(leave_year(d("2026-12-31"), 1), (d("2026-01-01"), d("2026-12-31")));
+        assert_eq!(share_days(d("2026-01-01"), 4), vec![d("2026-01-01"), d("2026-04-01"), d("2026-07-01"), d("2026-10-01")]);
+        assert_eq!(share_days(d("2025-04-01"), 2), vec![d("2025-04-01"), d("2025-10-01")]);
+        assert_eq!(share_days(d("2026-01-01"), 12).len(), 12);
+        assert_eq!(shares_a_year("Half-yearly"), Some(2));
+        assert_eq!(shares_a_year(""), None);
+        // A share is a twelfth, the year adds up exactly, and a limit holds.
+        let ten = Decimal::from(10);
+        assert_eq!(accrued(ten, 12, 1, Decimal::ZERO), Decimal::new(83, 2));
+        assert_eq!(accrued(ten, 12, 12, Decimal::ZERO), ten);
+        assert_eq!(accrued(ten, 12, 0, Decimal::ZERO), Decimal::ZERO);
+        assert_eq!(accrued(Decimal::from(18), 4, 3, Decimal::from(10)), Decimal::from(10));
     }
 }

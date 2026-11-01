@@ -71,6 +71,11 @@ fn attendance_requests() {
 }
 
 #[test]
+fn leave_accrual() {
+    run(accrual_scenario());
+}
+
+#[test]
 fn expense_claims_and_advances() {
     run(expense_scenario());
 }
@@ -453,7 +458,7 @@ async fn leave_scenario() {
     let dec_leave = t.ins(&hr, "LeaveApplication", app(eid, &privilege, "2025-12-01", "2025-12-03")).await;
     assert_eq!(dec(&dec_leave["total_leave_days"]), n("3"));
     t.trans(&boss, "LeaveApplication", uid(&dec_leave), "Approve").await.expect("approve december leave");
-    ferrum_app_hr::maintenance(&t.k).await.expect("maintenance");
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("maintenance");
     let expired: Decimal =
         t.list(&t.admin, "LeaveLedgerEntry", json!({"allocation": p25["id"], "transaction_type": "Expiry"})).await.iter().map(|l| dec(&l["leaves"])).sum();
     assert_eq!(expired, n("-15"), "what was left of 2025 expired");
@@ -461,12 +466,12 @@ async fn leave_scenario() {
     let today = chrono::Utc::now().date_naive();
     let (start, end) = ((today - chrono::Duration::days(100)).to_string(), (today - chrono::Duration::days(10)).to_string());
     let ended = t.ins_submit(&hr, "LeaveAllocation", alloc(uid(&pia), &sick, &start, &end, "5", false)).await;
-    ferrum_app_hr::maintenance(&t.k).await.expect("maintenance");
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("maintenance");
     let lapsed: Vec<Doc> = t.list(&t.admin, "LeaveLedgerEntry", json!({"allocation": ended["id"], "transaction_type": "Expiry"})).await;
     assert_eq!((lapsed.len(), lapsed.first().map(|l| dec(&l["leaves"]))), (1, Some(n("-5"))), "unused leave expires at the end");
     let p26 = t.ins_submit(&hr, "LeaveAllocation", alloc(eid, &privilege, "2026-01-01", "2026-12-31", "18", true)).await;
     assert_eq!((dec(&p26["unused_leaves"]), dec(&p26["total_leaves_allocated"])), (n("15"), n("33")), "15 carried forward");
-    ferrum_app_hr::maintenance(&t.k).await.expect("maintenance is idempotent");
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("maintenance is idempotent");
     let bal = t.report(&hr, "leave_balance", &[("as_of", "2026-10-29"), ("employee", &eid.to_string()), ("leave_type", &privilege)]).await.unwrap();
     assert_eq!((dec(&bal["rows"][0]["carried_forward"]), dec(&bal["rows"][0]["balance"])), (n("15"), n("33")));
 
@@ -601,6 +606,101 @@ async fn attendance_request_scenario() {
     t.ins(&me, "AttendanceRequest", ask("On Duty", "2026-10-20", "2026-10-20")).await;
 }
 
+// ───────────────────────────── leave accrual ─────────────────────────────
+
+/// A policy line that accrues grants a share at the start of each month: opening the year's
+/// allocation, then topping it up; counting what was granted so that running again changes
+/// nothing; leaving alone what was allocated by hand; and running by itself in the upkeep.
+async fn accrual_scenario() {
+    let t = T::new("hraccrue").await;
+    let hr = t.user("hr@hraccrue.test", &["HR Manager"]).await;
+    let lt = |name: &str| {
+        let t = &t;
+        let name = name.to_string();
+        async move { t.one("LeaveType", json!({"leave_type_name": name})).await["id"].as_str().unwrap().to_string() }
+    };
+    let (casual, sick) = (lt("Casual Leave").await, lt("Sick Leave").await);
+    let policy = t
+        .ins(
+            &hr,
+            "LeavePolicy",
+            json!({"title": "Monthly", "year_starts": "January",
+            "leave_policy_details": [{"leave_type": casual, "annual_allocation": "12", "accrual": "Monthly"}, {"leave_type": sick, "annual_allocation": "6"}]}),
+        )
+        .await;
+    let on_policy = |first: &str, joined: &str| json!({"first_name": first, "date_of_joining": joined, "leave_policy": policy["id"]});
+    let ann = t.employee("Ann", on_policy("Ann", "2024-06-01")).await;
+    let ben = t.employee("Ben", on_policy("Ben", "2025-04-15")).await;
+    let cy = t.employee("Cy", on_policy("Cy", "2024-06-01")).await;
+    t.employee("Dee", json!({})).await;
+    t.ins_submit(
+        &hr,
+        "LeaveAllocation",
+        json!({"employee": cy["id"], "leave_type": casual, "from_date": "2025-01-01", "to_date": "2025-12-31", "new_leaves_allocated": "12"}),
+    )
+    .await;
+
+    // By 15 March three shares have begun. Ann has none yet, Ben has not joined, and Cy's leave was
+    // allocated by hand.
+    let first = t.act(&hr, "LeavePolicy", uid(&policy), "accrue", json!({"on": "2025-03-15"})).await;
+    assert_eq!((first["granted"].clone(), first["skipped"].clone()), (json!(1), json!(1)), "{first}");
+    let of = |emp: &Doc| {
+        let (t, emp, casual) = (&t, emp["id"].clone(), casual.clone());
+        async move { t.list(&t.admin, "LeaveAllocation", json!({"employee": emp, "leave_type": casual, "from_date": "2025-01-01"})).await }
+    };
+    let anns = of(&ann).await;
+    assert_eq!(anns.len(), 1);
+    let ann_alloc = &anns[0];
+    assert_eq!(
+        (ann_alloc["to_date"].clone(), ann_alloc["leave_policy"].clone(), ann_alloc["docstatus"].as_i64()),
+        (json!("2025-12-31"), policy["id"].clone(), Some(1))
+    );
+    assert_eq!(dec(&ann_alloc["total_leaves_allocated"]), n("3"));
+    assert!(of(&ben).await.is_empty(), "not yet joined");
+    let cys = of(&cy).await;
+    assert_eq!((cys.len(), dec(&cys[0]["total_leaves_allocated"])), (1, n("12")), "allocated by hand, and left as it was");
+    let again = t.act(&hr, "LeavePolicy", uid(&policy), "accrue", json!({"on": "2025-03-15"})).await;
+    assert_eq!(again["granted"], json!(0), "what was granted is counted first");
+
+    // Two months on, Ann is topped up (the allocation and the ledger agree) and Ben, who joined in
+    // the middle of April, has his first share, for May.
+    let may = t.act(&hr, "LeavePolicy", uid(&policy), "accrue", json!({"on": "2025-05-01"})).await;
+    assert_eq!(may["granted"], json!(2), "{may}");
+    let ann_alloc = t.get("LeaveAllocation", uid(ann_alloc)).await;
+    assert_eq!((dec(&ann_alloc["new_leaves_allocated"]), dec(&ann_alloc["total_leaves_allocated"])), (n("5"), n("5")));
+    let ledger: Decimal = t.list(&t.admin, "LeaveLedgerEntry", json!({"allocation": ann_alloc["id"]})).await.iter().map(|l| dec(&l["leaves"])).sum();
+    assert_eq!(ledger, n("5"));
+    assert_eq!(dec(&of(&ben).await[0]["total_leaves_allocated"]), n("1"));
+    // What has accrued is what can be asked for.
+    let leave = |from: &str, to: &str| json!({"employee": ann["id"], "leave_type": casual, "from_date": from, "to_date": to});
+    t.ins(&hr, "LeaveApplication", leave("2025-05-05", "2025-05-07")).await;
+    refused(t.try_ins(&hr, "LeaveApplication", leave("2025-05-12", "2025-05-14")).await, "insufficient leave balance");
+
+    // By the year's end it adds up to the year's amount, and not more than one allocation may hold.
+    t.act(&hr, "LeavePolicy", uid(&policy), "accrue", json!({"on": "2025-12-31"})).await;
+    assert_eq!(dec(&t.get("LeaveAllocation", uid(&ann_alloc)).await["total_leaves_allocated"]), n("12"));
+    assert_eq!(dec(&of(&ben).await[0]["total_leaves_allocated"]), n("8"), "May to December");
+    // The sick leave line does not accrue: it waits for Allocate Leaves.
+    assert!(t.list(&t.admin, "LeaveAllocation", json!({"employee": ann["id"], "leave_type": sick})).await.is_empty());
+
+    // The upkeep does the same by itself, for the year it is in.
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("maintenance");
+    let today: String = {
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        sqlx::query_scalar("select to_char(now() at time zone 'Asia/Kolkata', 'YYYY-MM-DD')").fetch_one(&mut *tx).await.unwrap()
+    };
+    let (year, month) = (&today[..4], today[5..7].parse::<i64>().unwrap());
+    let now = t.list(&t.admin, "LeaveAllocation", json!({"employee": ann["id"], "leave_type": casual, "from_date": format!("{year}-01-01")})).await;
+    assert_eq!(now.len(), 1, "this year's allocation was opened");
+    assert_eq!(
+        (dec(&now[0]["total_leaves_allocated"]), now[0]["leave_policy"].clone()),
+        (Decimal::from(month), policy["id"].clone()),
+        "a share for each month so far"
+    );
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("maintenance again");
+    assert_eq!(t.list(&t.admin, "LeaveAllocation", json!({"employee": ann["id"], "leave_type": casual, "from_date": format!("{year}-01-01")})).await.len(), 1);
+}
+
 // ───────────────────────────── attendance ─────────────────────────────
 
 async fn attendance_scenario() {
@@ -693,12 +793,12 @@ async fn attendance_scenario() {
     );
 
     // The scheduler continues up to the last device sync, skipping the weekend.
-    ferrum_app_hr::maintenance(&t.k).await.expect("maintenance");
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("maintenance");
     assert_eq!(att(&d, "2026-09-07").await["status"], json!("Absent"));
     assert!(t.list(&t.admin, "Attendance", json!({"employee": d["id"], "attendance_date": "2026-09-05"})).await.is_empty(), "weekly off");
     assert_eq!(t.get("ShiftType", uid(&general)).await["last_processed_date"], json!("2026-09-07"));
     assert_eq!(t.get("ShiftType", uid(&night)).await["last_processed_date"], json!("2026-09-06"), "the night of the 7th ends after the last sync");
-    ferrum_app_hr::maintenance(&t.k).await.expect("maintenance again");
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("maintenance again");
     assert_eq!(t.list(&t.admin, "Attendance", json!({"employee": d["id"]})).await.len(), 5, "idempotent: 1-4 and 7 September");
 
     // Refusals: duplicates, the future, editing a used punch.

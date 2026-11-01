@@ -85,6 +85,7 @@
     - {name: expense_approver, type: email, description: Defaults to the user of the employee this one reports to}
     - {name: holiday_list, type: link, to: HolidayList, description: Defaults to the shift's or the company's holiday list}
     - {name: default_shift, type: link, to: ShiftType}
+    - {name: leave_policy, type: link, to: LeavePolicy, description: "The leaves granted to this employee, once a year or as they accrue"}
     - {name: attendance_device_id, type: data, unique: true, label: Attendance Device ID, description: The id biometric or RFID devices send with check-ins}
     - {name: company_email, type: email}
     - {name: personal_email, type: email}
@@ -113,7 +114,7 @@
   form:
     - {label: Employee, fields: [first_name, middle_name, last_name, employee_name, company, status, user, gender, date_of_birth]}
     - {label: Employment, fields: [date_of_joining, relieving_date, department, designation, grade, branch, employment_type, reports_to, leave_approver, expense_approver]}
-    - {label: Attendance, fields: [holiday_list, default_shift, attendance_device_id]}
+    - {label: Attendance and Leave, fields: [holiday_list, default_shift, leave_policy, attendance_device_id]}
     - {label: Contact, collapsible: true, fields: [company_email, personal_email, cell_number, current_address, permanent_address]}
     - {label: Emergency Contact, collapsible: true, fields: [emergency_contact_name, emergency_phone, emergency_relation]}
     - {label: Personal Details, collapsible: true, fields: [marital_status, blood_group, tax_id, national_id, passport_number, passport_valid_upto]}
