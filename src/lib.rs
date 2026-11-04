@@ -84,6 +84,7 @@ pub async fn upkeep(k: &Kernel, tenant: Uuid) -> Result<()> {
         ("leave expiry", leave::expire_allocations(k, &ctx).await),
         ("leave accrual", leave::accrue_leaves(k, &ctx).await),
         ("job openings", talent::close_openings(k, &ctx).await),
+        ("leavers", people::offboard_leavers(k, &ctx).await),
     ];
     for (what, r) in results {
         if let Err(e) = r {

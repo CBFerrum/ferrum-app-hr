@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.1
+
+Hire to retire, to the end (FERRUM-JOURNEY-003).
+
+- An Employee Separation is submitted now. Submitting it needs its relieving date and makes the
+  employee one who leaves on it (status Left, that relieving date); cancelling it makes them Active
+  again. HR managers submit and cancel separations.
+- On the relieving date, in the workspace's time zone, HR's upkeep ends the leaver's sign-in through
+  Ferrum's deprovisioning: they cannot sign in again, their sessions, keys and grants end, and what
+  they were named on moves to the user of the employee they reported to. It happens once; a refusal
+  (the workspace's last administrator) is logged and tried again. Signing them in again later is an
+  administrator's.
+
 ## 0.5.0
 
 - Approvals: the leave, attendance and expense requests routed to you wait on one page (the second tab of People), the oldest first. Each shows why it was asked for and what a decision needs beside it: what the leave leaves in the balance and who else in the team is away then; what the days hold now and the punches on them; what was claimed and what is sanctioned, which you can lower line by line. Approve in one click, or reject with a note that goes to the request's discussion; tick several to approve them together; J, K, A and R work from the keyboard. A card leaves at once and comes back, with the server's reason, if it is refused. The same requests are in Home's My work.

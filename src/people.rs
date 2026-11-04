@@ -40,6 +40,7 @@ pub(crate) fn register(h: &mut HookRegistry) {
         .register("Employee", Arc::new(EmployeeHook))
         .register("EmployeeOnboarding", Arc::new(ChecklistHook))
         .register("EmployeeSeparation", Arc::new(ChecklistHook))
+        .register("EmployeeSeparation", Arc::new(SeparationHook))
         .register("EmployeePromotion", Arc::new(MoveHook(&PROMOTION)))
         .register("EmployeeTransfer", Arc::new(MoveHook(&TRANSFER)));
 }
@@ -265,6 +266,66 @@ impl DocHook for ChecklistHook {
         set(doc, "activities", Value::Array(acts.into_iter().map(Value::Object).collect()));
         Ok(())
     }
+}
+
+/// A separation submitted makes its employee one who leaves on its relieving date (their sign-in
+/// ends that day, [`offboard_leavers`]); cancelled, they are back. A sign-in already ended stays
+/// ended: turning it on again is an administrator's.
+struct SeparationHook;
+
+#[async_trait]
+impl DocHook for SeparationHook {
+    async fn on_submit(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let day = opt_date(doc, "relieving_date").ok_or_else(|| Error::field("relieving_date", "is required to submit a separation"))?;
+        let emp = id(doc, "employee").ok_or_else(|| Error::field("employee", "is required"))?;
+        let mut v = Doc::new();
+        set(&mut v, "status", "Left");
+        set(&mut v, "relieving_date", day.to_string());
+        hc.kernel.update_tx(&elevated(hc.ctx), hc.tx, "Employee", emp, v, None).await?;
+        Ok(())
+    }
+
+    async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let Some(e) = lookup(hc, "Employee", id(doc, "employee")).await? else { return Ok(()) };
+        if s(&e, "status") != Some("Left") || s(&e, "relieving_date") != s(doc, "relieving_date") {
+            return Ok(());
+        }
+        let mut v = Doc::new();
+        set(&mut v, "status", "Active");
+        set(&mut v, "relieving_date", Value::Null);
+        hc.kernel.update_tx(&elevated(hc.ctx), hc.tx, "Employee", id(&e, "id").unwrap_or_default(), v, None).await?;
+        Ok(())
+    }
+}
+
+/// Employees who have left, their relieving date come in the workspace's time zone, lose their
+/// sign-in: Ferrum deprovisions the user (sessions, keys and grants end at once; what they were
+/// named on moves to the user of the employee they reported to, when there is one). An inactive
+/// user is not touched again, and a refusal (the workspace's last administrator) is logged and
+/// tried again next time.
+pub(crate) async fn offboard_leavers(k: &ferrum_kernel::Kernel, ctx: &ferrum_kernel::Ctx) -> Result<()> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let tz = crate::attendance::timezone(&mut tx, ctx.tenant).await?;
+    let leavers: Vec<(String, Uuid, Option<Uuid>, chrono::NaiveDate)> = sqlx::query_as(
+        "select e.employee_name, u.id, mu.id, e.relieving_date from e_employee e \
+         join app_user u on u.tenant_id = e.tenant_id and u.email = e.\"user\"::citext and u.is_active and u.kind = 'member' \
+         left join e_employee m on m.tenant_id = e.tenant_id and m.id = e.reports_to \
+         left join app_user mu on mu.tenant_id = e.tenant_id and mu.email = m.\"user\"::citext and mu.is_active and mu.kind = 'member' \
+         where e.tenant_id = $1 and e.status = 'Left' and e.relieving_date <= (now() at time zone $2)::date order by e.relieving_date, e.id limit 100",
+    )
+    .bind(ctx.tenant)
+    .bind(&tz)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let admin = elevated(ctx);
+    for (name, user, manager, day) in leavers {
+        let reason = format!("{name} left on {day} (HR)");
+        if let Err(e) = k.deprovision_user(&admin, user, manager.filter(|m| *m != user), &reason).await {
+            tracing::warn!(tenant = %ctx.tenant, %user, "a leaver's sign-in could not be ended: {e}");
+        }
+    }
+    Ok(())
 }
 
 /// A promotion or transfer: which employee fields it changes and where it keeps the old values.
