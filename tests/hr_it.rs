@@ -96,6 +96,11 @@ fn recruitment_lifecycle_and_appraisal() {
 }
 
 #[test]
+fn hire_to_retire() {
+    run(retire_scenario());
+}
+
+#[test]
 fn hr_and_payroll_without_erp() {
     run(alone_scenario());
 }
@@ -1566,4 +1571,91 @@ async fn talent_scenario() {
     assert_eq!((records[0]["employee"].clone(), records[0]["valid_until"].as_str()), (asha["id"].clone(), Some("2027-03-31")));
     t.k.cancel(&t.admin, "TrainingEvent", uid(&session), None).await.expect("cancelled");
     assert!(t.list(&t.admin, "TrainingRecord", json!({"program": program["id"]})).await.is_empty(), "cancelling it takes it off");
+}
+
+/// Hire to retire (FERRUM-JOURNEY-003): hired from an accepted offer with a sign-in, onboarded,
+/// then separated. Submitting the separation makes them one who leaves on its relieving date;
+/// until that day their sign-in works, on it HR's upkeep ends it (Ferrum deprovisions the user,
+/// their work moving to their manager), once.
+async fn retire_scenario() {
+    let t = T::new("hrret").await;
+    let hr = t.user("hr@hrret.test", &["HR Manager"]).await;
+    t.user("mona@hrret.test", &["Employee"]).await;
+    t.user("kiran@hrret.test", &["Employee"]).await;
+    let mona = t.employee("Mona", json!({"user": "mona@hrret.test"})).await;
+    let eng = t.ins(&hr, "Designation", json!({"designation_name": "Engineer"})).await;
+    let opening = t.ins(&hr, "JobOpening", json!({"job_title": "Engineer", "company": t.c(), "designation": eng["id"], "vacancies": 1})).await;
+    let applicant = t.ins(&hr, "JobApplicant", json!({"applicant_name": "Kiran Rao", "email_id": "kiran@mail.test", "job_opening": opening["id"]})).await;
+    let offer = t
+        .ins_submit(
+            &hr,
+            "JobOffer",
+            json!({"job_applicant": applicant["id"], "company": t.c(), "offer_date": "2026-01-10", "expected_joining_date": "2026-02-01"}),
+        )
+        .await;
+    t.act(&hr, "JobOffer", uid(&offer), "accept", json!({})).await;
+    let emp = t.act(&hr, "JobOffer", uid(&offer), "make_employee", json!({"user": "kiran@hrret.test"})).await;
+    let kiran = vid(&emp);
+    t.k.update(&hr, "Employee", kiran, obj(json!({"reports_to": mona["id"]})), None).await.expect("reports to Mona");
+    let onboarding = t
+        .ins(&hr, "EmployeeOnboarding", json!({"employee": kiran.to_string(), "company": t.c(), "activities": [{"activity_name": "Laptop", "done": true}]}))
+        .await;
+    assert_eq!(onboarding["status"], json!("Completed"));
+    let signed_in = t.k.login("hrret", "kiran@hrret.test", PW).await.expect("Kiran signs in");
+    let active = |email: &'static str| {
+        let t = &t;
+        async move {
+            let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+            sqlx::query_scalar::<_, bool>("select is_active from app_user where tenant_id = $1 and email = $2::citext")
+                .bind(t.tenant)
+                .bind(email)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap()
+        }
+    };
+    let today: chrono::NaiveDate = chrono::Utc::now().date_naive();
+
+    // ───────────── a separation needs its day; submitted, the employee leaves on it ─────────────
+    let undated = t.ins(&hr, "EmployeeSeparation", json!({"employee": kiran.to_string(), "reason": "Resignation"})).await;
+    refused(t.k.submit(&hr, "EmployeeSeparation", uid(&undated), None).await, "relieving_date");
+    let later = today + chrono::Duration::days(10);
+    let leaving = t
+        .ins_submit(
+            &hr,
+            "EmployeeSeparation",
+            json!({"employee": kiran.to_string(), "reason": "Resignation", "relieving_date": later.to_string(), "exit_interview": "Moving cities"}),
+        )
+        .await;
+    let e = t.get("Employee", kiran).await;
+    assert_eq!((e["status"].clone(), e["relieving_date"].clone()), (json!("Left"), json!(later.to_string())));
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("upkeep");
+    assert!(active("kiran@hrret.test").await, "their sign-in works until the day");
+
+    // Cancelled, they stay; separated again on today, the upkeep ends the sign-in, once.
+    t.k.cancel(&hr, "EmployeeSeparation", uid(&leaving), None).await.expect("cancelled");
+    let e = t.get("Employee", kiran).await;
+    assert_eq!((e["status"].clone(), e["relieving_date"].clone()), (json!("Active"), Value::Null));
+    t.ins_submit(&hr, "EmployeeSeparation", json!({"employee": kiran.to_string(), "reason": "Resignation", "relieving_date": today.to_string()})).await;
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("upkeep");
+    assert!(!active("kiran@hrret.test").await, "deprovisioned on the relieving date");
+    assert!(active("mona@hrret.test").await, "nobody else");
+    assert!(t.k.login("hrret", "kiran@hrret.test", PW).await.is_err(), "no sign-in after leaving");
+    assert!(t.k.load_ctx(t.tenant, signed_in.user, Some(signed_in.token_version), "it".into()).await.is_err(), "their session ended");
+    let audits = |action: &'static str| {
+        let t = &t;
+        async move {
+            let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+            sqlx::query_scalar::<_, i64>("select count(*) from audit_event where tenant_id = $1 and entity = 'User' and action = $2")
+                .bind(t.tenant)
+                .bind(action)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap()
+        }
+    };
+    let ended = audits("deprovision").await;
+    assert_eq!(ended, 1, "recorded once");
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("upkeep again");
+    assert_eq!(audits("deprovision").await, ended, "an inactive user is not touched again");
 }

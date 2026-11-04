@@ -62,7 +62,7 @@ Types and policies, allocations, approvals, a leave ledger, encashment and carry
 <td width="50%" valign="top">
 
 ### 🤝 Recruitment to separation
-Openings, applicants, interviews and offers; onboarding, appraisals, promotions, transfers and exits.
+Openings, applicants, interviews and offers; onboarding, appraisals, promotions, transfers and exits, a leaver's sign-in ended on their last day.
 
 </td>
 </tr>
@@ -304,6 +304,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.5.1** | Hire to retire: a submitted separation makes the employee a leaver on its relieving date, and on that day their sign-in ends through Ferrum's deprovisioning, their work moving to their manager. |
 | **0.3.4** | The interface starts faster: its first download holds the frame and the app's own pages, and lists, forms, reports and other apps' screens load … |
 | **0.3.3** | Record cards (the bar's previews on hover, Ferrum apps-ui.md U5) stay off your leave requests, the requests waiting for your approval and the … |
 | **0.3.2** | Rebuilt with Ferrum-Frontend a8d4dda: under the platform's bar the records frame no longer shows a second bell (the bar has notifications). |

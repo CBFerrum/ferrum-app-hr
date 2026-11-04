@@ -161,10 +161,12 @@
   internal: true
   reference: restricted
   module: hr
+  submittable: true
   company_scoped: true
   title_field: employee_name
   owner_fields: [employee_user]
   numbering: {template: "HR-SEP-{YYYY}-{seq:4}"}
+  description: "An employee leaving, with its exit checklist. On submit the employee is Left from its relieving date, when their sign-in ends; cancelled, they are Active again."
   fields:
     - {name: employee, type: link, to: Employee, required: true, in_filter: true}
     - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
