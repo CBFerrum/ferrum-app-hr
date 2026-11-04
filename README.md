@@ -304,6 +304,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.6.1** | Rebuilt with Ferrum-Frontend 80ff179: labels name their fields, and linked titles show their titles. |
 | **0.6.0** | Income tax slabs take a rebate while the taxable income stays under a limit (India's section 87A) and cesses and surcharges on the tax, each within its bounds and in order; India's new regime for FY 2025-26 is checked against the Income Tax Department's published figures. |
 | **0.5.1** | Hire to retire: a submitted separation makes the employee a leaver on its relieving date, and on that day their sign-in ends through Ferrum's deprovisioning, their work moving to their manager. |
 | **0.3.4** | The interface starts faster: its first download holds the frame and the app's own pages, and lists, forms, reports and other apps' screens load … |
