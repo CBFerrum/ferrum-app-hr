@@ -212,6 +212,23 @@ pub fn slab_tax(income: Decimal, slabs: &[(Decimal, Decimal, Decimal)]) -> Decim
         .sum()
 }
 
+/// The year's tax on `income`: [`slab_tax`], less a rebate of up to `rebate.1` while the income
+/// is at most `rebate.0` (0: no rebate), then each charge `(percent, min, max (0 = no limit))`
+/// whose bounds hold the income, in order, as a percent of the tax so far (a surcharge, then the
+/// cess on tax and surcharge).
+pub fn annual_tax(income: Decimal, slabs: &[(Decimal, Decimal, Decimal)], rebate: (Decimal, Decimal), charges: &[(Decimal, Decimal, Decimal)]) -> Decimal {
+    let mut tax = slab_tax(income, slabs);
+    if !rebate.0.is_zero() && income <= rebate.0 {
+        tax -= tax.min(rebate.1);
+    }
+    for (pct, min, max) in charges {
+        if income >= *min && (max.is_zero() || income <= *max) {
+            tax += tax * pct / Decimal::ONE_HUNDRED;
+        }
+    }
+    tax
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +276,36 @@ mod tests {
         assert!(Formula::compile("base *").is_err());
         assert!(check_abbr("BS").is_ok());
         assert!(check_abbr("base").is_err() && check_abbr("2X").is_err() && check_abbr("in").is_err() && check_abbr("a-b").is_err());
+    }
+
+    /// India's new regime for FY 2025-26, as the Income Tax Department publishes it
+    /// (tests/fixtures/india-new-regime-fy2025-26.json): the slabs' printed amounts at each bound,
+    /// the section 87A rebate up to 12 lakh, and the 4% cess.
+    #[test]
+    fn india_new_regime_fy2025_26() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/india-new-regime-fy2025-26.json")).unwrap();
+        let num = |v: &serde_json::Value| Decimal::from_str(&v.to_string()).unwrap();
+        let slabs: Vec<_> = fixture["slabs"].as_array().unwrap().iter().map(|s| (num(&s["from"]), num(&s["to"]), num(&s["percent"]))).collect();
+        let rebate = (num(&fixture["rebate"]["limit"]), num(&fixture["rebate"]["max"]));
+        let charges: Vec<_> = fixture["charges"].as_array().unwrap().iter().map(|c| (num(&c["percent"]), Decimal::ZERO, Decimal::ZERO)).collect();
+        let cases = fixture["cases"].as_array().unwrap();
+        assert!(cases.len() >= 8);
+        for c in cases {
+            let income = num(&c["income"]);
+            assert_eq!(slab_tax(income, &slabs), num(&c["slab_tax"]), "the slabs at {income}");
+            assert_eq!(annual_tax(income, &slabs, rebate, &charges), num(&c["tax"]), "the tax at {income}");
+        }
+    }
+
+    #[test]
+    fn charges_in_order() {
+        let slabs = [(n("0"), n("0"), n("10"))];
+        let (surcharge, cess) = ((n("10"), n("5000000"), n("10000000")), (n("4"), n("0"), n("0")));
+        assert_eq!(annual_tax(n("6000000"), &slabs, (n("0"), n("0")), &[surcharge, cess]), n("686400"), "cess on tax and surcharge");
+        assert_eq!(annual_tax(n("4000000"), &slabs, (n("0"), n("0")), &[surcharge, cess]), n("416000"), "no surcharge below its bound");
+        assert_eq!(annual_tax(n("20000000"), &slabs, (n("0"), n("0")), &[surcharge, cess]), n("2080000"), "nor above it");
+        assert_eq!(annual_tax(n("100000"), &slabs, (n("0"), n("50000")), &[]), n("10000"), "no rebate without a limit");
+        assert_eq!(annual_tax(n("800000"), &slabs, (n("1000000"), n("50000")), &[]), n("30000"), "the rebate takes no more than its most");
     }
 
     #[test]

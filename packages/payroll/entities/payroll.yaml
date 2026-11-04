@@ -117,18 +117,33 @@
   rules:
     - {name: ordered, check: "doc.to_amount == 0.0 || doc.to_amount > doc.from_amount", message: "To amount must exceed from amount (or be 0 for no limit)"}
 
+- name: IncomeTaxCharge
+  label: Income Tax Charge
+  kind: child
+  description: A cess or surcharge, as a percent of the tax so far, where the taxable income is within its bounds.
+  fields:
+    - {name: description, type: data, required: true, in_list: true}
+    - {name: percent, type: percent, required: true, min: "0", max: "100", in_list: true}
+    - {name: min_taxable_income, type: currency, default: 0, min: "0", in_list: true}
+    - {name: max_taxable_income, type: currency, min: "0", in_list: true, description: 0 = no upper limit}
+  rules:
+    - {name: ordered, check: "doc.max_taxable_income == 0.0 || doc.max_taxable_income >= doc.min_taxable_income", message: "The upper bound must not be below the lower one (or be 0 for none)"}
+
 - name: IncomeTaxSlab
   label: Income Tax Slab
   kind: master
   module: payroll
   title_field: slab_name
-  description: Progressive annual tax on taxable salary after the standard exemption and declared exemptions.
+  description: Progressive annual tax on taxable salary after the standard exemption and declared exemptions, less a rebate, with cesses and surcharges.
   fields:
     - {name: slab_name, type: data, required: true, unique: true, in_list: true}
     - {name: effective_from, type: date, required: true, in_list: true}
     - {name: standard_tax_exemption_amount, type: currency, min: "0"}
     - {name: allow_tax_exemption, type: check, default: true, description: Deduct the employee's submitted exemption declaration}
     - {name: slabs, type: table, of: TaxSlab, required: true}
+    - {name: rebate_limit, type: currency, min: "0", description: "A rebate applies while the taxable income is at most this (0 = no rebate), as India's section 87A"}
+    - {name: rebate_max, type: currency, min: "0", description: Most the rebate takes off the tax}
+    - {name: other_taxes_and_charges, type: table, of: IncomeTaxCharge, description: "Each a percent of the tax so far, in this order: a surcharge before the cess on it"}
     - {name: disabled, type: check}
   list: {columns: [slab_name, effective_from, standard_tax_exemption_amount], sort: effective_from desc}
 

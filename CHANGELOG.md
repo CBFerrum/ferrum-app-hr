@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.0
+
+Income tax as a jurisdiction sets it, beyond progressive slabs.
+
+- An Income Tax Slab takes a rebate: up to its most, while the taxable income is at most its
+  limit (India's section 87A: up to 60,000 while it is at most 12 lakh).
+- And other taxes and charges: each a percent of the tax so far, where the taxable income is
+  within its bounds, in their order, so a surcharge comes before the cess on tax and surcharge.
+- `tests/fixtures/india-new-regime-fy2025-26.json` holds India's new regime for FY 2025-26 as the
+  Income Tax Department's page prints it, read on 4 November 2026, with the tax at nine incomes
+  worked from the page rather than from the code; a unit test checks the engine against it.
+  Marginal relief just above the rebate's limit and the surcharge are not in it: the page does not
+  state the first, and the second was not read.
+
 ## 0.5.1
 
 Hire to retire, to the end (FERRUM-JOURNEY-003).

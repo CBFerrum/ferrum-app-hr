@@ -1359,6 +1359,23 @@ async fn payroll_scenario() {
     t.k.delete(&pm, "SalarySlip", uid(&oct), None).await.unwrap();
     t.k.cancel(&pm, "LeaveEncashment", uid(&enc), None).await.expect("cancel encashment");
     assert_eq!(t.get("AdditionalSalary", uid(&extra)).await["docstatus"], json!(2));
+
+    // The slab's cess and rebate reach the slip. With September's run cancelled, October projects
+    // six months of 148,200 taxable, less the 75,000 standard and 50,000 declared exemptions:
+    // 764,200, which the slabs tax 18,210, 3,035 a month.
+    let october_tax = || async {
+        let slip = t.ins(&pm, "SalarySlip", json!({"employee": p1["id"], "start_date": "2026-10-01", "end_date": "2026-10-31"})).await;
+        t.k.delete(&pm, "SalarySlip", uid(&slip), None).await.unwrap();
+        amount(&slip, "deductions", "IT")
+    };
+    assert_eq!(october_tax().await, n("3035"));
+    let cess = json!({"other_taxes_and_charges": [{"description": "Health and Education Cess", "percent": "4"}]});
+    t.k.update(&pm, "IncomeTaxSlab", uid(&slab), obj(cess), None).await.unwrap();
+    assert_eq!(october_tax().await, n("3156.40"), "4% on the tax");
+    t.k.update(&pm, "IncomeTaxSlab", uid(&slab), obj(json!({"rebate_limit": "1200000", "rebate_max": "60000"})), None).await.unwrap();
+    assert_eq!(october_tax().await, Decimal::ZERO, "the rebate takes it all: 764,200 is under 12 lakh");
+    t.k.update(&pm, "IncomeTaxSlab", uid(&slab), obj(json!({"rebate_limit": "700000"})), None).await.unwrap();
+    assert_eq!(october_tax().await, n("3156.40"), "nor above its limit");
 }
 
 // ───────────────────────────── recruitment, lifecycle, appraisal ─────────────────────────────
