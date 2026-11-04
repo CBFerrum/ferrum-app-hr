@@ -10,7 +10,7 @@
 //!   the year's tax on projected taxable salary, less tax already deducted, spread over the
 //!   periods left in the payroll period.
 
-use super::formula::{Formula, Vars, slab_tax};
+use super::formula::{Formula, Vars, annual_tax};
 use super::{FLAGS, assignment_on, row_formula, run};
 use crate::calendar::{employee_holidays, working_days};
 use crate::{lookup, opt_date, stamp_company};
@@ -368,7 +368,10 @@ async fn income_tax(
         (prev_taxable + taxable_now + taxable_full * Decimal::from(left - 1) - d(&slab, "standard_tax_exemption_amount") - declared).max(Decimal::ZERO);
     let slabs: Vec<(Decimal, Decimal, Decimal)> =
         rows(&slab, "slabs").iter().map(|r| (d(r, "from_amount"), d(r, "to_amount"), d(r, "percent_deduction"))).collect();
-    let due = (slab_tax(annual, &slabs) - prev_tax).max(Decimal::ZERO);
+    let charges: Vec<(Decimal, Decimal, Decimal)> =
+        rows(&slab, "other_taxes_and_charges").iter().map(|r| (d(r, "percent"), d(r, "min_taxable_income"), d(r, "max_taxable_income"))).collect();
+    let rebate = (d(&slab, "rebate_limit"), d(&slab, "rebate_max"));
+    let due = (annual_tax(annual, &slabs, rebate, &charges) - prev_tax).max(Decimal::ZERO);
     Ok(due / Decimal::from(left))
 }
 

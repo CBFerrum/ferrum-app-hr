@@ -1,0 +1,34 @@
+{
+  "what": "India's new tax regime (section 115BAC) for income of FY 2025-26 (AY 2026-27), resident individuals below 60",
+  "source": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+  "source_title": "Salaried Individuals for AY 2026-27 (the page says it was last updated on 9 July 2026)",
+  "read_on": "2026-11-04",
+  "prepared": "From the page, not from the code: the slabs as printed; each slab_tax is the amount the page prints at that bound (for example '₹ 60,000 + 15% above ₹ 12,00,000'), or that amount plus the printed rate on the rest; tax is slab_tax less the section 87A rebate the page states (up to ₹ 60,000 while taxable income does not exceed ₹ 12,00,000), plus the 4% Health and Education cess the page states.",
+  "not_covered": [
+    "Marginal relief just above ₹ 12,00,000, which the page does not state",
+    "Surcharge above ₹ 50 lakh, and its marginal relief",
+    "The standard deduction, which the page does not state: incomes here are taxable incomes"
+  ],
+  "slabs": [
+    {"from": 0, "to": 400000, "percent": 0},
+    {"from": 400000, "to": 800000, "percent": 5},
+    {"from": 800000, "to": 1200000, "percent": 10},
+    {"from": 1200000, "to": 1600000, "percent": 15},
+    {"from": 1600000, "to": 2000000, "percent": 20},
+    {"from": 2000000, "to": 2400000, "percent": 25},
+    {"from": 2400000, "to": 0, "percent": 30}
+  ],
+  "rebate": {"limit": 1200000, "max": 60000},
+  "charges": [{"description": "Health and Education Cess", "percent": 4}],
+  "cases": [
+    {"income": 300000, "slab_tax": 0, "tax": 0},
+    {"income": 400000, "slab_tax": 0, "tax": 0},
+    {"income": 800000, "slab_tax": 20000, "tax": 0},
+    {"income": 1000000, "slab_tax": 40000, "tax": 0},
+    {"income": 1200000, "slab_tax": 60000, "tax": 0},
+    {"income": 1600000, "slab_tax": 120000, "tax": 124800},
+    {"income": 2000000, "slab_tax": 200000, "tax": 208000},
+    {"income": 2400000, "slab_tax": 300000, "tax": 312000},
+    {"income": 3000000, "slab_tax": 480000, "tax": 499200}
+  ]
+}
