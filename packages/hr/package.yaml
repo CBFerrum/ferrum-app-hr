@@ -1,5 +1,5 @@
 package: hr
-version: 0.2.0
+version: 0.2.1
 label: Human Resources
 description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
 depends: [core]
@@ -94,7 +94,7 @@ roles:
       - {entity: EmployeeGrade, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EmploymentType, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EmployeeOnboarding, read: true, write: true, create: true, delete: true, export: true}
-      - {entity: EmployeeSeparation, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: EmployeeSeparation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: EmployeePromotion, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: EmployeeTransfer, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: HolidayList, read: true, write: true, create: true, delete: true, export: true, import: true}
