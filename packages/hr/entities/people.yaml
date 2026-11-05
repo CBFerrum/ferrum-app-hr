@@ -99,12 +99,12 @@
     - {name: blood_group, type: select, options: [A+, A-, B+, B-, AB+, AB-, O+, O-]}
     - {name: salary_mode, type: select, options: [Bank, Cash, Cheque], default: Bank, perm_group: bank}
     - {name: bank_name, type: data, perm_group: bank}
-    - {name: bank_account_no, type: data, label: Bank Account No, perm_group: bank}
+    - {name: bank_account_no, type: data, label: Bank Account No, perm_group: bank, mask: last4}
     - {name: ifsc_code, type: data, label: IFSC / Routing Code, perm_group: bank}
-    - {name: iban, type: data, label: IBAN, perm_group: bank}
-    - {name: tax_id, type: data, label: Tax ID (PAN), perm_group: identity}
-    - {name: national_id, type: data, label: National ID, perm_group: identity}
-    - {name: passport_number, type: data, perm_group: identity}
+    - {name: iban, type: data, label: IBAN, perm_group: bank, mask: last4}
+    - {name: tax_id, type: data, label: Tax ID (PAN), perm_group: identity, mask: last4}
+    - {name: national_id, type: data, label: National ID, perm_group: identity, mask: last4}
+    - {name: passport_number, type: data, perm_group: identity, mask: hidden}
     - {name: passport_valid_upto, type: date, perm_group: identity}
     - {name: notes, type: text}
   rules:
