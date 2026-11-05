@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2
+
+Rebuilt with Ferrum-Frontend daeadda: after an action runs, a record page shows what the action said it did rather than only that it is done.
+
 ## 0.7.1
 
 - Employees' bank account numbers, IBANs, tax IDs and national IDs show their last four
