@@ -521,9 +521,13 @@ pub(crate) async fn payment_entry(
     let user = elevated(hc.ctx);
     let made = hc.kernel.insert_tx(&user, hc.tx, "JournalEntry", je).await?;
     if !submit {
-        return Ok(Value::Object(made));
+        let mut out = made;
+        out.insert("message".into(), json!("A draft journal entry is made for accounts to post (ERP, Journal Entries)"));
+        return Ok(Value::Object(out));
     }
-    let posted = hc.kernel.submit_tx(&user, hc.tx, "JournalEntry", id(&made, "id").unwrap_or_default(), None).await?;
+    let mut posted = hc.kernel.submit_tx(&user, hc.tx, "JournalEntry", id(&made, "id").unwrap_or_default(), None).await?;
+    let message = format!("Journal entry {} is posted", s(&posted, "number").unwrap_or_default());
+    posted.insert("message".into(), json!(message));
     Ok(Value::Object(posted))
 }
 

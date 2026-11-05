@@ -1057,6 +1057,7 @@ async fn expense_scenario() {
     assert!(!adv["paid_amount"].is_null() && dec(&adv["paid_amount"]).is_zero(), "nothing paid reads 0, not empty, so the page offers the payment");
     let pay = t.act(&hr, "EmployeeAdvance", uid(&adv), "make_payment_entry", json!({})).await;
     assert_eq!(pay["docstatus"], json!(0), "a draft for accounts");
+    assert_eq!(pay["message"], json!("A draft journal entry is made for accounts to post (ERP, Journal Entries)"));
     refused(t.k.submit(&hr, "JournalEntry", vid(&pay), None).await, "not permitted");
     t.submit(&acct, "JournalEntry", vid(&pay)).await;
     let adv = t.get("EmployeeAdvance", uid(&adv)).await;
@@ -1665,6 +1666,8 @@ async fn retire_scenario() {
     t.act(&hr, "JobOffer", uid(&offer), "accept", json!({})).await;
     let emp = t.act(&hr, "JobOffer", uid(&offer), "make_employee", json!({"user": "kiran@hrret.test"})).await;
     let kiran = vid(&emp);
+    assert_eq!(emp["entity"], json!("Employee"), "the page opens the new employee");
+    assert!(emp["message"].as_str().unwrap().ends_with(": Kiran Rao joins on 2026-02-01"), "{}", emp["message"]);
     t.k.update(&hr, "Employee", kiran, obj(json!({"reports_to": mona["id"]})), None).await.expect("reports to Mona");
     let onboarding = t
         .ins(&hr, "EmployeeOnboarding", json!({"employee": kiran.to_string(), "company": t.c(), "activities": [{"activity_name": "Laptop", "done": true}]}))
