@@ -1054,6 +1054,7 @@ async fn expense_scenario() {
     let adv = t.ins(&me, "EmployeeAdvance", json!({"employee": e["id"], "purpose": "Client visit", "advance_amount": "5000"})).await;
     let adv = t.submit(&hr, "EmployeeAdvance", uid(&adv)).await;
     assert_eq!(adv["status"], json!("Unpaid"));
+    assert!(!adv["paid_amount"].is_null() && dec(&adv["paid_amount"]).is_zero(), "nothing paid reads 0, not empty, so the page offers the payment");
     let pay = t.act(&hr, "EmployeeAdvance", uid(&adv), "make_payment_entry", json!({})).await;
     assert_eq!(pay["docstatus"], json!(0), "a draft for accounts");
     refused(t.k.submit(&hr, "JournalEntry", vid(&pay), None).await, "not permitted");
