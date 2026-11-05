@@ -304,6 +304,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.7.0** | A payroll run's **Bank Payment File**: ISO 20022's salary credit transfer (pain.001.001.09, category SALA) or a CSV for a bank's bulk upload, one payment to each employee paid by bank, from the company's account in Finance or the one given; refused while anyone paid by bank has no account, and to those who may not read bank details. |
 | **0.6.1** | Rebuilt with Ferrum-Frontend 80ff179: labels name their fields, and linked titles show their titles. |
 | **0.6.0** | Income tax slabs take a rebate while the taxable income stays under a limit (India's section 87A) and cesses and surcharges on the tax, each within its bounds and in order; India's new regime for FY 2025-26 is checked against the Income Tax Department's published figures. |
 | **0.5.1** | Hire to retire: a submitted separation makes the employee a leaver on its relieving date, and on that day their sign-in ends through Ferrum's deprovisioning, their work moving to their manager. |

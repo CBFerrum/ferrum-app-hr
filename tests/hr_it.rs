@@ -1326,6 +1326,32 @@ async fn payroll_scenario() {
     let own_reg = t.report(&p1u, "salary_register", &[("from_date", "2026-09-01"), ("to_date", "2026-09-30")]).await.expect("own register");
     assert_eq!(own_reg["rows"].as_array().unwrap().len(), 1);
 
+    // The file the bank pays the run from: refused while anyone paid by bank has no account to pay
+    // into, and to those who may not read bank details; then a salary credit transfer to each.
+    let file = |params: Value| t.k.run_action(&pm, "PayrollEntry", pe_id, "bank_file", params);
+    refused(file(json!({"from_account": "50100012345678"})).await, "no bank account for Rahul Test, Sana Test");
+    forbidden(t.k.run_action(&hru, "PayrollEntry", pe_id, "bank_file", json!({})).await);
+    t.k.update(&t.admin, "Employee", uid(&p2), obj(json!({"salary_mode": "Cash"})), None).await.expect("Rahul paid in cash");
+    t.k.update(&t.admin, "Employee", uid(&p3), obj(json!({"iban": "de89 3704 0044 0532 0130 00"})), None).await.expect("Sana's IBAN");
+    refused(file(json!({})).await, "the company's account at the bank");
+    let pain = file(json!({"from_account": "5010 0012 3456 78", "from_bic": "HDFCINBB", "execution_date": "2026-10-01"})).await.expect("pain.001");
+    assert_eq!((pain["payments"].clone(), dec(&pain["total"])), (json!(2), n("173247.14")), "Priya and Sana; Rahul in cash");
+    assert!(pain["file"]["name"].as_str().unwrap().ends_with("-pain.001.xml"));
+    let xml = pain["file"]["content"].as_str().unwrap();
+    for part in [
+        "<NbOfTxs>2</NbOfTxs><CtrlSum>173247.14</CtrlSum>",
+        "<ReqdExctnDt><Dt>2026-10-01</Dt></ReqdExctnDt>",
+        "<DbtrAcct><Id><Othr><Id>50100012345678</Id></Othr></Id></DbtrAcct><DbtrAgt><FinInstnId><BICFI>HDFCINBB</BICFI></FinInstnId></DbtrAgt>",
+        "<InstdAmt Ccy=\"INR\">143537.14</InstdAmt>",
+        "<MmbId>HDFC0000001</MmbId></ClrSysMmbId></FinInstnId></CdtrAgt><Cdtr><Nm>Priya Test</Nm></Cdtr><CdtrAcct><Id><Othr><Id>0011223344</Id></Othr></Id></CdtrAcct>",
+        "<InstdAmt Ccy=\"INR\">29710.00</InstdAmt></Amt><Cdtr><Nm>Sana Test</Nm></Cdtr><CdtrAcct><Id><IBAN>DE89370400440532013000</IBAN></Id></CdtrAcct>",
+    ] {
+        assert!(xml.contains(part), "{part} in {xml}");
+    }
+    let sheet = file(json!({"format": "CSV", "from_account": "50100012345678"})).await.expect("csv");
+    assert_eq!(sheet["file"]["content"].as_str().unwrap().lines().count(), 3, "a header and the two paid by bank");
+    refused(file(json!({"format": "MT103", "from_account": "50100012345678"})).await, "format");
+
     // Paying, then unwinding in order.
     let bank_entry = t.act(&pm, "PayrollEntry", pe_id, "make_bank_entry", json!({})).await;
     t.submit(&acct, "JournalEntry", vid(&bank_entry)).await;
