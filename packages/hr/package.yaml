@@ -66,8 +66,8 @@ workflows:
 # their name and employment dates, which payroll and tax records need; their private contact,
 # family and bank details go. Applicants lose everything that names them.
 personal_data:
-  - {entity: Employee, match: personal_email, erase: [personal_email, cell_number, current_address, permanent_address, date_of_birth, emergency_contact_name, emergency_phone, emergency_relation, bank_name, bank_account_no, ifsc_code, iban]}
-  - {entity: JobApplicant, match: email_id, erase: [applicant_name, email_id, phone_number]}
+  - {entity: Employee, match: personal_email, phone: cell_number, name: employee_name, erase: [personal_email, cell_number, current_address, permanent_address, date_of_birth, emergency_contact_name, emergency_phone, emergency_relation, bank_name, bank_account_no, ifsc_code, iban]}
+  - {entity: JobApplicant, match: email_id, phone: phone_number, name: applicant_name, erase: [applicant_name, email_id, phone_number]}
   - {entity: JobOffer, match: applicant_email, erase: [applicant_name, applicant_email]}
   - {entity: Attendance, match: employee_user, retain: "Employment records"}
   - {entity: AttendanceRequest, match: employee_user, retain: "Employment records"}
