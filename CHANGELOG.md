@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.0
+
+A payroll run's **Bank Payment File** (FERRUM-HR-002): the file a bank pays the run from.
+
+- ISO 20022's customer credit transfer initiation, `pain.001.001.09`, with the category purpose
+  `SALA`: one payment information block from the company's account, one transaction per employee
+  paid by bank, each with its salary slip as the end-to-end reference. An employee with an IBAN is
+  paid to it; one without is paid to their account number at the bank their routing code names,
+  in the clearing system of the company's country (IFSC in India, ABA in the United States, sort
+  codes in the United Kingdom and so on). Euros between IBANs go by SEPA's service level.
+- Or a CSV for a bank's bulk-upload sheet: name, account number, IBAN, routing code, bank, amount,
+  currency, the day and the reference.
+- The company's account is Finance's Bank Account for the account salaries are paid from (the
+  run's, else the company's default bank account), or the IBAN or account number given with the
+  request where Finance is not installed.
+- Read with the caller's own rights: refused to anyone who may not read employees' bank details or,
+  from Finance, the company's own; refused, naming them, while anyone paid by bank has no account
+  to pay into. Employees paid in cash or by cheque are left out, as is a slip with nothing to pay.
+
+Not yet: validated against the published schema or a bank's own validator (the elements follow
+pain.001.001.09's order; banks each add rules of their own), and bank-specific CSV layouts.
+
 ## 0.6.1
 
 Rebuilt with Ferrum-Frontend 80ff179: a field's label names its control for assistive technology, and a record whose title is a link shows that record's title, not its id.
