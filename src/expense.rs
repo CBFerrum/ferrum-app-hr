@@ -24,6 +24,7 @@ pub(crate) fn register(h: &mut HookRegistry) {
             .register("ExpenseClaim", Arc::new(ClaimHook))
             .register("EmployeeAdvance", Arc::new(AdvanceHook))
             .register("JournalEntry", Arc::new(PaymentHook));
+        crate::settlement::register(h);
     });
 }
 
@@ -520,8 +521,43 @@ pub(crate) async fn payment_entry(
 }
 
 /// Net debit (debit − credit) of a journal entry on one account.
-fn net_on(je: &Doc, account: Option<Uuid>) -> Decimal {
+pub(crate) fn net_on(je: &Doc, account: Option<Uuid>) -> Decimal {
     rows(je, "accounts").iter().filter(|l| account.is_some() && id(l, "account") == account).map(|l| d(l, "debit") - d(l, "credit")).sum()
+}
+
+/// A submitted claim paid `delta` more (less, when negative): its reimbursed and outstanding
+/// amounts and its status. Checks only, unless `write`.
+pub(crate) async fn claim_paid(hc: &mut HookCtx<'_>, claim: &Doc, label: &str, delta: Decimal, write: bool) -> Result<()> {
+    if s(claim, "status") == Some("Rejected") {
+        return Err(Error::invalid(format!("{label} was rejected")));
+    }
+    let paid = d(claim, "total_amount_reimbursed") + delta;
+    let outstanding = d(claim, "grand_total") - d(claim, "total_advance_amount") - paid;
+    if outstanding < Decimal::ZERO || paid < Decimal::ZERO {
+        return Err(Error::invalid(format!("{label} has only {} outstanding", d(claim, "outstanding_amount").normalize())));
+    }
+    if !write {
+        return Ok(());
+    }
+    let mut v = Doc::new();
+    v.insert("total_amount_reimbursed".into(), money(paid));
+    v.insert("outstanding_amount".into(), money(outstanding));
+    v.insert("status".into(), json!(if outstanding.is_zero() { "Paid" } else { "Unpaid" }));
+    hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "ExpenseClaim", id(claim, "id").unwrap_or_default(), v).await
+}
+
+/// A submitted advance's paid or returned amount (`field`) moved by `delta`, with its pending
+/// amount and status. Checks only, unless `write`.
+pub(crate) async fn advance_moved(hc: &mut HookCtx<'_>, adv: &Doc, label: &str, field: &str, delta: Decimal, write: bool) -> Result<()> {
+    if write {
+        return update_advance(hc, adv, field, d(adv, field) + delta).await;
+    }
+    let mut a = adv.clone();
+    set(&mut a, field, money(d(adv, field) + delta));
+    if d(&a, "paid_amount") > d(&a, "advance_amount") || unsettled(&a) < Decimal::ZERO || d(&a, field) < Decimal::ZERO {
+        return Err(Error::invalid(format!("{label}: the amount is more than what is open")));
+    }
+    Ok(())
 }
 
 /// Journal entries referencing an HR document settle it: checked on save, applied on submit and
@@ -532,6 +568,9 @@ impl PaymentHook {
     async fn settle(&self, hc: &mut HookCtx<'_>, je: &Doc, sign: Decimal, write: bool) -> Result<()> {
         let Some(kind) = s(je, "hr_reference_type") else { return Ok(()) };
         let target = s(je, "hr_reference").and_then(|v| v.parse::<Uuid>().ok()).ok_or_else(|| Error::field("hr_reference", "is not a document id"))?;
+        if kind == crate::settlement::KIND {
+            return crate::settlement::settle(hc, je, target, sign, write).await;
+        }
         let (entity, account_field) = match kind {
             "Expense Claim" => ("ExpenseClaim", "payable_account"),
             "Employee Advance" | "Employee Advance Return" => ("EmployeeAdvance", "advance_account"),
@@ -555,30 +594,10 @@ impl PaymentHook {
         let delta = sign * amount;
         let mut v = Doc::new();
         match kind {
-            "Expense Claim" => {
-                if s(&doc, "status") == Some("Rejected") {
-                    return Err(Error::invalid(format!("{label} was rejected")));
-                }
-                let paid = d(&doc, "total_amount_reimbursed") + delta;
-                let outstanding = d(&doc, "grand_total") - d(&doc, "total_advance_amount") - paid;
-                if outstanding < Decimal::ZERO || paid < Decimal::ZERO {
-                    return Err(Error::invalid(format!("{label} has only {} outstanding", d(&doc, "outstanding_amount").normalize())));
-                }
-                v.insert("total_amount_reimbursed".into(), money(paid));
-                v.insert("outstanding_amount".into(), money(outstanding));
-                v.insert("status".into(), json!(if outstanding.is_zero() { "Paid" } else { "Unpaid" }));
-            }
+            "Expense Claim" => return claim_paid(hc, &doc, &label, delta, write).await,
             "Employee Advance" | "Employee Advance Return" => {
                 let field = if kind == "Employee Advance" { "paid_amount" } else { "return_amount" };
-                if write {
-                    return update_advance(hc, &doc, field, d(&doc, field) + delta).await;
-                }
-                let mut a = doc.clone();
-                set(&mut a, field, money(d(&doc, field) + delta));
-                if d(&a, "paid_amount") > d(&a, "advance_amount") || unsettled(&a) < Decimal::ZERO {
-                    return Err(Error::invalid(format!("{label}: the amount is more than what is open")));
-                }
-                return Ok(());
+                return advance_moved(hc, &doc, &label, field, delta, write).await;
             }
             _ => {
                 let paid = d(&doc, "paid_amount") + delta;

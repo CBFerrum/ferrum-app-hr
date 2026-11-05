@@ -62,7 +62,7 @@ Types and policies, allocations, approvals, a leave ledger, encashment and carry
 <td width="50%" valign="top">
 
 ### 🤝 Recruitment to separation
-Openings, applicants, interviews and offers; onboarding, appraisals, promotions, transfers and exits, a leaver's sign-in ended on their last day.
+Openings, applicants, interviews and offers; onboarding, appraisals, promotions, transfers and exits, a leaver's sign-in ended on their last day, and their full and final statement settled by one journal entry.
 
 </td>
 </tr>
@@ -304,6 +304,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.8.0** | A leaver's full and final statement: open claims and advances gathered, gratuity or recoveries added, one journal entry settling it all. |
 | **0.7.4** | Rebuilt with Ferrum-Frontend 00dea07: a workflow state's kept fields are read-only, its needed ones required. |
 | **0.7.3** | Personal-data requests find employee, job applicant records by the person's phone number as well as their email, and list the employee, job applicant records … |
 | **0.7.2** | Rebuilt with Ferrum-Frontend daeadda: actions say what they did. |

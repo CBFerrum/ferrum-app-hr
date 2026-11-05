@@ -4,7 +4,7 @@
 # with HR.
 id: hr-erp
 name: HR and ERP
-version: 0.1.0
+version: 0.2.0
 publisher: cbferrum
 summary: Expense claims, advances and payroll posted to ERP's ledger
 categories: [connector, hr, finance]
