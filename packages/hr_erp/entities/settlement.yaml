@@ -1,0 +1,58 @@
+- name: FullAndFinalLine
+  label: Full and Final Line
+  kind: child
+  fields:
+    - {name: component, type: data, required: true, max_length: 140, in_list: true, description: "What it is: an expense claim, an advance, gratuity, notice pay…"}
+    - {name: reference_type, type: select, options: [Expense Claim, Employee Advance], read_only: true, in_list: true}
+    - {name: reference, type: data, read_only: true, hidden: true, label: Reference Id}
+    - {name: reference_number, type: data, read_only: true, in_list: true, label: Reference}
+    - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}
+    - {name: amount, type: currency, currency: parent.currency, required: true, min: "0.01", in_list: true}
+    - {name: remark, type: data, max_length: 500}
+
+- name: FullAndFinalStatement
+  label: Full and Final Statement
+  kind: document
+  internal: true
+  reference: restricted
+  module: expenses
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-FNF-{YYYY}-{seq:4}", date_field: transaction_date}
+  description: "What is owed each way when an employee leaves: their open expense claims and anything else paid to them, their unsettled advances and anything else recovered. One journal entry settles it all and pays the difference."
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: currency, type: link, to: Currency, read_only: true}
+    - {name: separation, type: link, to: EmployeeSeparation, required: true, description: "The employee's submitted separation"}
+    - {name: relieving_date, type: date, fetch_from: separation.relieving_date, read_only: true, in_list: true}
+    - {name: transaction_date, type: date, required: true, default_expr: today}
+    - {name: payables, type: table, of: FullAndFinalLine, description: "Paid to them: open expense claims, and anything added, such as gratuity or notice pay"}
+    - {name: receivables, type: table, of: FullAndFinalLine, description: "Recovered from them: advances not yet settled, and anything added, such as notice not served"}
+    - {name: total_payable, type: currency, currency: currency, read_only: true, no_copy: true}
+    - {name: total_receivable, type: currency, currency: currency, read_only: true, no_copy: true}
+    - {name: net_payable, type: currency, currency: currency, read_only: true, no_copy: true, in_list: true, description: "Paid to them when above zero; owed by them when below"}
+    - {name: status, type: select, options: [Draft, Unpaid, Paid, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: journal_entry, type: link, to: JournalEntry, read_only: true, no_copy: true, description: "The entry that settled it"}
+  rules:
+    - {name: something_to_settle, check: "size(doc.payables) + size(doc.receivables) > 0", message: "Nothing is owed either way: get the outstanding amounts or add a line", on: submit}
+  actions:
+    - {name: get_outstanding, label: Get Outstanding Amounts, docstatus: [0], permission: write}
+    - name: make_payment_entry
+      label: Make Payment Entry
+      docstatus: [1]
+      permission: read
+      condition: "doc.status == 'Unpaid'"
+      params:
+        - {name: bank_account, type: link, to: Account, label: Paid From, description: "The company's default bank account when empty"}
+        - {name: posting_date, type: date, label: Posting Date, description: Today when empty}
+  form:
+    - {label: Employee, fields: [employee, employee_name, company, separation, relieving_date, transaction_date]}
+    - {label: Paid to them, fields: [payables]}
+    - {label: Recovered from them, fields: [receivables]}
+    - {label: Settlement, fields: [total_payable, total_receivable, net_payable, status, journal_entry]}
+  list: {columns: [number, employee_name, relieving_date, net_payable, status], sort: created_at desc}
