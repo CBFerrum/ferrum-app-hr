@@ -1,5 +1,5 @@
 package: hr_erp
-version: 0.2.0
+version: 0.2.1
 label: HR and ERP
 description: Expense claims and employee advances, posted to the ledger and paid through it; the full and final statement of an employee who leaves, settled by one journal entry; the company's employee payable and advance accounts.
 depends: [hr, accounting]
