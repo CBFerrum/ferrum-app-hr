@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0
+
+A leaver's full and final statement (hr-erp connector 0.2.0, package hr_erp 0.2.0): a submitted separation's Create Full and Final Statement makes it with what is open each way, their approved expense claims not yet paid and their paid advances not yet claimed or returned, and gratuity, notice pay or a recovery can be added by hand. Submitted, its Make Payment Entry makes one journal entry that debits what is paid, credits what is recovered and pays the difference from the bank (or takes it in); submitting the entry pays each claim and returns each advance the statement names and marks it paid, and cancelling the entry undoes all of it. One statement per separation; a paid statement is not cancelled before its entry. Expense claims, advances and statements are now declared as personal data kept as accounting records. Rebuilt with Ferrum-Frontend 0f1a544: a settings page is headed by what it is.
+
 ## 0.7.4
 
 Rebuilt with Ferrum-Frontend 00dea07: in a workflow state that names what may change, the other fields show read-only, and the fields the state needs show required.
