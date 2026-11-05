@@ -394,6 +394,13 @@ impl DocHook for AdvanceHook {
             let acc = company_account(hc, cid, "hr_employee_advance_account", "employee advance account").await?;
             set(doc, "advance_account", acc.to_string());
         }
+        // Nothing paid, claimed or returned reads 0 rather than empty, so the page offers Make
+        // Payment Entry (`paid_amount < advance_amount`) as the server would run it.
+        for f in ["paid_amount", "claimed_amount", "return_amount"] {
+            if doc.get(f).is_none_or(Value::is_null) {
+                set(doc, f, money(Decimal::ZERO));
+            }
+        }
         set(doc, "pending_amount", money(unsettled(doc)));
         Ok(())
     }
