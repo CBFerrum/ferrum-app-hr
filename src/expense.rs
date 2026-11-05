@@ -394,6 +394,13 @@ impl DocHook for AdvanceHook {
             let acc = company_account(hc, cid, "hr_employee_advance_account", "employee advance account").await?;
             set(doc, "advance_account", acc.to_string());
         }
+        // Nothing paid, claimed or returned reads 0 rather than empty, so the page offers Make
+        // Payment Entry (`paid_amount < advance_amount`) as the server would run it.
+        for f in ["paid_amount", "claimed_amount", "return_amount"] {
+            if doc.get(f).is_none_or(Value::is_null) {
+                set(doc, f, money(Decimal::ZERO));
+            }
+        }
         set(doc, "pending_amount", money(unsettled(doc)));
         Ok(())
     }
@@ -514,9 +521,13 @@ pub(crate) async fn payment_entry(
     let user = elevated(hc.ctx);
     let made = hc.kernel.insert_tx(&user, hc.tx, "JournalEntry", je).await?;
     if !submit {
-        return Ok(Value::Object(made));
+        let mut out = made;
+        out.insert("message".into(), json!("A draft journal entry is made for accounts to post (ERP, Journal Entries)"));
+        return Ok(Value::Object(out));
     }
-    let posted = hc.kernel.submit_tx(&user, hc.tx, "JournalEntry", id(&made, "id").unwrap_or_default(), None).await?;
+    let mut posted = hc.kernel.submit_tx(&user, hc.tx, "JournalEntry", id(&made, "id").unwrap_or_default(), None).await?;
+    let message = format!("Journal entry {} is posted", s(&posted, "number").unwrap_or_default());
+    posted.insert("message".into(), json!(message));
     Ok(Value::Object(posted))
 }
 
