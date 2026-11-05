@@ -186,7 +186,17 @@ impl OfferHook {
             }
             hc.kernel.set_values_tx(&sctx, hc.tx, "JobOpening", id(&opening, "id").unwrap_or_default(), v).await?;
         }
-        Ok(Value::Object(created))
+        // The page opens the new employee, saying who joins when.
+        let message = format!(
+            "Employee {} is made: {} joins on {}",
+            s(&created, "number").unwrap_or_default(),
+            s(&created, "employee_name").unwrap_or_default(),
+            s(&created, "date_of_joining").unwrap_or_default()
+        );
+        let mut out = created;
+        out.insert("entity".into(), json!("Employee"));
+        out.insert("message".into(), json!(message));
+        Ok(Value::Object(out))
     }
 }
 
