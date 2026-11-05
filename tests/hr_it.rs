@@ -111,9 +111,11 @@ async fn alone_scenario() {
     let t = T::with("hralone", &["payroll"]).await;
     let schema = t.admin.schema.clone();
     assert_eq!(schema.packages, ["core", "hr", "payroll"]);
-    for erp in ["Account", "JournalEntry", "ExpenseClaim", "EmployeeAdvance", "SalaryComponentAccount"] {
+    for erp in ["Account", "JournalEntry", "ExpenseClaim", "EmployeeAdvance", "FullAndFinalStatement", "SalaryComponentAccount"] {
         assert!(schema.entity(erp).is_none(), "{erp} without ERP");
     }
+    let separation = schema.entity("EmployeeSeparation").unwrap();
+    assert!(separation.def.actions.iter().all(|a| a.name != "make_full_and_final"), "settled through ERP, so only with it");
     let pe = schema.entity("PayrollEntry").unwrap();
     assert!(pe.field("payroll_payable_account").is_none() && pe.def.actions.iter().all(|a| a.name != "make_bank_entry"));
     assert!(schema.entity("Employee").unwrap().field("payroll_cost_center").is_none());
@@ -1620,10 +1622,13 @@ async fn talent_scenario() {
 /// Hire to retire (FERRUM-JOURNEY-003): hired from an accepted offer with a sign-in, onboarded,
 /// then separated. Submitting the separation makes them one who leaves on its relieving date;
 /// until that day their sign-in works, on it HR's upkeep ends it (Ferrum deprovisions the user,
-/// their work moving to their manager), once.
+/// their work moving to their manager), once. Their full and final statement then gathers their
+/// open claim and unsettled advance, takes gratuity and a recovery added by hand, and one journal
+/// entry settles all of it and pays the difference.
 async fn retire_scenario() {
     let t = T::new("hrret").await;
     let hr = t.user("hr@hrret.test", &["HR Manager"]).await;
+    let acct = t.user("acct@hrret.test", &["Accounts Manager"]).await;
     t.user("mona@hrret.test", &["Employee"]).await;
     t.user("kiran@hrret.test", &["Employee"]).await;
     let mona = t.employee("Mona", json!({"user": "mona@hrret.test"})).await;
@@ -1645,6 +1650,19 @@ async fn retire_scenario() {
         .ins(&hr, "EmployeeOnboarding", json!({"employee": kiran.to_string(), "company": t.c(), "activities": [{"activity_name": "Laptop", "done": true}]}))
         .await;
     assert_eq!(onboarding["status"], json!("Completed"));
+    // While employed: a claim approved and not yet paid, and an advance paid and not yet settled.
+    let travel = t.one("ExpenseClaimType", json!({"expense_type": "Travel"})).await;
+    let claim = t
+        .ins(
+            &hr,
+            "ExpenseClaim",
+            json!({"employee": kiran.to_string(), "expenses": [{"expense_date": "2026-03-02", "expense_type": travel["id"], "amount": "1200"}]}),
+        )
+        .await;
+    t.trans(&hr, "ExpenseClaim", uid(&claim), "Approve").await.expect("claim approved");
+    let adv = t.ins_submit(&hr, "EmployeeAdvance", json!({"employee": kiran.to_string(), "purpose": "Conference", "advance_amount": "2000"})).await;
+    let paid = t.act(&hr, "EmployeeAdvance", uid(&adv), "make_payment_entry", json!({})).await;
+    t.submit(&acct, "JournalEntry", vid(&paid)).await;
     let signed_in = t.k.login("hrret", "kiran@hrret.test", PW).await.expect("Kiran signs in");
     let active = |email: &'static str| {
         let t = &t;
@@ -1680,7 +1698,8 @@ async fn retire_scenario() {
     t.k.cancel(&hr, "EmployeeSeparation", uid(&leaving), None).await.expect("cancelled");
     let e = t.get("Employee", kiran).await;
     assert_eq!((e["status"].clone(), e["relieving_date"].clone()), (json!("Active"), Value::Null));
-    t.ins_submit(&hr, "EmployeeSeparation", json!({"employee": kiran.to_string(), "reason": "Resignation", "relieving_date": today.to_string()})).await;
+    let left =
+        t.ins_submit(&hr, "EmployeeSeparation", json!({"employee": kiran.to_string(), "reason": "Resignation", "relieving_date": today.to_string()})).await;
     ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("upkeep");
     assert!(!active("kiran@hrret.test").await, "deprovisioned on the relieving date");
     assert!(active("mona@hrret.test").await, "nobody else");
@@ -1702,4 +1721,69 @@ async fn retire_scenario() {
     assert_eq!(ended, 1, "recorded once");
     ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("upkeep again");
     assert_eq!(audits("deprovision").await, ended, "an inactive user is not touched again");
+
+    // ───────────── the full and final statement: gathered, added to, settled at once ─────────────
+    refused(t.k.run_action(&hr, "EmployeeSeparation", uid(&leaving), "make_full_and_final", json!({})).await, "not available");
+    refused(t.try_ins(&hr, "FullAndFinalStatement", json!({"employee": kiran.to_string(), "separation": leaving["id"]})).await, "is not submitted");
+    refused(t.try_ins(&hr, "FullAndFinalStatement", json!({"employee": mona["id"], "separation": left["id"]})).await, "another employee's");
+    let made = t.act(&hr, "EmployeeSeparation", uid(&left), "make_full_and_final", json!({})).await;
+    assert_eq!((made["entity"].clone(), made["message"].clone()), (json!("FullAndFinalStatement"), json!("The statement is made with the 2 amounts open")));
+    let sid = vid(&made);
+    let again = t.act(&hr, "EmployeeSeparation", uid(&left), "make_full_and_final", json!({})).await;
+    assert_eq!(vid(&again), sid, "one statement per separation");
+    refused(t.try_ins(&hr, "FullAndFinalStatement", json!({"employee": kiran.to_string(), "separation": left["id"]})).await, "already has its statement");
+    let st = t.get("FullAndFinalStatement", sid).await;
+    let (claim_line, advance_line) = (&st["payables"][0], &st["receivables"][0]);
+    assert_eq!((claim_line["reference_type"].clone(), dec(&claim_line["amount"])), (json!("Expense Claim"), n("1200")));
+    assert_eq!((advance_line["reference_type"].clone(), dec(&advance_line["amount"])), (json!("Employee Advance"), n("2000")));
+    assert_eq!((dec(&st["net_payable"]), st["status"].clone()), (n("-800"), json!("Draft")));
+    // Gratuity paid and notice not served recovered, added by hand; gathering again keeps them.
+    let mut payables = st["payables"].as_array().unwrap().clone();
+    payables.push(json!({"component": "Gratuity", "account": t.account("Salaries").await, "amount": "15000"}));
+    let mut receivables = st["receivables"].as_array().unwrap().clone();
+    receivables.push(json!({"component": "Notice not served", "account": t.account("Other Income").await, "amount": "500"}));
+    t.k.update(&hr, "FullAndFinalStatement", sid, obj(json!({"payables": payables, "receivables": receivables})), None).await.expect("lines added");
+    let st = t.act(&hr, "FullAndFinalStatement", sid, "get_outstanding", json!({})).await;
+    assert_eq!((st["payables"].as_array().unwrap().len(), st["receivables"].as_array().unwrap().len()), (2, 2));
+    assert_eq!((dec(&st["total_payable"]), dec(&st["total_receivable"]), dec(&st["net_payable"])), (n("16200"), n("2500"), n("13700")));
+    let st = t.submit(&hr, "FullAndFinalStatement", sid).await;
+    assert_eq!(st["status"], json!("Unpaid"));
+
+    // One entry: what is paid debited, what is recovered credited, the difference from the bank.
+    // Changed so it no longer says what the statement says, it is refused.
+    let bank = t.gl("Primary Bank").await;
+    let je = t.act(&hr, "FullAndFinalStatement", sid, "make_payment_entry", json!({})).await;
+    let salaries = t.account("Salaries").await;
+    let mut lines = je["accounts"].as_array().unwrap().clone();
+    for l in lines.iter_mut() {
+        if l["account"] == json!(salaries) {
+            l["debit"] = json!("14000");
+        } else if dec(&l["credit"]) == n("13700") {
+            l["credit"] = json!("12700");
+        }
+    }
+    refused(t.k.update(&acct, "JournalEntry", vid(&je), obj(json!({"accounts": lines})), None).await, "must debit what");
+    t.submit(&acct, "JournalEntry", vid(&je)).await;
+    let st = t.get("FullAndFinalStatement", sid).await;
+    assert_eq!((st["status"].clone(), st["journal_entry"].clone()), (json!("Paid"), je["id"].clone()));
+    let c = t.get("ExpenseClaim", uid(&claim)).await;
+    assert_eq!((c["status"].clone(), dec(&c["outstanding_amount"])), (json!("Paid"), Decimal::ZERO));
+    let a = t.get("EmployeeAdvance", uid(&adv)).await;
+    assert_eq!((a["status"].clone(), dec(&a["pending_amount"])), (json!("Returned"), Decimal::ZERO));
+    assert_eq!((t.gl("Employee Payables").await, t.gl("Employee Advances").await), (Decimal::ZERO, Decimal::ZERO));
+    assert_eq!((t.gl("Salaries").await, t.gl("Other Income").await, t.gl("Primary Bank").await), (n("15000"), n("-500"), bank - n("13700")));
+    refused(t.k.run_action(&hr, "FullAndFinalStatement", sid, "make_payment_entry", json!({})).await, "not available");
+    refused(t.k.cancel(&hr, "FullAndFinalStatement", sid, None).await, "cancel its journal entry first");
+
+    // The entry cancelled, everything is open again; the statement cancelled, the separation can
+    // have a new one.
+    t.k.cancel(&acct, "JournalEntry", vid(&je), None).await.expect("entry cancelled");
+    let st = t.get("FullAndFinalStatement", sid).await;
+    assert_eq!((st["status"].clone(), st["journal_entry"].clone()), (json!("Unpaid"), Value::Null));
+    assert_eq!(dec(&t.get("ExpenseClaim", uid(&claim)).await["outstanding_amount"]), n("1200"));
+    assert_eq!(dec(&t.get("EmployeeAdvance", uid(&adv)).await["pending_amount"]), n("2000"));
+    t.k.cancel(&hr, "FullAndFinalStatement", sid, None).await.expect("statement cancelled");
+    assert_eq!(t.get("FullAndFinalStatement", sid).await["status"], json!("Cancelled"));
+    let anew = t.act(&hr, "EmployeeSeparation", uid(&left), "make_full_and_final", json!({})).await;
+    assert_ne!(vid(&anew), sid, "a new statement once the old one is cancelled");
 }

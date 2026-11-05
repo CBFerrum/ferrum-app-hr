@@ -14,6 +14,7 @@ mod leave;
 mod payroll;
 mod people;
 mod reports;
+mod settlement;
 mod site;
 mod talent;
 
