@@ -1308,7 +1308,8 @@ async fn payroll_scenario() {
     let mine = t.k.get(&p1u, "Employee", uid(&p1), false).await.expect("own employee record");
     assert_eq!(mine["bank_account_no"], json!("0011223344"));
     let masked = t.k.get(&hru, "Employee", uid(&p1), false).await.unwrap();
-    assert!(masked.get("bank_account_no").is_none(), "HR users do not see bank details");
+    assert_eq!(masked["bank_account_no"], json!("•••• 3344"), "HR users see only the last four of bank details");
+    assert!(masked.get("bank_name").is_none(), "and nothing of what has no mask");
 
     // Reports.
     let reg = t.report(&pm, "salary_register", &[("from_date", "2026-09-01"), ("to_date", "2026-09-30")]).await.expect("register");

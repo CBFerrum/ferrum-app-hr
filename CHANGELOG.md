@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1
+
+- Employees' bank account numbers, IBANs, tax IDs and national IDs show their last four
+  characters, and passport numbers that there is one, to those who may not read bank or identity
+  details (FERRUM-IDENTITY-012): HR users see "•••• 3344" where they saw nothing. Lists and filters
+  keep to what each person may read, as before.
+- Interface rebuilt with Ferrum-Frontend a110af4: an action says what it did ("2 payments of
+  173247.14 INR in all") rather than "done".
+
 ## 0.7.0
 
 A payroll run's **Bank Payment File** (FERRUM-HR-002): the file a bank pays the run from.
