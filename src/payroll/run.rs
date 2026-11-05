@@ -345,6 +345,7 @@ impl DocHook for RunHook {
             "get_employees" => self.get_employees(hc, doc).await.map(Some),
             "create_salary_slips" => self.create_slips(hc, doc).await.map(Some),
             "submit_salary_slips" => self.submit_slips(hc, doc).await.map(Some),
+            "bank_file" => super::bank_file::bank_file(hc, doc, params).await.map(Some),
             "make_bank_entry" => {
                 let amount = amount_param(params, d(doc, "total_net_pay") - d(doc, "paid_amount"))?;
                 let payable = id(doc, "payroll_payable_account").ok_or_else(|| Error::field("payroll_payable_account", "is required"))?;
