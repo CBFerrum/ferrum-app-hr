@@ -1,7 +1,8 @@
 //! Payroll: salary components with formulas, salary structures and their assignment, payroll
 //! periods with progressive income tax, additional salary and leave encashment. Salary slips are
-//! in `slip`, payroll runs and their postings in `run`.
+//! in `slip`, payroll runs and their postings in `run`, the file a bank pays a run from in `bank_file`.
 
+pub(crate) mod bank_file;
 pub(crate) mod formula;
 pub(crate) mod run;
 pub(crate) mod slip;

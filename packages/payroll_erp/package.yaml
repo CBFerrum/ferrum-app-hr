@@ -28,6 +28,21 @@ overlays:
       - {op: add_field, column: true, after: payment_account, field: {name: cost_center, type: link, to: CostCenter, link_filters: {is_group: false}, description: For employees without a payroll cost center of their own or their department's}}
       - {op: add_field, column: true, after: cost_center, field: {name: payroll_payable_account, type: link, to: Account, link_filters: {is_group: false}}}
       - {op: add_action, action: {name: make_bank_entry, label: Make Bank Entry, docstatus: [1], permission: read, condition: "doc.salary_slips_submitted && doc.paid_amount < doc.total_net_pay"}}
+      # The file the bank pays the run from; it needs the rights to read employees' bank details.
+      - op: add_action
+        action:
+          name: bank_file
+          label: Bank Payment File
+          docstatus: [1]
+          permission: read
+          read_only: true
+          condition: "doc.salary_slips_submitted"
+          params:
+            - {name: format, type: select, label: Format, options: ["ISO 20022 (pain.001)", "CSV"], description: "ISO 20022's salary credit transfer, which most banks take; or a sheet for a bank's bulk upload. ISO 20022 when empty"}
+            - {name: execution_date, type: date, label: Pay On, description: "The day the bank pays; the run's posting date when empty"}
+            - {name: bank_account, type: link, to: Account, label: Paid From, description: "The bank account salaries are paid from; the run's, else the company's default bank account"}
+            - {name: from_account, label: Company's Account, description: "Its IBAN or account number, where Finance does not keep the company's Bank Account"}
+            - {name: from_bic, label: Company's Bank BIC, description: "With the account above, when the bank asks for it"}
 
 roles:
   - name: Payroll Manager
