@@ -304,6 +304,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.7.2** | Rebuilt with Ferrum-Frontend daeadda: actions say what they did. |
 | **0.7.1** | Bank and identity numbers show their last four to those who may not read them; actions say what they did. |
 | **0.7.0** | A payroll run's **Bank Payment File**: ISO 20022's salary credit transfer (pain.001.001.09, category SALA) or a CSV for a bank's bulk upload, one payment to each employee paid by bank, from the company's account in Finance or the one given; refused while anyone paid by bank has no account, and to those who may not read bank details. |
 | **0.6.1** | Rebuilt with Ferrum-Frontend 80ff179: labels name their fields, and linked titles show their titles. |
