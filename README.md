@@ -304,6 +304,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.8.1** | The actions ask for what they read: Allocate Leaves its dates, Create Employee who signs in, payments their amount and account. |
 | **0.8.0** | A leaver's full and final statement: open claims and advances gathered, gratuity or recoveries added, one journal entry settling it all. |
 | **0.7.4** | Rebuilt with Ferrum-Frontend 00dea07: a workflow state's kept fields are read-only, its needed ones required. |
 | **0.7.3** | Personal-data requests find employee, job applicant records by the person's phone number as well as their email, and list the employee, job applicant records … |

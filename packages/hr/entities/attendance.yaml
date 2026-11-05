@@ -22,7 +22,11 @@
   rules:
     - {name: ordered_dates, check: "doc.from_date == null || doc.to_date == null || doc.to_date >= doc.from_date", message: "To date must not be before from date"}
   actions:
-    - {name: add_weekly_offs, label: Add Weekly Offs, permission: write}
+    - name: add_weekly_offs
+      label: Add Weekly Offs
+      permission: write
+      params:
+        - {name: weekday, type: select, options: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday], label: Weekday, description: "The list's weekly off when empty"}
   list: {columns: [holiday_list_name, from_date, to_date, total_holidays], sort: from_date desc}
 
 - name: ShiftType
@@ -54,7 +58,12 @@
     - {name: end_format, check: "doc.end_time == null || doc.end_time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')", message: "End time must look like 18:00"}
     - {name: thresholds, check: "doc.working_hours_threshold_for_absent == 0.0 || doc.working_hours_threshold_for_half_day == 0.0 || doc.working_hours_threshold_for_absent < doc.working_hours_threshold_for_half_day", message: "The absent threshold must be below the half-day threshold"}
   actions:
-    - {name: mark_attendance, label: Mark Attendance Up To Date, permission: write, confirm: "Mark attendance from check-ins for every completed shift day of this shift type?"}
+    - name: mark_attendance
+      label: Mark Attendance Up To Date
+      permission: write
+      confirm: "Mark attendance from check-ins for every completed shift day of this shift type?"
+      params:
+        - {name: up_to, type: date, label: Up To, description: "Every completed shift day when empty"}
   list: {columns: [shift_name, start_time, end_time, enable_auto_attendance], sort: shift_name asc}
 
 - name: ShiftAssignment
@@ -207,8 +216,21 @@
     - {name: year_starts, type: select, options: [January, February, March, April, May, June, July, August, September, October, November, December], default: January, label: Leave Year Starts In, description: "The year that accruing leaves are granted for; January when empty"}
     - {name: description, type: text}
   actions:
-    - {name: assign_allocations, label: Allocate Leaves, permission: read, confirm: "Create and submit leave allocations from this policy? Lines that accrue are left to Grant Accrued Leaves."}
-    - {name: accrue, label: Grant Accrued Leaves, permission: read, confirm: "Grant the leaves that the lines of this policy have accrued so far to the employees who have it? This also runs by itself every day."}
+    - name: assign_allocations
+      label: Allocate Leaves
+      permission: read
+      confirm: "Create and submit leave allocations from this policy? Lines that accrue are left to Grant Accrued Leaves."
+      params:
+        - {name: from_date, type: date, label: From, required: true}
+        - {name: to_date, type: date, label: To, required: true}
+        - {name: company, type: link, to: Company, label: Company, description: "Its active employees are allocated; your default company when empty"}
+        - {name: carry_forward, type: select, options: ["No", "Yes"], label: Carry Forward, description: "Add what each employee's last allocation of the type has left"}
+    - name: accrue
+      label: Grant Accrued Leaves
+      permission: read
+      confirm: "Grant the leaves that the lines of this policy have accrued so far to the employees who have it? This also runs by itself every day."
+      params:
+        - {name: "on", type: date, label: Accrued On, description: "Today when empty"}
   list: {sort: title asc}
 
 - name: LeaveAllocation

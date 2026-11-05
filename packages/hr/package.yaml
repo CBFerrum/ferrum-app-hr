@@ -1,5 +1,5 @@
 package: hr
-version: 0.2.1
+version: 0.2.2
 label: Human Resources
 description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
 depends: [core]

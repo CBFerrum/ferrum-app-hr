@@ -1629,6 +1629,25 @@ async fn retire_scenario() {
     let t = T::new("hrret").await;
     let hr = t.user("hr@hrret.test", &["HR Manager"]).await;
     let acct = t.user("acct@hrret.test", &["Accounts Manager"]).await;
+    // What the actions read, their pages ask for: a parameter left undeclared can never be given
+    // from a page (Allocate Leaves could not work from one, needing its dates).
+    let asks = |entity: &str, action: &str| -> Vec<String> {
+        let ent = hr.schema.entity(entity).unwrap();
+        ent.def.actions.iter().find(|a| a.name == action).unwrap().params.iter().map(|p| p.name.clone()).collect()
+    };
+    for (entity, action, names) in [
+        ("JobOffer", "make_employee", &["date_of_joining", "user"][..]),
+        ("LeavePolicy", "assign_allocations", &["from_date", "to_date", "company", "carry_forward"]),
+        ("LeavePolicy", "accrue", &["on"]),
+        ("HolidayList", "add_weekly_offs", &["weekday"]),
+        ("ShiftType", "mark_attendance", &["up_to"]),
+        ("ExpenseClaim", "make_payment_entry", &["amount", "bank_account"]),
+        ("EmployeeAdvance", "make_payment_entry", &["amount", "bank_account"]),
+        ("EmployeeAdvance", "make_return_entry", &["amount", "bank_account"]),
+        ("FullAndFinalStatement", "make_payment_entry", &["bank_account", "posting_date"]),
+    ] {
+        assert_eq!(asks(entity, action), names, "{entity}.{action}");
+    }
     t.user("mona@hrret.test", &["Employee"]).await;
     t.user("kiran@hrret.test", &["Employee"]).await;
     let mona = t.employee("Mona", json!({"user": "mona@hrret.test"})).await;
