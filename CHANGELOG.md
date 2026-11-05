@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.3
+
+Personal-data requests find employee, job applicant records by the person's phone number as well as their email, and list the employee, job applicant records holding their name apart, for an administrator to judge (never erased for the name alone) (Ferrum's FERRUM-PRIVACY-002). Bank account numbers, IBANs, tax and national ID and passport numbers are left out of every list export, whoever exports (FERRUM-IDENTITY-012).
+
 ## 0.7.2
 
 Rebuilt with Ferrum-Frontend daeadda: after an action runs, a record page shows what the action said it did rather than only that it is done.
