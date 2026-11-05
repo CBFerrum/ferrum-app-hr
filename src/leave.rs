@@ -383,7 +383,8 @@ impl DocHook for PolicyHook {
         if to < from {
             return Err(Error::field("to_date", "must not be before the from date"));
         }
-        let carry = params.get("carry_forward").and_then(Value::as_bool).unwrap_or(false);
+        // true from the API, "Yes" from the page's choice.
+        let carry = params.get("carry_forward").is_some_and(|v| v.as_bool().unwrap_or(v.as_str() == Some("Yes")));
         let employees: Vec<Uuid> = match params.get("employees").and_then(Value::as_array) {
             Some(list) => list.iter().filter_map(|v| v.as_str().and_then(|s| s.parse().ok())).collect(),
             None => {

@@ -111,7 +111,14 @@
   actions:
     - {name: accept, label: Mark Accepted, docstatus: [1], permission: submit, condition: "doc.status == 'Awaiting Response'"}
     - {name: reject, label: Mark Rejected, docstatus: [1], permission: submit, condition: "doc.status == 'Awaiting Response'"}
-    - {name: make_employee, label: Create Employee, docstatus: [1], permission: read, condition: "doc.status == 'Accepted'"}
+    - name: make_employee
+      label: Create Employee
+      docstatus: [1]
+      permission: read
+      condition: "doc.status == 'Accepted'"
+      params:
+        - {name: date_of_joining, type: date, label: Date of Joining, description: "The offer's expected joining date when empty"}
+        - {name: user, type: data, label: Sign-in Email, description: "The member who signs in as this employee (their own pages and approvals); none when empty"}
   list: {columns: [number, applicant_name, designation, offer_date, status], sort: offer_date desc}
 
 - name: AppraisalCycle
