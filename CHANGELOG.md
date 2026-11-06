@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.3
+
+Your last check-in or out is on the workspace's clock. Rebuilt with Ferrum-Frontend 24c3951, so its records' pages show times on the workspace's clock too, a draft numbered on submit is headed as a draft, and a record of an app that is not installed says so.
+
 ## 0.8.2
 
 Rebuilt with Ferrum-Frontend bb60115: a record page reads an empty number or check as the server does, so an action whose condition needs one shows, and a workspace's settings open as their one record.
