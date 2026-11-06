@@ -7,7 +7,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useState } from "react";
 import { Link } from "react-router";
-import { api, errorMessage, todayIso } from "@ferrum/client";
+import { api, errorMessage, formatDateTime, todayIso } from "@ferrum/client";
 import { Badge, Button, EmptyState, ErrorState, Spinner, statusTone, toast, useLiveEntity, useShellTitle } from "@ferrum/kit";
 import { useMe } from "@ferrum/records";
 import type { Holiday } from "./calendar";
@@ -60,7 +60,7 @@ function CheckIn({ employee }: { employee: Employee }) {
       </Button>
       {last.data?.log_time && (
         <span className="faint">
-          Last {last.data.log_type === "IN" ? "in" : "out"} {new Date(last.data.log_time).toLocaleString()}
+          Last {last.data.log_type === "IN" ? "in" : "out"} {formatDateTime(last.data.log_time)}
         </span>
       )}
     </div>
