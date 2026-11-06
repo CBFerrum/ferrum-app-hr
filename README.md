@@ -304,6 +304,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.8.2** | Rebuilt with Ferrum-Frontend bb60115: empty numbers read as the server reads them; settings open as their record. |
 | **0.8.1** | The actions ask for what they read: Allocate Leaves its dates, Create Employee who signs in, payments their amount and account. |
 | **0.8.0** | A leaver's full and final statement: open claims and advances gathered, gratuity or recoveries added, one journal entry settling it all. |
 | **0.7.4** | Rebuilt with Ferrum-Frontend 00dea07: a workflow state's kept fields are read-only, its needed ones required. |
