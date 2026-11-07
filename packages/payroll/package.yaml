@@ -34,7 +34,7 @@ roles:
       - {entity: LeaveEncashment, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
       - {entity: PayrollEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: SalarySlip, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
-      - {entity: Employee, read: true, read_groups: [bank, identity]}
+      - {entity: Employee, read: true, read_groups: [bank, identity, personal]}
       - {entity: Department, read: true}
       - {entity: Designation, read: true}
       - {entity: Branch, read: true}

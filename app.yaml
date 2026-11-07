@@ -1,6 +1,6 @@
 id: hr
 name: HR and Payroll
-version: 0.8.10
+version: 0.8.11
 publisher: cbferrum
 summary: Employees, attendance, shifts, leave, recruitment, appraisals, salary structures and payroll
 description: README.md
@@ -47,3 +47,19 @@ contributes:
     - {id: expense_decision, label: Decisions on your expense claims, default: [inapp, email]}
     - {id: attendance_request, label: Attendance requests waiting for your approval, default: [inapp, email]}
     - {id: attendance_decision, label: Decisions on your attendance requests, default: [inapp, email]}
+  # What the assistant should know in HR and Payroll's pages, and what it suggests asking there.
+  shell.assistant:
+    - id: hr
+      title: "HR and Payroll"
+      instructions: >-
+        An Employee is Active, Inactive, Suspended or Left, with a department, designation and manager. Attendance is
+        Present, Absent, Half Day, On Leave or Work From Home. Leave is applied for (LeaveApplication: Open, Approved,
+        Rejected, Cancelled), and balances come from allocations and the leave ledger, not from counting applications.
+        Recruitment runs from JobOpening to JobApplicant, Interview and JobOffer. Pay, bank, identity and personal
+        details are held back from you unless the workspace allows them; use what you are given only as far as the
+        question needs.
+      suggestions:
+        - "Who is on leave this week?"
+        - "How many leave days do I have left?"
+        - "Which openings have the most applicants?"
+        - "Who joined this quarter?"

@@ -960,7 +960,7 @@ async fn attendance_scenario() {
     ] {
         t.ins(&hr, "EmployeeCheckin", p).await;
     }
-    refused(t.try_ins(&hr, "EmployeeCheckin", punch(&b, "IN", "2026-09-02T09:00:00+05:30")).await, "duplicate");
+    refused(t.try_ins(&hr, "EmployeeCheckin", punch(&b, "IN", "2026-09-02T09:00:00+05:30")).await, "already has this Employee and Log Time");
 
     let res = t.act(&hr, "ShiftType", uid(&general), "mark_attendance", json!({"up_to": "2026-09-04"})).await;
     assert_eq!((res["marked"].clone(), res["absent"].clone()), (json!(3), json!(9)), "{res}");
@@ -1328,6 +1328,11 @@ async fn payroll_scenario() {
     forbidden(t.report(&hru, "bank_remittance", &[("payroll_entry", &pe_id.to_string())]).await);
     let tax = t.report(&pm, "income_tax_deductions", &[("from_date", "2026-04-01"), ("to_date", "2027-03-31")]).await.expect("tax report");
     assert_eq!(dec(&tax["totals"]["income_tax"]), n("4462.86"));
+    // For an AI provider the workspace allowed nothing more, neither: salary slips stay inside the
+    // workspace, and bank details are in a field group.
+    let provider = pm.for_provider(ferrum_kernel::ctx::Egress::default());
+    forbidden(t.report(&provider, "income_tax_deductions", &[("from_date", "2026-04-01"), ("to_date", "2027-03-31")]).await);
+    forbidden(t.report(&provider, "bank_remittance", &[("payroll_entry", &pe_id.to_string())]).await);
     let own_reg = t.report(&p1u, "salary_register", &[("from_date", "2026-09-01"), ("to_date", "2026-09-30")]).await.expect("own register");
     assert_eq!(own_reg["rows"].as_array().unwrap().len(), 1);
 
@@ -1431,7 +1436,7 @@ async fn talent_scenario() {
     t.ins(&hr, "JobApplicant", json!({"applicant_name": "Lee Park", "email_id": "lee@mail.test", "job_opening": opening["id"], "status": "Rejected"})).await;
     refused(
         t.try_ins(&hr, "JobApplicant", json!({"applicant_name": "Kiran again", "email_id": "kiran@mail.test", "job_opening": opening["id"]})).await,
-        "duplicate",
+        "already has this Email Id and Job Opening",
     );
     let interview = |feedback: Value| {
         json!({"job_applicant": applicant["id"], "interview_round": "Technical", "scheduled_on": "2026-10-05T10:00:00+05:30",
@@ -1597,6 +1602,10 @@ async fn talent_scenario() {
     let ev = t.report(&hr, "employee_events", &[("from_date", "2026-10-29"), ("days", "30")]).await.expect("events");
     let b = row(&ev, "event", "Birthday");
     assert_eq!((b["date"].clone(), b["years"].clone()), (json!("2026-11-05"), json!(36)));
+    // Run for an AI provider the workspace allowed nothing more: a birthday is a date of birth.
+    let provider = hr.for_provider(ferrum_kernel::ctx::Egress::default());
+    let ev = t.report(&provider, "employee_events", &[("from_date", "2026-10-29"), ("days", "30")]).await.expect("events for a provider");
+    assert!(ev["rows"].as_array().unwrap().iter().all(|r| r["event"] != json!("Birthday")), "{ev}");
 
     // ───────────── training ─────────────
     let asha = t.employee("Training Asha", json!({})).await;

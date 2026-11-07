@@ -317,6 +317,12 @@ async fn headcount(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>, co: &f
     }))
 }
 
+/// Whether an Employee's `field` is the caller's to see: its field group, and, when the assistant runs
+/// the report, whether the workspace lets it go to the AI provider.
+fn sees(ctx: &Ctx, field: &str) -> bool {
+    ctx.schema.entity("Employee").is_some_and(|e| ferrum_kernel::query::readable(ctx, e, field))
+}
+
 async fn events(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result<Value> {
     let from = p.date("from_date")?.unwrap_or_else(crate::today);
     let days: i64 = p.str("days").map(|d| d.parse().map_err(|_| Error::field("days", "must be a whole number"))).transpose()?.unwrap_or(30).clamp(0, 366);
@@ -328,9 +334,12 @@ async fn events(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result
     qb.push_bind(ctx.tenant).push(" and e.company = ").push_bind(company);
     push_own(&mut qb, &own_only(ctx, "Employee"));
     let data: Vec<(Option<String>, Option<String>, Option<String>, Option<NaiveDate>, Option<NaiveDate>)> = qb.build_query_as().fetch_all(&mut **tx).await?;
+    // A birthday is a date of birth: only for those who may see one, and never to an AI provider
+    // the workspace has not allowed it.
+    let birthdays = sees(ctx, "date_of_birth");
     let mut found: Vec<(NaiveDate, Value)> = Vec::new();
     for (no, name, dept, born, joined) in data {
-        for (event, date) in [("Birthday", born), ("Work Anniversary", joined)] {
+        for (event, date) in [("Birthday", born.filter(|_| birthdays)), ("Work Anniversary", joined)] {
             let Some(date) = date else { continue };
             let (next, years) = next_occurrence(date, from);
             if next <= until && years > 0 {
@@ -740,7 +749,7 @@ fn payroll_summary(data: RegisterData) -> Value {
 }
 
 async fn income_tax(tx: &mut Tx, ctx: &Ctx, data: RegisterData) -> Result<Value> {
-    let tax_id = ctx.schema.entity("Employee").and_then(|e| e.field("tax_id").cloned()).is_some_and(|f| ctx.perms.can_read_field("Employee", &f));
+    let tax_id = sees(ctx, "tax_id");
     let mut per: BTreeMap<(String, Uuid), (Option<String>, i64, Decimal, Decimal, Decimal)> = BTreeMap::new();
     for s in &data.slips {
         let e = per.entry((s.employee_name.clone().unwrap_or_default(), s.employee_id)).or_insert((
@@ -790,7 +799,7 @@ async fn income_tax(tx: &mut Tx, ctx: &Ctx, data: RegisterData) -> Result<Value>
 }
 
 async fn bank_remittance(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>, from: NaiveDate, to: NaiveDate) -> Result<Value> {
-    let readable = ctx.schema.entity("Employee").and_then(|e| e.field("bank_account_no").cloned()).is_some_and(|f| ctx.perms.can_read_field("Employee", &f));
+    let readable = sees(ctx, "bank_account_no");
     if !readable {
         return Err(Error::Forbidden("bank details are restricted to payroll and HR managers".into()));
     }
