@@ -4,7 +4,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { api, docPath, download, errorMessage, formatDate, todayIso, t as tr } from "@ferrum/client";
+import { api, docPath, download, errorMessage, formatDate, todayIso, t as tr, isolate } from "@ferrum/client";
 import { Badge, EmptyState, ErrorState, Icon, Spinner, toast } from "@ferrum/kit";
 import { f, rows, title, useCanRead } from "./data";
 import { money } from "./inbox";
@@ -41,10 +41,10 @@ function Payslips({ employee }: { employee: Employee }) {
           <ul className="ppl-slips" data-ferrum-nocard>
             {q.data.map((s) => (
               <li key={s.id}>
-                <Link to={`/e/SalarySlip/${s.id}`}>{slipPeriod(s.start_date, s.end_date)}</Link>
+                <Link to={`/e/SalarySlip/${s.id}`}>{isolate(slipPeriod(s.start_date, s.end_date))}</Link>
                 <span className="ppl-num">
-                  <strong>{money(s.net_pay, title(s, "currency") ?? "")}</strong>
-                  <span className="faint"> net</span>
+                  <strong>{isolate(money(s.net_pay, title(s, "currency") ?? ""))}</strong>
+                  <span className="faint"> {tr("net")}</span>
                 </span>
               </li>
             ))}
@@ -63,7 +63,7 @@ interface Attached {
   created_at: string;
 }
 
-const kb = (n: number) => (n >= 1_048_576 ? `${(n / 1_048_576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const kb = (n: number) => (n >= 1_048_576 ? tr("{value} MB", { value: (n / 1_048_576).toFixed(1) }) : tr("{Math} KB", { Math: Math.max(1, Math.round(n / 1024)) }));
 
 function Documents({ employee, training }: { employee: Employee; training: boolean }) {
   const today = todayIso();
@@ -86,7 +86,7 @@ function Documents({ employee, training }: { employee: Employee; training: boole
       </div>
       <div className="card-body stack ppl-tight">
         {files.error ? (
-          <p className="muted">{tr("Your documents cannot be shown (")}{errorMessage(files.error)}).</p>
+          <p className="muted">{tr("Your documents cannot be shown (")}{isolate(errorMessage(files.error))}).</p>
         ) : !files.data ? (
           <Spinner small label={tr("Loading your documents")} />
         ) : !files.data.length ? (
@@ -97,9 +97,9 @@ function Documents({ employee, training }: { employee: Employee; training: boole
               <li key={d.id}>
                 <button type="button" className="link-btn row" onClick={() => download(d.url, d.file_name).catch((e) => toast(errorMessage(e), "error"))}>
                   <Icon name="download" size={14} />
-                  <span>{d.file_name}</span>
+                  <span>{isolate(d.file_name)}</span>
                 </button>
-                <span className="faint">{kb(d.size_bytes)}</span>
+                <span className="faint">{isolate(kb(d.size_bytes))}</span>
               </li>
             ))}
           </ul>
@@ -110,8 +110,8 @@ function Documents({ employee, training }: { employee: Employee; training: boole
               const c = cover(t.valid_until, today);
               return (
                 <li key={t.id}>
-                  <span>{t.program_name}</span>
-                  <span className="faint">{t.valid_until ? `until ${formatDate(t.valid_until)}` : t.completed_on ? `passed ${formatDate(t.completed_on)}` : ""}</span>
+                  <span>{isolate(t.program_name ?? "")}</span>
+                  <span className="faint">{t.valid_until ? tr("until {value}", { value: formatDate(t.valid_until) }) : t.completed_on ? tr("passed {value}", { value: formatDate(t.completed_on) }) : ""}</span>
                   {c === "expired" && <Badge tone="red">{tr("Lapsed")}</Badge>}
                   {c === "soon" && <Badge tone="amber">{tr("Lapses soon")}</Badge>}
                 </li>

@@ -6,7 +6,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { Link, useParams } from "react-router";
-import { api, ApiError, bootstrap, errorMessage, formatDate, t as tr } from "@ferrum/client";
+import { api, ApiError, bootstrap, errorMessage, formatDate, t as tr, isolate } from "@ferrum/client";
 import { Alert, Button, EmptyState, ErrorState, Field, Markdown, Spinner, useShellTitle } from "@ferrum/kit";
 import { type Application, EMPTY, LIMITS, meta, payload, problems } from "./careers";
 
@@ -53,7 +53,7 @@ function Form({ slug, opening, onSent }: { slug: string; opening: Opening; onSen
       <h2 id="apply-title" className="ppl-sub">
         {tr("Apply for this role")}
       </h2>
-      {send.error && !(send.error instanceof ApiError && send.error.fields.length && send.error.fields.every((f) => f.field in EMPTY)) && <Alert tone="error">{errorMessage(send.error)}</Alert>}
+      {send.error && !(send.error instanceof ApiError && send.error.fields.length && send.error.fields.every((f) => f.field in EMPTY)) && <Alert tone="error">{isolate(errorMessage(send.error))}</Alert>}
       <Field label={tr("Your name")} htmlFor="apply-name" required error={field("name")}>
         <input id="apply-name" className="input" autoComplete="name" maxLength={LIMITS.name} value={a.name} onChange={set("name")} aria-invalid={field("name") ? true : undefined} />
       </Field>
@@ -107,9 +107,9 @@ function Detail({ slug, id }: { slug: string; id: string }) {
         {tr("All openings")}
       </Link>
       <header>
-        <h1 className="page-title">{o.title}</h1>
-        <p className="page-sub">{[o.company, meta(o)].filter(Boolean).join(" · ")}</p>
-        {o.closes_on && <p className="faint">{tr("Applications close on")} {formatDate(o.closes_on)}.</p>}
+        <h1 className="page-title">{isolate(o.title)}</h1>
+        <p className="page-sub">{isolate([o.company, meta(o)].filter(Boolean).join(" · "))}</p>
+        {o.closes_on && <p className="faint">{tr("Applications close on")} {isolate(formatDate(o.closes_on))}.</p>}
       </header>
       {o.description ? <Markdown source={o.description} /> : <p className="muted">{tr("There is no description yet.")}</p>}
       {sent ? (
@@ -143,10 +143,10 @@ function List({ slug }: { slug: string }) {
       {q.data.openings.map((o) => (
         <li key={o.id} className="card card-pad">
           <Link className="ppl-opening-title" to={`/careers/${slug}/${o.id}`}>
-            {o.title}
+            {isolate(o.title)}
           </Link>
-          <p className="muted">{[o.company, meta(o)].filter(Boolean).join(" · ")}</p>
-          {o.posted_on && <p className="faint">{tr("Posted")} {formatDate(o.posted_on)}</p>}
+          <p className="muted">{isolate([o.company, meta(o)].filter(Boolean).join(" · "))}</p>
+          {o.posted_on && <p className="faint">{tr("Posted")} {isolate(formatDate(o.posted_on))}</p>}
         </li>
       ))}
     </ul>
@@ -158,11 +158,11 @@ export function Careers() {
   const here = bootstrap()?.workspace;
   // The address names the workspace; the page was served for the same one.
   const slug = here?.slug || asked;
-  useShellTitle(here?.name ? `Careers at ${here.name}` : "Careers");
+  useShellTitle(here?.name ? tr("Careers at {name}", { name: here.name }) : tr("Careers"));
   return (
     <main className="ppl-careers">
       <header className="ppl-careers-head">
-        <p className="faint">{here?.name}</p>
+        <p className="faint">{isolate(here?.name ?? "")}</p>
         <h1 className="page-title">{tr("Careers")}</h1>
       </header>
       {opening ? <Detail slug={slug} id={opening} /> : <List slug={slug} />}

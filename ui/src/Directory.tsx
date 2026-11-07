@@ -7,7 +7,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { api, bootstrap, routeBase, todayIso, t } from "@ferrum/client";
+import { api, bootstrap, routeBase, todayIso, t, isolate } from "@ferrum/client";
 import { Button, EmptyState, ErrorState, Spinner, toast, useDebounced, useShellTitle } from "@ferrum/kit";
 import { useMetaIndex } from "@ferrum/records";
 import { addDays } from "./dates";
@@ -28,14 +28,14 @@ function Card({ p, detail }: { p: Person; detail: boolean }) {
   return (
     <li className="ppl-person">
       <span className="ppl-avatar" aria-hidden="true">
-        {marks(p.name)}
+        {isolate(marks(p.name))}
       </span>
       <span className="ppl-person-text">
-        {detail ? <Link to={`/e/Employee/${p.id}`}>{p.name}</Link> : <strong>{p.name}</strong>}
-        <span className="faint">{place(p)}</span>
-        {p.branch && <span className="faint">{p.branch}</span>}
-        {p.email && <a href={`mailto:${p.email}`}>{p.email}</a>}
-        {detail && p.phone && <a href={`tel:${p.phone}`}>{p.phone}</a>}
+        {detail ? <Link to={`/e/Employee/${p.id}`}>{isolate(p.name ?? "")}</Link> : <strong>{isolate(p.name ?? "")}</strong>}
+        <span className="faint">{isolate(place(p))}</span>
+        {p.branch && <span className="faint">{isolate(p.branch)}</span>}
+        {p.email && <a href={`mailto:${p.email}`}>{isolate(p.email)}</a>}
+        {detail && p.phone && <a href={`tel:${p.phone}`}>{isolate(p.phone)}</a>}
       </span>
     </li>
   );
@@ -43,7 +43,7 @@ function Card({ p, detail }: { p: Person; detail: boolean }) {
 
 function List({ data, q, department }: { data: Directory; q: string; department: string }) {
   const found = useMemo(() => find(data.people, q).filter((p) => !department || p.department === department), [data.people, q, department]);
-  if (!found.length) return <EmptyState title={q || department ? "Nobody matches" : "No one here yet"} icon="user" />;
+  if (!found.length) return <EmptyState title={q || department ? t("Nobody matches") : t("No one here yet")} icon="user" />;
   return (
     <>
       <ul className="ppl-directory" data-ferrum-nocard>
@@ -92,28 +92,28 @@ function Row({
       onFocus={onFocus}
     >
       <span className="ppl-avatar" aria-hidden="true">
-        {marks(p.name)}
+        {isolate(marks(p.name))}
       </span>
       <span className="ppl-node-text">
         {link ? (
           <Link to={`/e/Employee/${p.id}`} tabIndex={-1}>
-            {p.name}
+            {isolate(p.name ?? "")}
           </Link>
         ) : (
-          <strong>{p.name}</strong>
+          <strong>{isolate(p.name ?? "")}</strong>
         )}
-        <span className="faint">{place(p) || "No role set"}</span>
+        <span className="faint">{place(p) || t("No role set")}</span>
       </span>
       {node.children.length > 0 && (
         <button
           type="button"
           className="ppl-reports"
           tabIndex={-1}
-          aria-label={`${open ? "Hide" : "Show"} the ${node.children.length} ${node.children.length === 1 ? "person" : "people"} who report to ${p.name}`}
+          aria-label={t("{value} the {length} {value2} who report to {name}", { value: open ? "Hide" : "Show", length: node.children.length, value2: node.children.length === 1 ? "person" : "people", name: String(p.name) })}
           onClick={onToggle}
         >
           {node.children.length}
-          <span className="faint">{n > node.children.length ? ` of ${n}` : ""}</span>
+          <span className="faint">{n > node.children.length ? t(" of {n}", { n }) : ""}</span>
         </button>
       )}
     </li>
@@ -198,7 +198,7 @@ function Chart({ data, q }: { data: Directory; q: string }) {
         <Button size="sm" onClick={() => setOpen(new Set())}>
           {t("Close them")}
         </Button>
-        <span className="faint">{data.people.length} people</span>
+        <span className="faint">{t("{length} people", { length: data.people.length })}</span>
       </div>
       {matches.length > 0 && (
         <ul className="ppl-found" aria-label={t("People found")} data-ferrum-nocard>
@@ -212,7 +212,7 @@ function Chart({ data, q }: { data: Directory; q: string }) {
                   setJump(m.id);
                 }}
               >
-                <strong>{m.name}</strong> <span className="faint">{place(m)}</span>
+                <strong>{isolate(m.name ?? "")}</strong> <span className="faint">{isolate(place(m))}</span>
               </button>
             </li>
           ))}
@@ -256,7 +256,7 @@ function Milestones({ people }: { people: Person[] }) {
             <ul className="stack ppl-tight" data-ferrum-nocard>
               {joined.map((e) => (
                 <li key={e.id}>
-                  <Link to={`/e/Employee/${e.id}`}>{e.employee_name}</Link> <span className="faint">{[e.department, e.date_of_joining].filter(Boolean).join(" · ")}</span>
+                  <Link to={`/e/Employee/${e.id}`}>{isolate(e.employee_name ?? "")}</Link> <span className="faint">{isolate([e.department, e.date_of_joining].filter(Boolean).join(" · "))}</span>
                 </li>
               ))}
             </ul>
@@ -274,9 +274,9 @@ function Milestones({ people }: { people: Person[] }) {
             <ul className="stack ppl-tight" data-ferrum-nocard>
               {coming.map((a) => (
                 <li key={a.employee.id}>
-                  {a.employee.employee_name}{" "}
+                  {isolate(a.employee.employee_name ?? "")}{isolate(" ")}
                   <span className="faint">
-                    {a.years} {a.years === 1 ? "year" : "years"}, {inDaysLabel(a.inDays)}
+                    {a.years} {a.years === 1 ? t("year") : t("years")}, {isolate(inDaysLabel(a.inDays))}
                   </span>
                 </li>
               ))}
@@ -321,7 +321,7 @@ function Careers() {
 }
 
 export function People() {
-  useShellTitle("People");
+  useShellTitle(t("People"));
   const [sp, setSp] = useSearchParams();
   const view = sp.get("view") === "chart" ? "chart" : "list";
   const [text, setText] = useState(sp.get("q") ?? "");
@@ -353,7 +353,7 @@ export function People() {
       <header className="ppl-head">
         <div>
           <Nav />
-          <p className="page-sub">{dir.data ? `${dir.data.people.length} people` : " "}</p>
+          <p className="page-sub">{dir.data ? t("{length} people", { length: dir.data.people.length }) : " "}</p>
         </div>
       </header>
       <div className="ppl-tools">
@@ -368,7 +368,7 @@ export function People() {
         <input
           className="input ppl-search"
           type="search"
-          placeholder={view === "chart" ? "Find someone in the chart" : "Search by name, role or department"}
+          placeholder={view === "chart" ? t("Find someone in the chart") : t("Search by name, role or department")}
           aria-label={t("Search people")}
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -378,7 +378,7 @@ export function People() {
             <option value="">{t("All departments")}</option>
             {departments.map((d) => (
               <option key={d} value={d}>
-                {d}
+                {isolate(d)}
               </option>
             ))}
           </select>
