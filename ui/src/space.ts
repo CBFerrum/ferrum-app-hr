@@ -4,6 +4,7 @@
 
 import { addDays, daysBetween, endOfMonth, isDay, span, startOfMonth, startOfWeek, within } from "./dates";
 import type { Holiday } from "./calendar";
+import { t } from "@ferrum/client";
 
 // ───────────── balances ─────────────
 
@@ -134,7 +135,7 @@ export function comingUp(leave: Time[], holidays: Holiday[], today: string, limi
   const items: Upcoming[] = [];
   for (const l of leave) {
     if (!isDay(l.from_date) || l.to_date < today || !["Approved", "Open"].includes(l.status)) continue;
-    items.push({ key: `l-${l.id}`, from: l.from_date, to: l.to_date, kind: "leave", label: l.leave_type ?? "Leave", note: l.status === "Open" ? "waiting for approval" : "" });
+    items.push({ key: `l-${l.id}`, from: l.from_date, to: l.to_date, kind: "leave", label: l.leave_type ?? t("Leave"), note: l.status === "Open" ? "waiting for approval" : "" });
   }
   for (const h of holidays) {
     if (h.weekly_off || h.date < today) continue;
@@ -191,7 +192,7 @@ export function requests(
       entity: "ExpenseClaim" as const,
       id: c.id,
       kind: "Expenses" as const,
-      title: `Expense claim${c.total_claimed_amount ? `, ${c.currency ? `${c.currency} ` : ""}${c.total_claimed_amount}` : ""}`,
+      title: t("Expense claim{value}", { value: c.total_claimed_amount ? `, ${c.currency ? `${c.currency} ` : ""}${c.total_claimed_amount}` : "" }),
       date: c.posting_date,
       status: claimStatus(c.status),
     })),

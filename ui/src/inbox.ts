@@ -3,6 +3,7 @@
 
 import { span } from "./dates";
 import { days } from "./people";
+import { t as tr } from "@ferrum/client";
 
 export type Kind = "leave" | "attendance" | "expense";
 
@@ -63,9 +64,9 @@ export interface ExpenseItem extends Base {
 export type Item = LeaveItem | AttendanceItem | ExpenseItem;
 
 export const KINDS: { id: Kind; label: string }[] = [
-  { id: "leave", label: "Leave" },
-  { id: "attendance", label: "Attendance" },
-  { id: "expense", label: "Expenses" },
+  { id: "leave", get label() { return tr("Leave"); } },
+  { id: "attendance", get label() { return tr("Attendance"); } },
+  { id: "expense", get label() { return tr("Expenses"); } },
 ];
 
 export const kindLabel = (k: Kind): string => KINDS.find((x) => x.id === k)?.label ?? k;

@@ -38,7 +38,7 @@ export function Nav() {
         <NavLink to="/approvals">
           {t("Approvals")}
           {waiting > 0 && (
-            <span className="ppl-count" aria-label={`${waiting} waiting`}>
+            <span className="ppl-count" aria-label={t("{waiting} waiting", { waiting })}>
               {waiting}
             </span>
           )}

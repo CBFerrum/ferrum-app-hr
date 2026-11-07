@@ -7,7 +7,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useState } from "react";
 import { Link } from "react-router";
-import { api, errorMessage, formatDateTime, todayIso, t } from "@ferrum/client";
+import { api, errorMessage, formatDateTime, todayIso, t, isolate } from "@ferrum/client";
 import { Badge, Button, EmptyState, ErrorState, Spinner, statusTone, toast, useLiveEntity, useShellTitle } from "@ferrum/kit";
 import { useMe } from "@ferrum/records";
 import type { Holiday } from "./calendar";
@@ -45,7 +45,7 @@ function CheckIn({ employee }: { employee: Employee }) {
     setBusy(true);
     try {
       await api.post("/api/v1/EmployeeCheckin", { employee: employee.id, log_type: next }, { idempotencyKey: crypto.randomUUID() });
-      toast(next === "IN" ? "Checked in" : "Checked out");
+      toast(next === "IN" ? t("Checked in") : t("Checked out"));
       await qc.invalidateQueries({ queryKey: ["people", "checkin", employee.id] });
     } catch (err) {
       toast(errorMessage(err), "error");
@@ -56,11 +56,11 @@ function CheckIn({ employee }: { employee: Employee }) {
   return (
     <div className="row ppl-checkin">
       <Button variant={next === "IN" ? "primary" : "default"} loading={busy} onClick={() => void record()}>
-        {next === "IN" ? "Check in" : "Check out"}
+        {next === "IN" ? t("Check in") : t("Check out")}
       </Button>
       {last.data?.log_time && (
         <span className="faint">
-          {t("Last")} {last.data.log_type === "IN" ? "in" : "out"} {formatDateTime(last.data.log_time)}
+          {t("Last")} {last.data.log_type === "IN" ? t("in") : t("out")} {isolate(formatDateTime(last.data.log_time))}
         </span>
       )}
     </div>
@@ -82,17 +82,17 @@ function Balances({ employee }: { employee: Employee }) {
         return (
           <li key={b.leave_type} className="ppl-balance">
             <div className="ppl-balance-head">
-              <strong className="ppl-balance-days">{days(b.available)}</strong>
-              <span>{b.leave_type}</span>
+              <strong className="ppl-balance-days">{isolate(days(b.available))}</strong>
+              <span>{isolate(b.leave_type)}</span>
             </div>
-            <div className="ppl-meter" role="img" aria-label={`${b.leave_type}: ${days(b.allocated)} in all, ${days(b.pending)} waiting for approval, ${days(b.available)} left`}>
+            <div className="ppl-meter" role="img" aria-label={t("{leave_type}: {value} in all, {value2} waiting for approval, {value3} left", { leave_type: b.leave_type, value: days(b.allocated), value2: days(b.pending), value3: days(b.available) })}>
               <span data-part="spent" style={{ width: `${m.spent}%` }} />
               <span data-part="asked" style={{ width: `${m.asked}%` }} />
               <span data-part="left" style={{ width: `${m.left}%` }} />
             </div>
             <span className="faint">
-              of {days(b.allocated)}
-              {Number(b.pending) > 0 && ` · ${days(b.pending)} waiting for approval`}
+              {t("of {value}", { value: days(b.allocated) })}
+              {Number(b.pending) > 0 && t(" · {value} waiting for approval", { value: days(b.pending) })}
             </span>
           </li>
         );
@@ -125,12 +125,12 @@ function Coming({ employee }: { employee: Employee }) {
     <ul className="ppl-coming" data-ferrum-nocard>
       {q.data.map((u) => (
         <li key={u.key} data-kind={u.kind}>
-          <span className="ppl-when">{span(u.from, u.to)}</span>
+          <span className="ppl-when">{isolate(span(u.from, u.to))}</span>
           <span className="ppl-coming-what">
-            {u.label}
-            {u.note && <span className="faint"> · {u.note}</span>}
+            {isolate(u.label)}
+            {u.note && <span className="faint"> · {isolate(u.note)}</span>}
           </span>
-          <span className="faint">{when(u, today)}</span>
+          <span className="faint">{isolate(when(u, today))}</span>
         </li>
       ))}
     </ul>
@@ -189,9 +189,9 @@ function Requests({ employee, onFix }: { employee: Employee; onFix: () => void }
         <ul className="ppl-requests" data-ferrum-nocard>
           {q.data.map((r) => (
             <li key={r.key}>
-              <span className="faint ppl-kind">{r.kind}</span>
-              <Link to={`/e/${r.entity}/${r.id}`}>{r.title}</Link>
-              <Badge tone={statusTone(r.status)}>{r.status}</Badge>
+              <span className="faint ppl-kind">{isolate(r.kind)}</span>
+              <Link to={`/e/${r.entity}/${r.id}`}>{isolate(r.title)}</Link>
+              <Badge tone={statusTone(r.status)}>{isolate(r.status)}</Badge>
             </li>
           ))}
         </ul>
@@ -204,7 +204,7 @@ function Section({ id, heading, children }: { id: string; heading: string; child
   return (
     <section className="card" aria-labelledby={id}>
       <div className="card-head">
-        <h2 id={id}>{heading}</h2>
+        <h2 id={id}>{isolate(heading)}</h2>
       </div>
       <div className="card-body">{children}</div>
     </section>
@@ -214,7 +214,7 @@ function Section({ id, heading, children }: { id: string; heading: string; child
 const Loading = ({ label }: { label: string }) => <Spinner label={label} />;
 
 export function PeopleHome() {
-  useShellTitle("My space");
+  useShellTitle(t("My space"));
   const qc = useQueryClient();
   const me = useMe().data;
   const mine = useMine(me?.user.email);
@@ -238,7 +238,7 @@ export function PeopleHome() {
       </header>
       {waiting > 0 && (
         <Link className="ppl-banner" to="/approvals">
-          <strong>{waiting === 1 ? "1 request is" : `${waiting} requests are`} {t("waiting for your decision")}</strong>
+          <strong>{waiting === 1 ? t("1 request is") : t("{waiting} requests are", { waiting })} {t("waiting for your decision")}</strong>
           <span>{t("Review them")}</span>
         </Link>
       )}

@@ -5,7 +5,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { api, todayIso, t } from "@ferrum/client";
+import { api, todayIso, t, isolate } from "@ferrum/client";
 import { Badge, Button, EmptyState, ErrorState, Icon, Spinner, useShellTitle } from "@ferrum/kit";
 import {
   type Away,
@@ -51,12 +51,12 @@ function Names({ away, title }: { away: Away[]; title: string }) {
         {away.map((a, i) => (
           <li key={`${a.employee}-${a.from_date}-${i}`}>
             <span className="ppl-avatar" aria-hidden="true">
-              {marks(a.name)}
+              {isolate(marks(a.name))}
             </span>
             <span className="ppl-away-text">
-              <strong>{a.name ?? "Someone"}</strong>
+              <strong>{a.name ?? t("Someone")}</strong>
               <span className="faint">
-                {[a.leave_type, span(a.from_date, a.to_date), a.half_day_date ? "half a day" : "", a.department].filter(Boolean).join(" · ")}
+                {isolate([a.leave_type, span(a.from_date, a.to_date), a.half_day_date ? "half a day" : "", a.department].filter(Boolean).join(" · "))}
               </span>
             </span>
             {a.pending && <Badge tone="amber">{t("Asked for")}</Badge>}
@@ -76,7 +76,7 @@ function Month({ cal, anchor, today, day, onDay }: { cal: Cal; anchor: string; t
         <tr>
           {grid[0].map((d) => (
             <th key={d} scope="col" abbr={weekdayName(d, undefined, "short")}>
-              {weekdayName(d)}
+              {isolate(weekdayName(d))}
             </th>
           ))}
         </tr>
@@ -99,12 +99,12 @@ function Month({ cal, anchor, today, day, onDay }: { cal: Cal; anchor: string; t
                     onClick={() => onDay(d)}
                   >
                     <span className="ppl-cal-n">{Number(d.slice(8))}</span>
-                    {h && !h.weekly_off && <span className="ppl-cal-holiday">{h.name}</span>}
+                    {h && !h.weekly_off && <span className="ppl-cal-holiday">{isolate(h.name)}</span>}
                     {who.length > 0 && (
                       <span className="ppl-cal-chips" aria-hidden="true">
                         {decided.slice(0, 3).map((a) => (
                           <span key={a.employee + a.from_date} className="ppl-chip" data-half={part(a, d) === "half" || undefined}>
-                            {marks(a.name)}
+                            {isolate(marks(a.name))}
                           </span>
                         ))}
                         {who.length > Math.min(3, decided.length) && (
@@ -142,7 +142,7 @@ function Week({ cal, anchor, today }: { cal: Cal; anchor: string; today: string 
               const h = holidayOn(cal.holidays, d);
               return (
                 <th key={d} scope="col" data-today={d === today || undefined} data-off={h ? (h.weekly_off ? "week" : "holiday") : undefined} title={h?.name}>
-                  <span>{weekdayName(d)}</span>
+                  <span>{isolate(weekdayName(d))}</span>
                   <span className="faint">{Number(d.slice(8))}</span>
                 </th>
               );
@@ -167,18 +167,18 @@ function Week({ cal, anchor, today }: { cal: Cal; anchor: string; today: string 
             <tr key={p.employee}>
               <th scope="row" className="ppl-week-name">
                 <span className="ppl-avatar" aria-hidden="true">
-                  {marks(p.name)}
+                  {isolate(marks(p.name))}
                 </span>
                 <span>
-                  {p.name}
-                  {p.leave_type && <span className="faint"> {p.leave_type}</span>}
+                  {isolate(p.name)}
+                  {p.leave_type && <span className="faint"> {isolate(p.leave_type)}</span>}
                 </span>
               </th>
               {p.cells.map((c, i) => (
                 <td key={days[i]} data-off={holidayOn(cal.holidays, days[i]) ? (holidayOn(cal.holidays, days[i])!.weekly_off ? "week" : "holiday") : undefined}>
                   {c && (
                     <span className="ppl-bar" data-part={c}>
-                      <span className="sr-only">{c === "pending" ? "asked for" : c === "half" ? "half a day" : "away"}</span>
+                      <span className="sr-only">{c === "pending" ? t("asked for") : c === "half" ? t("half a day") : t("away")}</span>
                     </span>
                   )}
                 </td>
@@ -193,7 +193,7 @@ function Week({ cal, anchor, today }: { cal: Cal; anchor: string; today: string 
 }
 
 export function TeamCalendar() {
-  useShellTitle("Calendar");
+  useShellTitle(t("Calendar"));
   const today = todayIso();
   const [sp, setSp] = useSearchParams();
   const view: View = sp.get("view") === "week" ? "week" : "month";
@@ -225,7 +225,7 @@ export function TeamCalendar() {
     <Spinner label={t("Loading the calendar")} />
   ) : !cal.has_record && cal.scope === "team" ? (
     <EmptyState title={t("There is no team to show yet")} icon="user">
-      <p className="muted">{t("Your sign-in is not linked to an employee record, so there is no team around you.")} {cal.everyone_allowed ? "You can look at everyone instead." : "HR can link it."}</p>
+      <p className="muted">{t("Your sign-in is not linked to an employee record, so there is no team around you.")} {cal.everyone_allowed ? t("You can look at everyone instead.") : t("HR can link it.")}</p>
       {cal.everyone_allowed && <Button onClick={() => set({ scope: "all" })}>{t("Show everyone")}</Button>}
     </EmptyState>
   ) : (
@@ -247,9 +247,9 @@ export function TeamCalendar() {
       </ul>
       {view === "month" ? (
         <div className="stack ppl-tight">
-          <h2 className="ppl-sub">{LONG(day)}</h2>
-          {holidayOn(filtered.holidays, day) && <p className="muted">{holidayOn(filtered.holidays, day)!.weekly_off ? "A weekly off." : `A holiday: ${holidayOn(filtered.holidays, day)!.name}.`}</p>}
-          <Names away={awayOn(filtered.away, day)} title={`Away on ${LONG(day)}`} />
+          <h2 className="ppl-sub">{isolate(LONG(day))}</h2>
+          {holidayOn(filtered.holidays, day) && <p className="muted">{holidayOn(filtered.holidays, day)!.weekly_off ? t("A weekly off.") : t("A holiday: {name}.", { name: holidayOn(filtered.holidays, day)!.name })}</p>}
+          <Names away={awayOn(filtered.away, day)} title={t("Away on {day}", { day: LONG(day) })} />
         </div>
       ) : (
         <div className="stack ppl-tight">
@@ -266,7 +266,7 @@ export function TeamCalendar() {
         <div>
           <Nav />
           <p className="page-sub" aria-live="polite">
-            {cal ? (cal.scope === "all" ? `Everyone, ${cal.size} people` : `Your team, ${cal.size} ${cal.size === 1 ? "person" : "people"}`) : " "}
+            {cal ? (cal.scope === "all" ? t("Everyone, {size} people", { size: cal.size }) : t("Your team, {size} {value}", { size: cal.size, value: cal.size === 1 ? "person" : "people" })) : " "}
           </p>
         </div>
       </header>
@@ -280,13 +280,13 @@ export function TeamCalendar() {
           </button>
         </div>
         <div className="ppl-step">
-          <button type="button" className="icon-btn" aria-label={view === "week" ? "Earlier week" : "Earlier month"} onClick={() => set({ date: move(view, anchor, -1) })}>
+          <button type="button" className="icon-btn" aria-label={view === "week" ? t("Earlier week") : t("Earlier month")} onClick={() => set({ date: move(view, anchor, -1) })}>
             <Icon name="left" size={16} />
           </button>
           <h2 className="ppl-cal-title" aria-live="polite">
-            {heading(view, anchor)}
+            {isolate(heading(view, anchor))}
           </h2>
-          <button type="button" className="icon-btn" aria-label={view === "week" ? "Later week" : "Later month"} onClick={() => set({ date: move(view, anchor, 1) })}>
+          <button type="button" className="icon-btn" aria-label={view === "week" ? t("Later week") : t("Later month")} onClick={() => set({ date: move(view, anchor, 1) })}>
             <Icon name="chevronRight" size={16} />
           </button>
           <Button size="sm" onClick={() => set({ date: null })} disabled={anchor === today && !date}>
@@ -308,7 +308,7 @@ export function TeamCalendar() {
             <option value="">{t("All departments")}</option>
             {depts.map((d) => (
               <option key={d} value={d}>
-                {d}
+                {isolate(d)}
               </option>
             ))}
           </select>

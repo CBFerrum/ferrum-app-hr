@@ -5,13 +5,13 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
-import { api, ApiError, errorMessage, todayIso, t } from "@ferrum/client";
+import { api, ApiError, errorMessage, todayIso, t, isolate } from "@ferrum/client";
 import { Alert, Button, Dialog, Field, toast } from "@ferrum/kit";
 
 const REASONS = [
-  { value: "Missed Check-in", label: "I forgot to check in or out" },
-  { value: "Work From Home", label: "I worked from home" },
-  { value: "On Duty", label: "I was on duty away from the office" },
+  { value: "Missed Check-in", get label() { return t("I forgot to check in or out"); } },
+  { value: "Work From Home", get label() { return t("I worked from home"); } },
+  { value: "On Duty", get label() { return t("I was on duty away from the office"); } },
 ];
 
 export function Fix({ employee, day, onClose }: { employee: string; day: string | null; onClose: () => void }) {
@@ -50,7 +50,7 @@ export function Fix({ employee, day, onClose }: { employee: string; day: string 
         },
         { idempotencyKey: crypto.randomUUID() },
       );
-      toast(made.approver ? `Sent to ${made.approver} for approval` : "Sent for approval");
+      toast(made.approver ? t("Sent to {approver} for approval", { approver: made.approver }) : t("Sent for approval"));
       void qc.invalidateQueries({ queryKey: ["people"] });
       onClose();
     } catch (err) {
@@ -77,18 +77,18 @@ export function Fix({ employee, day, onClose }: { employee: string; day: string 
       }
     >
       <form id="fix-form" className="stack" onSubmit={(e) => void submit(e)} noValidate>
-        {error && <Alert tone="error">{error}</Alert>}
+        {error && <Alert tone="error">{isolate(error)}</Alert>}
         <Field label={t("What happened?")} htmlFor="fix-reason">
           <select id="fix-reason" className="select" value={reason} onChange={(e) => setReason(e.target.value)}>
             {REASONS.map((r) => (
               <option key={r.value} value={r.value}>
-                {r.label}
+                {isolate(r.label)}
               </option>
             ))}
           </select>
         </Field>
         <div className="ppl-fix-days">
-          <Field label={several ? "From" : "Day"} htmlFor="fix-from" error={problems.from_date}>
+          <Field label={several ? t("From") : t("Day")} htmlFor="fix-from" error={problems.from_date}>
             <input id="fix-from" className="input" type="date" max={today} required value={from} onChange={(e) => setFrom(e.target.value)} />
           </Field>
           {several && (
@@ -111,7 +111,7 @@ export function Fix({ employee, day, onClose }: { employee: string; day: string 
           </div>
         )}
         <label className="check-field row">
-          <input type="checkbox" checked={half} onChange={(e) => setHalf(e.target.checked)} /> {t("Only half of")} {several ? "the first day" : "the day"}
+          <input type="checkbox" checked={half} onChange={(e) => setHalf(e.target.checked)} /> {t("Only half of")} {several ? t("the first day") : t("the day")}
         </label>
         <Field label={t("Tell your approver more")} htmlFor="fix-what" required error={problems.explanation}>
           <textarea id="fix-what" className="textarea" rows={3} value={what} maxLength={2000} onChange={(e) => setWhat(e.target.value)} />

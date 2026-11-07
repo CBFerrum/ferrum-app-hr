@@ -6,7 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useSearchParams } from "react-router";
-import { api, todayIso, t } from "@ferrum/client";
+import { api, todayIso, t, isolate } from "@ferrum/client";
 import { Button, Dialog, ErrorState, Icon, Spinner } from "@ferrum/kit";
 import { useMe } from "@ferrum/records";
 import type { Holiday } from "./calendar";
@@ -52,12 +52,12 @@ function DayDialog({ day, mark, zone, onClose, onFix }: { day: MonthDay; mark: A
       {mark ? (
         <dl className="ppl-facts">
           <dt>{t("Marked")}</dt>
-          <dd>{mark.status}</dd>
+          <dd>{isolate(mark.status)}</dd>
           {mark.in_time && (
             <>
               <dt>{t("Came in")}</dt>
               <dd>
-                {clockTime(mark.in_time, zone)}
+                {isolate(clockTime(mark.in_time, zone))}
                 {mark.late_entry && <span className="ppl-late"> {t("· late")}</span>}
               </dd>
             </>
@@ -66,7 +66,7 @@ function DayDialog({ day, mark, zone, onClose, onFix }: { day: MonthDay; mark: A
             <>
               <dt>{t("Left")}</dt>
               <dd>
-                {clockTime(mark.out_time, zone)}
+                {isolate(clockTime(mark.out_time, zone))}
                 {mark.early_exit && <span className="ppl-late"> {t("· early")}</span>}
               </dd>
             </>
@@ -128,7 +128,7 @@ export function Month({ employee, onFix }: { employee: Employee; onFix: (day: st
             <Icon name="left" size={15} />
           </button>
           <span className="ppl-month-name" aria-live="polite">
-            {monthName(anchor)}
+            {isolate(monthName(anchor))}
           </span>
           <button type="button" className="icon-btn" aria-label={t("Later month")} onClick={() => go(1)}>
             <Icon name="chevronRight" size={15} />
@@ -147,7 +147,7 @@ export function Month({ employee, onFix }: { employee: Employee; onFix: (day: st
                 <tr>
                   {heads.map((d) => (
                     <th key={d} scope="col" abbr={weekdayName(d)}>
-                      {weekdayName(d, undefined, "narrow")}
+                      {isolate(weekdayName(d, undefined, "narrow"))}
                     </th>
                   ))}
                 </tr>
@@ -184,7 +184,7 @@ export function Month({ employee, onFix }: { employee: Employee; onFix: (day: st
             <ul className="ppl-legend" data-ferrum-nocard>
               {(Object.keys(MARKS) as Mark[]).map((m) => (
                 <li key={m} data-tone={MARKS[m].tone}>
-                  <span aria-hidden="true">{MARKS[m].letter}</span> {m}
+                  <span aria-hidden="true">{isolate(MARKS[m].letter)}</span> {isolate(m)}
                 </li>
               ))}
               <li data-tone="off">
@@ -193,7 +193,7 @@ export function Month({ employee, onFix }: { employee: Employee; onFix: (day: st
             </ul>
             {counts && (counts.present || counts.home || counts.half || counts.absent || counts.leave) ? (
               <p className="faint ppl-counts">
-                {[
+                {isolate([
                   counts.present && `${counts.present} present`,
                   counts.home && `${counts.home} at home`,
                   counts.half && `${counts.half} half ${counts.half === 1 ? "day" : "days"}`,
@@ -204,7 +204,7 @@ export function Month({ employee, onFix }: { employee: Employee; onFix: (day: st
                   counts.hours > 0 && `${counts.hours} hours`,
                 ]
                   .filter(Boolean)
-                  .join(" · ")}
+                  .join(" · "))}
               </p>
             ) : (
               <p className="muted ppl-counts">{t("Nothing is marked this month yet.")}</p>

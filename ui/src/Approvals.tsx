@@ -8,7 +8,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { api, docPath, errorMessage, t as tr } from "@ferrum/client";
+import { api, docPath, errorMessage, t as tr, isolate } from "@ferrum/client";
 import { Badge, Button, Dialog, EmptyState, ErrorState, Field, Spinner, toast, useShellTitle } from "@ferrum/kit";
 import {
   badSanctions,
@@ -55,11 +55,11 @@ function Lines({ item, edits, onEdit }: { item: ExpenseItem; edits: Record<strin
         return (
           <div key={l.id} className="ppl-line">
             <label htmlFor={id}>
-              {l.type ?? "Expense"}
-              {l.description && <span className="faint"> · {l.description}</span>}
+              {l.type ?? tr("Expense")}
+              {l.description && <span className="faint"> · {isolate(l.description)}</span>}
             </label>
-            <span className="ppl-num" aria-label={`Claimed ${money(l.amount, s.currency, s.precision)}`}>
-              {money(l.amount, s.currency, s.precision)}
+            <span className="ppl-num" aria-label={tr("Claimed {value}", { value: money(l.amount, s.currency, s.precision) })}>
+              {isolate(money(l.amount, s.currency, s.precision))}
             </span>
             <span className="ppl-num">
               <input
@@ -74,7 +74,7 @@ function Lines({ item, edits, onEdit }: { item: ExpenseItem; edits: Record<strin
             </span>
             {bad[l.id] && (
               <span className="field-error ppl-line-error" id={`${id}-error`}>
-                {bad[l.id]}
+                {isolate(bad[l.id])}
               </span>
             )}
           </div>
@@ -82,12 +82,12 @@ function Lines({ item, edits, onEdit }: { item: ExpenseItem; edits: Record<strin
       })}
       <div className="ppl-line ppl-line-total">
         <span>{tr("To pay once sanctioned")}</span>
-        <span className="ppl-num">{money(s.claimed, s.currency, s.precision)}</span>
+        <span className="ppl-num">{isolate(money(s.claimed, s.currency, s.precision))}</span>
         <span className="ppl-num">
-          <strong>{money(total, s.currency, s.precision)}</strong>
+          <strong>{isolate(money(total, s.currency, s.precision))}</strong>
         </span>
       </div>
-      {Number(s.advance) > 0 && <p className="faint ppl-line-note">{money(s.advance, s.currency, s.precision)} {tr("of it is set off against an advance already paid.")}</p>}
+      {Number(s.advance) > 0 && <p className="faint ppl-line-note">{isolate(money(s.advance, s.currency, s.precision))} {tr("of it is set off against an advance already paid.")}</p>}
     </div>
   );
 }
@@ -96,8 +96,8 @@ function Context({ item }: { item: Item }) {
   if (item.kind === "leave") {
     return (
       <ul className="ppl-context" data-ferrum-nocard>
-        {balanceLine(item) && <li>{balanceLine(item)}</li>}
-        {teamLine(item) && <li>{teamLine(item)}</li>}
+        {balanceLine(item) && <li>{isolate(balanceLine(item))}</li>}
+        {teamLine(item) && <li>{isolate(teamLine(item))}</li>}
       </ul>
     );
   }
@@ -106,7 +106,7 @@ function Context({ item }: { item: Item }) {
     return (
       <ul className="ppl-context" data-ferrum-nocard>
         {says && <li>{tr("Says: {says}.", { says })}</li>}
-        {recordedLine(item) && <li>{tr("The days hold:")} {recordedLine(item)}</li>}
+        {recordedLine(item) && <li>{tr("The days hold:")} {isolate(recordedLine(item))}</li>}
       </ul>
     );
   }
@@ -143,28 +143,28 @@ function Card({
   return (
     <li ref={ref} className="ppl-card" data-cursor={cursor || undefined} data-kind={item.kind} aria-labelledby={`who-${key}`}>
       <div className="ppl-card-head">
-        <input type="checkbox" className="ppl-check" checked={picked} aria-label={`Select ${name}'s request`} onChange={(e) => onPick(e.target.checked)} />
+        <input type="checkbox" className="ppl-check" checked={picked} aria-label={tr("Select {name}'s request", { name })} onChange={(e) => onPick(e.target.checked)} />
         <span className="ppl-avatar" aria-hidden="true">
-          {marks(name)}
+          {isolate(marks(name))}
         </span>
         <div className="ppl-card-who">
-          <strong id={`who-${key}`}>{name}</strong>
-          {item.employee.department && <span className="faint">{item.employee.department}</span>}
+          <strong id={`who-${key}`}>{isolate(name)}</strong>
+          {item.employee.department && <span className="faint">{isolate(item.employee.department)}</span>}
         </div>
-        <Badge tone={item.kind === "leave" ? "blue" : item.kind === "attendance" ? "purple" : "amber"}>{kindLabel(item.kind)}</Badge>
+        <Badge tone={item.kind === "leave" ? "blue" : item.kind === "attendance" ? "purple" : "amber"}>{isolate(kindLabel(item.kind))}</Badge>
         <span className={stale(item.waiting_since) ? "ppl-late" : "faint"} title={tr("How long it has waited")}>
-          {waiting(item.waiting_since)}
+          {isolate(waiting(item.waiting_since))}
         </span>
       </div>
-      <p className="ppl-card-what">{what(item)}</p>
-      {item.reason && <blockquote className="ppl-reason">{item.reason}</blockquote>}
+      <p className="ppl-card-what">{isolate(what(item))}</p>
+      {item.reason && <blockquote className="ppl-reason">{isolate(item.reason)}</blockquote>}
       <Context item={item} />
       {item.kind === "expense" && <Lines item={item} edits={edits} onEdit={onEdit} />}
       <div className="ppl-card-actions">
-        <Button variant="primary" size="sm" icon="check" disabled={bad} onClick={onApprove} aria-label={`Approve ${name}'s ${item.kind === "expense" ? "claim" : "request"}`}>
+        <Button variant="primary" size="sm" icon="check" disabled={bad} onClick={onApprove} aria-label={tr("Approve {name}'s {value}", { name, value: item.kind === "expense" ? "claim" : "request" })}>
           {tr("Approve")}
         </Button>
-        <Button size="sm" onClick={onReject} aria-label={`Reject ${name}'s ${item.kind === "expense" ? "claim" : "request"}`}>
+        <Button size="sm" onClick={onReject} aria-label={tr("Reject {name}'s {value}", { name, value: item.kind === "expense" ? "claim" : "request" })}>
           {tr("Reject…")}
         </Button>
         <Link className="ppl-open" to={`/e/${item.entity}/${item.id}`}>
@@ -183,9 +183,9 @@ function RejectDialog({ item, onClose, onReject }: { item: Item; onClose: () => 
     onReject(note);
   };
   return (
-    <Dialog open onClose={onClose} title={`Reject ${item.employee.name ?? "this"}'s request?`}>
+    <Dialog open onClose={onClose} title={tr("Reject {value}'s request?", { value: item.employee.name ?? "this" })}>
       <form className="stack" onSubmit={submit}>
-        <p className="muted">{what(item)}</p>
+        <p className="muted">{isolate(what(item))}</p>
         <Field label={tr("Why not? (optional)")} htmlFor="reject-note" hint={tr("Added to the request's discussion, where the employee reads it.")}>
           <textarea id="reject-note" className="textarea" rows={3} value={note} maxLength={2000} onChange={(e) => setNote(e.target.value)} data-autofocus />
         </Field>
@@ -201,7 +201,7 @@ function RejectDialog({ item, onClose, onReject }: { item: Item; onClose: () => 
 }
 
 export function Inbox() {
-  useShellTitle("Approvals");
+  useShellTitle(tr("Approvals"));
   const qc = useQueryClient();
   const q = useInbox();
   const [sp, setSp] = useSearchParams();
@@ -244,7 +244,7 @@ export function Inbox() {
         // The decision stands even if the note cannot be saved.
         await api.post(docPath(i.entity, i.id, "comments"), { body: `Rejected: ${note.trim()}`, mentions: [] }).catch(() => toast(tr("Rejected, but the note could not be saved."), "error"));
       }
-      toast(action === "Approve" ? `Approved: ${name}` : `Rejected: ${name}`);
+      toast(action === "Approve" ? tr("Approved: {name}", { name }) : tr("Rejected: {name}", { name }));
       // What the decision changed elsewhere (a balance, the calendar, the attendance) is read again.
       void qc.invalidateQueries({ queryKey: ["people"] });
       return true;
@@ -263,7 +263,7 @@ export function Inbox() {
     for (const i of ready) if (await decide(i, "Approve")) done++;
     setPicked(new Set());
     setWorking(false);
-    if (items.length > 1) toast(`Approved ${done} of ${items.length}${ready.length < items.length ? `; fix the amounts on ${items.length - ready.length} first` : ""}`);
+    if (items.length > 1) toast(tr("Approved {done} of {length}{value}", { done, length: items.length, value: ready.length < items.length ? `; fix the amounts on ${items.length - ready.length} first` : "" }));
   };
 
   // J and K move, A approves and R rejects the one you are on. Typing is never taken for a shortcut.
@@ -311,16 +311,16 @@ export function Inbox() {
           </button>
           {kinds.map((k) => (
             <button key={k.id} type="button" aria-pressed={kind === k.id} onClick={() => setSp({ kind: k.id }, { replace: true })}>
-              {k.label} ({by[k.id]})
+              {isolate(k.label)} ({by[k.id]})
             </button>
           ))}
         </div>
       )}
       {chosen.length > 0 && (
         <div className="ppl-bulk" role="region" aria-label={tr("Selected requests")}>
-          <strong>{chosen.length} selected</strong>
+          <strong>{tr("{length} selected", { length: chosen.length })}</strong>
           <Button variant="primary" size="sm" icon="check" loading={working} onClick={() => void approveSome(chosen)}>
-            {tr("Approve")} {chosen.length === 1 ? "it" : "them"}
+            {tr("Approve")} {chosen.length === 1 ? tr("it") : tr("them")}
           </Button>
           <Button size="sm" onClick={() => setPicked(new Set())}>
             {tr("Clear")}
@@ -353,7 +353,7 @@ export function Inbox() {
         <div>
           <Nav />
           <p className="page-sub" aria-live="polite">
-            {q.data ? (all.length ? `${all.length} waiting for you, the oldest first` : "You are up to date") : " "}
+            {q.data ? (all.length ? tr("{length} waiting for you, the oldest first", { length: all.length }) : tr("You are up to date")) : " "}
           </p>
         </div>
       </header>
