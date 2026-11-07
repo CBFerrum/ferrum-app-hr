@@ -72,7 +72,7 @@
     - {name: status, type: select, options: [Active, Inactive, Suspended, Left], default: Active, required: true, in_list: true, in_filter: true}
     - {name: user, type: email, unique: true, label: User (Sign-in Email), description: The employee's sign-in; through it they see their own HR records}
     - {name: gender, type: select, options: [Male, Female, Other, Prefer not to say], in_filter: true}
-    - {name: date_of_birth, type: date}
+    - {name: date_of_birth, type: date, perm_group: personal}
     - {name: date_of_joining, type: date, required: true, in_list: true}
     - {name: relieving_date, type: date}
     - {name: department, type: link, to: Department, in_list: true, in_filter: true}
@@ -96,7 +96,7 @@
     - {name: emergency_phone, type: phone}
     - {name: emergency_relation, type: data}
     - {name: marital_status, type: select, options: [Single, Married, Divorced, Widowed]}
-    - {name: blood_group, type: select, options: [A+, A-, B+, B-, AB+, AB-, O+, O-]}
+    - {name: blood_group, type: select, options: [A+, A-, B+, B-, AB+, AB-, O+, O-], perm_group: personal}
     - {name: salary_mode, type: select, options: [Bank, Cash, Cheque], default: Bank, perm_group: bank}
     - {name: bank_name, type: data, perm_group: bank}
     - {name: bank_account_no, type: data, label: Bank Account No, perm_group: bank, mask: last4, no_export: true}
@@ -202,7 +202,7 @@
     - {name: new_grade, type: link, to: EmployeeGrade}
     - {name: current_department, type: link, to: Department, read_only: true}
     - {name: new_department, type: link, to: Department}
-    - {name: revised_ctc, type: currency, min: "0", label: Revised CTC}
+    - {name: revised_ctc, type: currency, min: "0", label: Revised CTC, perm_group: pay}
     - {name: remarks, type: text}
   list: {columns: [number, employee_name, promotion_date, new_designation], sort: promotion_date desc}
 

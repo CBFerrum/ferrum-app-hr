@@ -87,7 +87,7 @@ roles:
       - {entity: TrainingProgram, read: true, write: true, create: true, delete: true, export: true}
       - {entity: TrainingEvent, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: TrainingRecord, read: true, export: true}
-      - {entity: Employee, read: true, write: true, create: true, delete: true, export: true, import: true, read_groups: [bank, identity], write_groups: [bank, identity]}
+      - {entity: Employee, read: true, write: true, create: true, delete: true, export: true, import: true, read_groups: [bank, identity, personal], write_groups: [bank, identity, personal]}
       - {entity: Department, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Designation, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Branch, read: true, write: true, create: true, delete: true, export: true, import: true}
@@ -95,7 +95,7 @@ roles:
       - {entity: EmploymentType, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EmployeeOnboarding, read: true, write: true, create: true, delete: true, export: true}
       - {entity: EmployeeSeparation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
-      - {entity: EmployeePromotion, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: EmployeePromotion, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, read_groups: [pay], write_groups: [pay]}
       - {entity: EmployeeTransfer, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: HolidayList, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: ShiftType, read: true, write: true, create: true, delete: true, export: true}
@@ -111,7 +111,7 @@ roles:
       - {entity: JobOpening, read: true, write: true, create: true, delete: true, export: true}
       - {entity: JobApplicant, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Interview, read: true, write: true, create: true, delete: true, export: true}
-      - {entity: JobOffer, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: JobOffer, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, read_groups: [pay], write_groups: [pay]}
       - {entity: AppraisalCycle, read: true, write: true, create: true, delete: true}
       - {entity: AppraisalTemplate, read: true, write: true, create: true, delete: true}
       - {entity: Appraisal, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, read_groups: [review], write_groups: [review]}
@@ -121,7 +121,7 @@ roles:
   - name: HR User
     description: Day-to-day HR work; no bank details and no approvals.
     permissions:
-      - {entity: Employee, read: true, write: true, create: true, export: true, read_groups: [identity], write_groups: [identity]}
+      - {entity: Employee, read: true, write: true, create: true, export: true, read_groups: [identity, personal], write_groups: [identity, personal]}
       - {entity: Department, read: true, write: true, create: true}
       - {entity: Designation, read: true, write: true, create: true}
       - {entity: Branch, read: true, write: true, create: true}
@@ -129,7 +129,7 @@ roles:
       - {entity: EmploymentType, read: true}
       - {entity: EmployeeOnboarding, read: true, write: true, create: true, delete: true}
       - {entity: EmployeeSeparation, read: true, write: true, create: true, delete: true}
-      - {entity: EmployeePromotion, read: true, write: true, create: true, delete: true}
+      - {entity: EmployeePromotion, read: true, write: true, create: true, delete: true, read_groups: [pay], write_groups: [pay]}
       - {entity: EmployeeTransfer, read: true, write: true, create: true, delete: true}
       - {entity: HolidayList, read: true, write: true, create: true}
       - {entity: ShiftType, read: true}
@@ -145,7 +145,7 @@ roles:
       - {entity: JobOpening, read: true, write: true, create: true}
       - {entity: JobApplicant, read: true, write: true, create: true, delete: true, import: true}
       - {entity: Interview, read: true, write: true, create: true, delete: true}
-      - {entity: JobOffer, read: true, write: true, create: true, delete: true, submit: true}
+      - {entity: JobOffer, read: true, write: true, create: true, delete: true, submit: true, read_groups: [pay], write_groups: [pay]}
       - {entity: AppraisalCycle, read: true}
       - {entity: AppraisalTemplate, read: true}
       - {entity: Appraisal, read: true, write: true, create: true, submit: true, read_groups: [review], write_groups: [review]}
@@ -154,7 +154,7 @@ roles:
   - name: Employee
     description: Self-service; sees and creates only their own records (the employee whose user is the signed-in user).
     permissions:
-      - {entity: Employee, read: true, if_owner: true, read_groups: [bank, identity]}
+      - {entity: Employee, read: true, if_owner: true, read_groups: [bank, identity, personal]}
       - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: EmployeeCheckin, read: true, create: true, if_owner: true}
       - {entity: Attendance, read: true, if_owner: true}
@@ -164,7 +164,7 @@ roles:
       - {entity: LeaveLedgerEntry, read: true, if_owner: true}
       - {entity: Appraisal, read: true, write: true, if_owner: true, read_groups: [review]}
       - {entity: AppraisalGoal, read_groups: [review]}
-      - {entity: EmployeePromotion, read: true, if_owner: true}
+      - {entity: EmployeePromotion, read: true, if_owner: true, read_groups: [pay]}
       - {entity: EmployeeTransfer, read: true, if_owner: true}
       - {entity: EmployeeSeparation, read: true, if_owner: true}
       - {entity: TrainingRecord, read: true, if_owner: true}

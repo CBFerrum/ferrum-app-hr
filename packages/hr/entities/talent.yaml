@@ -104,7 +104,7 @@
     - {name: department, type: link, to: Department}
     - {name: offer_date, type: date, required: true, default_expr: today, in_list: true}
     - {name: expected_joining_date, type: date}
-    - {name: ctc, type: currency, min: "0", label: CTC (annual)}
+    - {name: ctc, type: currency, min: "0", label: CTC (annual), perm_group: pay}
     - {name: terms, type: markdown, label: Terms and Conditions}
     - {name: status, type: select, options: [Awaiting Response, Accepted, Rejected], default: Awaiting Response, read_only: true, no_copy: true, in_list: true, in_filter: true}
     - {name: employee, type: link, to: Employee, read_only: true, no_copy: true}
