@@ -120,7 +120,7 @@
 }
 
 .ppl-num {
-  text-align: right;
+  text-align: end;
   font-variant-numeric: tabular-nums;
 }
 
@@ -259,12 +259,12 @@
 }
 
 .ppl-coming li {
-  padding-left: 0.625rem;
-  border-left: 3px solid var(--primary);
+  padding-inline-start: 0.625rem;
+  border-inline-start: 3px solid var(--primary);
 }
 
 .ppl-coming li[data-kind="holiday"] {
-  border-left-color: var(--purple);
+  border-inline-start-color: var(--purple);
 }
 
 .ppl-when {
@@ -320,7 +320,7 @@
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  margin-left: auto;
+  margin-inline-start: auto;
 }
 
 .ppl-month-name {
@@ -546,7 +546,7 @@ button.ppl-day:hover {
 .ppl-reason {
   margin: 0;
   padding: 0.25rem 0.625rem;
-  border-left: 3px solid var(--border-strong);
+  border-inline-start: 3px solid var(--border-strong);
   color: var(--muted-foreground);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -598,7 +598,7 @@ button.ppl-day:hover {
 .ppl-sanction {
   width: 100%;
   height: 34px;
-  text-align: right;
+  text-align: end;
 }
 
 .ppl-card-actions {
@@ -609,7 +609,7 @@ button.ppl-day:hover {
 }
 
 .ppl-open {
-  margin-left: auto;
+  margin-inline-start: auto;
   font-size: 13px;
 }
 
@@ -702,7 +702,7 @@ button.ppl-day:hover {
   color: var(--text);
   font: inherit;
   font-size: 12px;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 
@@ -814,11 +814,11 @@ button.ppl-day:hover {
 
 .ppl-week .ppl-week-name {
   position: sticky;
-  left: 0;
+  inset-inline-start: 0;
   z-index: 1;
   min-width: 8rem;
   background: var(--surface);
-  text-align: left;
+  text-align: start;
   white-space: nowrap;
 }
 
@@ -826,7 +826,7 @@ button.ppl-day:hover {
   display: inline-grid;
   width: 1.75rem;
   height: 1.75rem;
-  margin-right: 0.4rem;
+  margin-inline-end: 0.4rem;
   vertical-align: middle;
   font-size: 11px;
 }
@@ -913,7 +913,7 @@ button.ppl-day:hover {
   display: flex;
   align-items: center;
   gap: 0.625rem;
-  margin-left: calc(var(--depth, 0) * 1.5rem);
+  margin-inline-start: calc(var(--depth, 0) * 1.5rem);
   padding: 0.5rem 0.625rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -965,7 +965,7 @@ button.ppl-day:hover {
   background: none;
   color: var(--text);
   font: inherit;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 
@@ -1015,7 +1015,7 @@ button.ppl-day:hover {
 /* A field no person reaches: a program that fills it in gives itself away. */
 .ppl-honey {
   position: absolute;
-  left: -10000px;
+  inset-inline-start: -10000px;
   width: 1px;
   height: 1px;
   overflow: hidden;
@@ -1040,7 +1040,7 @@ button.ppl-day:hover {
   }
 
   .ppl-node {
-    margin-left: calc(var(--depth, 0) * 0.875rem);
+    margin-inline-start: calc(var(--depth, 0) * 0.875rem);
   }
 
   .ppl-line {
