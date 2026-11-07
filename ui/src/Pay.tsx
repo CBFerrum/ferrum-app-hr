@@ -63,7 +63,7 @@ interface Attached {
   created_at: string;
 }
 
-const kb = (n: number) => (n >= 1_048_576 ? tr("{value} MB", { value: (n / 1_048_576).toFixed(1) }) : tr("{Math} KB", { Math: Math.max(1, Math.round(n / 1024)) }));
+const kb = (n: number) => (n >= 1_048_576 ? tr("{value} MB", { value: (n / 1_048_576).toFixed(1) }) : tr("{n} KB", { n: Math.max(1, Math.round(n / 1024)) }));
 
 function Documents({ employee, training }: { employee: Employee; training: boolean }) {
   const today = todayIso();

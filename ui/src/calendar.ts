@@ -2,6 +2,7 @@
 // Pure, so what the grid says is tested without a browser.
 
 import { addDays, addMonths, endOfMonth, monthName, span, startOfMonth, startOfWeek, within } from "./dates";
+import { t } from "@ferrum/client";
 
 export type View = "week" | "month";
 
@@ -100,6 +101,6 @@ export function departments(away: Away[]): string[] {
 /** What a day says to someone who cannot see it: "2 away", "Holiday: Diwali", "Weekly off". */
 export function dayNote(away: Away[], holiday: Holiday | undefined, day: string): string {
   const n = new Set(awayOn(away, day).filter((a) => !a.pending).map((a) => a.employee)).size;
-  const parts = [holiday ? (holiday.weekly_off ? "weekly off" : `holiday: ${holiday.name}`) : "", n ? `${n} away` : ""].filter(Boolean);
+  const parts = [holiday ? (holiday.weekly_off ? "weekly off" : `holiday: ${holiday.name}`) : "", n ? t("{n} away", { n }) : ""].filter(Boolean);
   return parts.join(", ");
 }

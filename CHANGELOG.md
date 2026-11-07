@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.12
+
+Rebuilt with Ferrum-Frontend 155518c: the sentences its pages built in code (counts, dates, what a toast or a screen reader says) go through t() too, as whole sentences where code chose a word, and carry built-in Arabic and Hindi (233 words each in ui/src/locales, translated by the model and to be reviewed by native speakers).
+
 ## 0.8.11
 
 The assistant knows what its records mean in its pages (contributes.shell.assistant): their states, what counts and where figures come from, with questions it suggests asking there. Personal and health details are in field groups: Employee.date_of_birth (personal), Employee.blood_group (personal), EmployeePromotion.revised_ctc (pay), JobOffer.ctc (pay). Every role that read or wrote them is granted the group, so people see what they saw, and an AI provider gets them only where the workspace's egress policy allows the group.
