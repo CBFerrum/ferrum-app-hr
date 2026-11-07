@@ -5,7 +5,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { api, todayIso } from "@ferrum/client";
+import { api, todayIso, t } from "@ferrum/client";
 import { Badge, Button, EmptyState, ErrorState, Icon, Spinner, useShellTitle } from "@ferrum/kit";
 import {
   type Away,
@@ -44,7 +44,7 @@ const LONG = (day: string) => {
 
 /** The people away on a day, or in a week, as a list a screen reader can read from top to bottom. */
 function Names({ away, title }: { away: Away[]; title: string }) {
-  if (!away.length) return <p className="muted">Nobody is away.</p>;
+  if (!away.length) return <p className="muted">{t("Nobody is away.")}</p>;
   return (
     <section aria-label={title}>
       <ul className="ppl-away" data-ferrum-nocard>
@@ -59,7 +59,7 @@ function Names({ away, title }: { away: Away[]; title: string }) {
                 {[a.leave_type, span(a.from_date, a.to_date), a.half_day_date ? "half a day" : "", a.department].filter(Boolean).join(" · ")}
               </span>
             </span>
-            {a.pending && <Badge tone="amber">Asked for</Badge>}
+            {a.pending && <Badge tone="amber">{t("Asked for")}</Badge>}
           </li>
         ))}
       </ul>
@@ -136,7 +136,7 @@ function Week({ cal, anchor, today }: { cal: Cal; anchor: string; today: string 
         <thead>
           <tr>
             <th scope="col" className="ppl-week-name">
-              Away
+              {t("Away")}
             </th>
             {days.map((d) => {
               const h = holidayOn(cal.holidays, d);
@@ -150,7 +150,7 @@ function Week({ cal, anchor, today }: { cal: Cal; anchor: string; today: string 
           </tr>
           {cal.holidays.some((h) => days.includes(h.date) && !h.weekly_off) && (
             <tr>
-              <td className="ppl-week-name faint">Holidays</td>
+              <td className="ppl-week-name faint">{t("Holidays")}</td>
               {days.map((d) => {
                 const h = holidayOn(cal.holidays, d);
                 return (
@@ -187,7 +187,7 @@ function Week({ cal, anchor, today }: { cal: Cal; anchor: string; today: string 
           ))}
         </tbody>
       </table>
-      {!people.length && <p className="muted ppl-week-empty">Everyone is in this week.</p>}
+      {!people.length && <p className="muted ppl-week-empty">{t("Everyone is in this week.")}</p>}
     </div>
   );
 }
@@ -222,27 +222,27 @@ export function TeamCalendar() {
   const body = q.error ? (
     <ErrorState error={q.error} onRetry={() => void q.refetch()} />
   ) : !cal || !filtered ? (
-    <Spinner label="Loading the calendar" />
+    <Spinner label={t("Loading the calendar")} />
   ) : !cal.has_record && cal.scope === "team" ? (
-    <EmptyState title="There is no team to show yet" icon="user">
-      <p className="muted">Your sign-in is not linked to an employee record, so there is no team around you. {cal.everyone_allowed ? "You can look at everyone instead." : "HR can link it."}</p>
-      {cal.everyone_allowed && <Button onClick={() => set({ scope: "all" })}>Show everyone</Button>}
+    <EmptyState title={t("There is no team to show yet")} icon="user">
+      <p className="muted">{t("Your sign-in is not linked to an employee record, so there is no team around you.")} {cal.everyone_allowed ? "You can look at everyone instead." : "HR can link it."}</p>
+      {cal.everyone_allowed && <Button onClick={() => set({ scope: "all" })}>{t("Show everyone")}</Button>}
     </EmptyState>
   ) : (
     <>
       {view === "month" ? <Month cal={filtered} anchor={anchor} today={today} day={day} onDay={(d) => set({ date: d })} /> : <Week cal={filtered} anchor={anchor} today={today} />}
       <ul className="ppl-legend" data-ferrum-nocard>
         <li data-tone="holiday">
-          <span aria-hidden="true" /> Holiday
+          <span aria-hidden="true" /> {t("Holiday")}
         </li>
         <li data-tone="off">
-          <span aria-hidden="true" /> Weekly off
+          <span aria-hidden="true" /> {t("Weekly off")}
         </li>
         <li data-tone="away">
-          <span aria-hidden="true" /> Away
+          <span aria-hidden="true" /> {t("Away")}
         </li>
         <li data-tone="asked">
-          <span aria-hidden="true" /> Asked for, not decided
+          <span aria-hidden="true" /> {t("Asked for, not decided")}
         </li>
       </ul>
       {view === "month" ? (
@@ -253,8 +253,8 @@ export function TeamCalendar() {
         </div>
       ) : (
         <div className="stack ppl-tight">
-          <h2 className="ppl-sub">Away this week</h2>
-          <Names away={[...filtered.away].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "") || a.from_date.localeCompare(b.from_date))} title="Away this week" />
+          <h2 className="ppl-sub">{t("Away this week")}</h2>
+          <Names away={[...filtered.away].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "") || a.from_date.localeCompare(b.from_date))} title={t("Away this week")} />
         </div>
       )}
     </>
@@ -271,12 +271,12 @@ export function TeamCalendar() {
         </div>
       </header>
       <div className="ppl-tools">
-        <div className="segmented" role="group" aria-label="Show">
+        <div className="segmented" role="group" aria-label={t("Show")}>
           <button type="button" aria-pressed={view === "month"} onClick={() => set({ view: null })}>
-            Month
+            {t("Month")}
           </button>
           <button type="button" aria-pressed={view === "week"} onClick={() => set({ view: "week" })}>
-            Week
+            {t("Week")}
           </button>
         </div>
         <div className="ppl-step">
@@ -290,22 +290,22 @@ export function TeamCalendar() {
             <Icon name="chevronRight" size={16} />
           </button>
           <Button size="sm" onClick={() => set({ date: null })} disabled={anchor === today && !date}>
-            Today
+            {t("Today")}
           </Button>
         </div>
         {cal?.everyone_allowed && (
-          <div className="segmented" role="group" aria-label="Whose">
+          <div className="segmented" role="group" aria-label={t("Whose")}>
             <button type="button" aria-pressed={!wantsAll} onClick={() => set({ scope: null, department: null })}>
-              My team
+              {t("My team")}
             </button>
             <button type="button" aria-pressed={wantsAll} onClick={() => set({ scope: "all" })}>
-              Everyone
+              {t("Everyone")}
             </button>
           </div>
         )}
         {wantsAll && depts.length > 1 && (
-          <select className="select ppl-dept" aria-label="Department" value={dept} onChange={(e) => set({ department: e.target.value || null })}>
-            <option value="">All departments</option>
+          <select className="select ppl-dept" aria-label={t("Department")} value={dept} onChange={(e) => set({ department: e.target.value || null })}>
+            <option value="">{t("All departments")}</option>
             {depts.map((d) => (
               <option key={d} value={d}>
                 {d}

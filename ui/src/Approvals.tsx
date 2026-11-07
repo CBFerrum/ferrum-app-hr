@@ -8,7 +8,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { api, docPath, errorMessage } from "@ferrum/client";
+import { api, docPath, errorMessage, t as tr } from "@ferrum/client";
 import { Badge, Button, Dialog, EmptyState, ErrorState, Field, Spinner, toast, useShellTitle } from "@ferrum/kit";
 import {
   badSanctions,
@@ -46,9 +46,9 @@ function Lines({ item, edits, onEdit }: { item: ExpenseItem; edits: Record<strin
   return (
     <div className="ppl-lines">
       <div className="ppl-line ppl-line-head" aria-hidden="true">
-        <span>What for</span>
-        <span className="ppl-num">Claimed</span>
-        <span className="ppl-num">Sanction</span>
+        <span>{tr("What for")}</span>
+        <span className="ppl-num">{tr("Claimed")}</span>
+        <span className="ppl-num">{tr("Sanction")}</span>
       </div>
       {s.lines.map((l) => {
         const id = `sanction-${item.id}-${l.id}`;
@@ -81,13 +81,13 @@ function Lines({ item, edits, onEdit }: { item: ExpenseItem; edits: Record<strin
         );
       })}
       <div className="ppl-line ppl-line-total">
-        <span>To pay once sanctioned</span>
+        <span>{tr("To pay once sanctioned")}</span>
         <span className="ppl-num">{money(s.claimed, s.currency, s.precision)}</span>
         <span className="ppl-num">
           <strong>{money(total, s.currency, s.precision)}</strong>
         </span>
       </div>
-      {Number(s.advance) > 0 && <p className="faint ppl-line-note">{money(s.advance, s.currency, s.precision)} of it is set off against an advance already paid.</p>}
+      {Number(s.advance) > 0 && <p className="faint ppl-line-note">{money(s.advance, s.currency, s.precision)} {tr("of it is set off against an advance already paid.")}</p>}
     </div>
   );
 }
@@ -105,8 +105,8 @@ function Context({ item }: { item: Item }) {
     const says = claimedTimes(item);
     return (
       <ul className="ppl-context" data-ferrum-nocard>
-        {says && <li>Says: {says}.</li>}
-        {recordedLine(item) && <li>The days hold: {recordedLine(item)}</li>}
+        {says && <li>{tr("Says: {says}.", { says })}</li>}
+        {recordedLine(item) && <li>{tr("The days hold:")} {recordedLine(item)}</li>}
       </ul>
     );
   }
@@ -152,7 +152,7 @@ function Card({
           {item.employee.department && <span className="faint">{item.employee.department}</span>}
         </div>
         <Badge tone={item.kind === "leave" ? "blue" : item.kind === "attendance" ? "purple" : "amber"}>{kindLabel(item.kind)}</Badge>
-        <span className={stale(item.waiting_since) ? "ppl-late" : "faint"} title="How long it has waited">
+        <span className={stale(item.waiting_since) ? "ppl-late" : "faint"} title={tr("How long it has waited")}>
           {waiting(item.waiting_since)}
         </span>
       </div>
@@ -162,13 +162,13 @@ function Card({
       {item.kind === "expense" && <Lines item={item} edits={edits} onEdit={onEdit} />}
       <div className="ppl-card-actions">
         <Button variant="primary" size="sm" icon="check" disabled={bad} onClick={onApprove} aria-label={`Approve ${name}'s ${item.kind === "expense" ? "claim" : "request"}`}>
-          Approve
+          {tr("Approve")}
         </Button>
         <Button size="sm" onClick={onReject} aria-label={`Reject ${name}'s ${item.kind === "expense" ? "claim" : "request"}`}>
-          Reject…
+          {tr("Reject…")}
         </Button>
         <Link className="ppl-open" to={`/e/${item.entity}/${item.id}`}>
-          Open the request
+          {tr("Open the request")}
         </Link>
       </div>
     </li>
@@ -186,13 +186,13 @@ function RejectDialog({ item, onClose, onReject }: { item: Item; onClose: () => 
     <Dialog open onClose={onClose} title={`Reject ${item.employee.name ?? "this"}'s request?`}>
       <form className="stack" onSubmit={submit}>
         <p className="muted">{what(item)}</p>
-        <Field label="Why not? (optional)" htmlFor="reject-note" hint="Added to the request's discussion, where the employee reads it.">
+        <Field label={tr("Why not? (optional)")} htmlFor="reject-note" hint={tr("Added to the request's discussion, where the employee reads it.")}>
           <textarea id="reject-note" className="textarea" rows={3} value={note} maxLength={2000} onChange={(e) => setNote(e.target.value)} data-autofocus />
         </Field>
         <div className="row ppl-dialog-actions">
-          <Button onClick={onClose}>Keep it waiting</Button>
+          <Button onClick={onClose}>{tr("Keep it waiting")}</Button>
           <Button type="submit" variant="danger">
-            Reject
+            {tr("Reject")}
           </Button>
         </div>
       </form>
@@ -242,7 +242,7 @@ export function Inbox() {
       await api.post(docPath(i.entity, i.id, "workflow", action), undefined, { ifMatch: version });
       if (action === "Reject" && note.trim()) {
         // The decision stands even if the note cannot be saved.
-        await api.post(docPath(i.entity, i.id, "comments"), { body: `Rejected: ${note.trim()}`, mentions: [] }).catch(() => toast("Rejected, but the note could not be saved.", "error"));
+        await api.post(docPath(i.entity, i.id, "comments"), { body: `Rejected: ${note.trim()}`, mentions: [] }).catch(() => toast(tr("Rejected, but the note could not be saved."), "error"));
       }
       toast(action === "Approve" ? `Approved: ${name}` : `Rejected: ${name}`);
       // What the decision changed elsewhere (a balance, the calendar, the attendance) is read again.
@@ -296,18 +296,18 @@ export function Inbox() {
   const body = q.error ? (
     <ErrorState error={q.error} onRetry={() => void q.refetch()} />
   ) : !q.data ? (
-    <Spinner label="Loading what is waiting for you" />
+    <Spinner label={tr("Loading what is waiting for you")} />
   ) : !all.length ? (
-    <EmptyState title="Nothing is waiting for you" icon="check">
-      <p className="muted">Leave, attendance and expense requests routed to you appear here as they come in.</p>
-      <Link to="/calendar">See who is away</Link>
+    <EmptyState title={tr("Nothing is waiting for you")} icon="check">
+      <p className="muted">{tr("Leave, attendance and expense requests routed to you appear here as they come in.")}</p>
+      <Link to="/calendar">{tr("See who is away")}</Link>
     </EmptyState>
   ) : (
     <>
       {kinds.length > 1 && (
-        <div className="segmented" role="group" aria-label="Kind of request">
+        <div className="segmented" role="group" aria-label={tr("Kind of request")}>
           <button type="button" aria-pressed={!kind} onClick={() => setSp({}, { replace: true })}>
-            All ({all.length})
+            {tr("All ({length})", { length: all.length })}
           </button>
           {kinds.map((k) => (
             <button key={k.id} type="button" aria-pressed={kind === k.id} onClick={() => setSp({ kind: k.id }, { replace: true })}>
@@ -317,18 +317,18 @@ export function Inbox() {
         </div>
       )}
       {chosen.length > 0 && (
-        <div className="ppl-bulk" role="region" aria-label="Selected requests">
+        <div className="ppl-bulk" role="region" aria-label={tr("Selected requests")}>
           <strong>{chosen.length} selected</strong>
           <Button variant="primary" size="sm" icon="check" loading={working} onClick={() => void approveSome(chosen)}>
-            Approve {chosen.length === 1 ? "it" : "them"}
+            {tr("Approve")} {chosen.length === 1 ? "it" : "them"}
           </Button>
           <Button size="sm" onClick={() => setPicked(new Set())}>
-            Clear
+            {tr("Clear")}
           </Button>
         </div>
       )}
-      {!shown.length && <p className="muted">Nothing of this kind is waiting for you.</p>}
-      <ul className="ppl-cards" aria-label="Requests waiting for you">
+      {!shown.length && <p className="muted">{tr("Nothing of this kind is waiting for you.")}</p>}
+      <ul className="ppl-cards" aria-label={tr("Requests waiting for you")}>
         {shown.map((i) => (
           <Card
             key={keyOf(i)}
@@ -343,7 +343,7 @@ export function Inbox() {
           />
         ))}
       </ul>
-      <p className="faint ppl-keys">J and K move between requests, A approves the one you are on, R rejects it.</p>
+      <p className="faint ppl-keys">{tr("J and K move between requests, A approves the one you are on, R rejects it.")}</p>
     </>
   );
 

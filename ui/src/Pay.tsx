@@ -4,7 +4,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { api, docPath, download, errorMessage, formatDate, todayIso } from "@ferrum/client";
+import { api, docPath, download, errorMessage, formatDate, todayIso, t as tr } from "@ferrum/client";
 import { Badge, EmptyState, ErrorState, Icon, Spinner, toast } from "@ferrum/kit";
 import { f, rows, title, useCanRead } from "./data";
 import { money } from "./inbox";
@@ -28,15 +28,15 @@ function Payslips({ employee }: { employee: Employee }) {
   return (
     <section className="card" aria-labelledby="ppl-slips">
       <div className="card-head">
-        <h2 id="ppl-slips">Your payslips</h2>
+        <h2 id="ppl-slips">{tr("Your payslips")}</h2>
       </div>
       <div className="card-body">
         {q.error ? (
           <ErrorState error={q.error} onRetry={() => void q.refetch()} />
         ) : !q.data ? (
-          <Spinner label="Loading your payslips" />
+          <Spinner label={tr("Loading your payslips")} />
         ) : !q.data.length ? (
-          <p className="muted">No payslips yet. They appear here once payroll has run.</p>
+          <p className="muted">{tr("No payslips yet. They appear here once payroll has run.")}</p>
         ) : (
           <ul className="ppl-slips" data-ferrum-nocard>
             {q.data.map((s) => (
@@ -82,15 +82,15 @@ function Documents({ employee, training }: { employee: Employee; training: boole
   return (
     <section className="card" aria-labelledby="ppl-docs">
       <div className="card-head">
-        <h2 id="ppl-docs">Documents and training</h2>
+        <h2 id="ppl-docs">{tr("Documents and training")}</h2>
       </div>
       <div className="card-body stack ppl-tight">
         {files.error ? (
-          <p className="muted">Your documents cannot be shown ({errorMessage(files.error)}).</p>
+          <p className="muted">{tr("Your documents cannot be shown (")}{errorMessage(files.error)}).</p>
         ) : !files.data ? (
-          <Spinner small label="Loading your documents" />
+          <Spinner small label={tr("Loading your documents")} />
         ) : !files.data.length ? (
-          <p className="muted">HR has not put any documents on your record.</p>
+          <p className="muted">{tr("HR has not put any documents on your record.")}</p>
         ) : (
           <ul className="ppl-files" data-ferrum-nocard>
             {files.data.map((d) => (
@@ -105,21 +105,21 @@ function Documents({ employee, training }: { employee: Employee; training: boole
           </ul>
         )}
         {training && passed.data && passed.data.length > 0 && (
-          <ul className="ppl-training" data-ferrum-nocard aria-label="Training you have passed">
+          <ul className="ppl-training" data-ferrum-nocard aria-label={tr("Training you have passed")}>
             {passed.data.map((t) => {
               const c = cover(t.valid_until, today);
               return (
                 <li key={t.id}>
                   <span>{t.program_name}</span>
                   <span className="faint">{t.valid_until ? `until ${formatDate(t.valid_until)}` : t.completed_on ? `passed ${formatDate(t.completed_on)}` : ""}</span>
-                  {c === "expired" && <Badge tone="red">Lapsed</Badge>}
-                  {c === "soon" && <Badge tone="amber">Lapses soon</Badge>}
+                  {c === "expired" && <Badge tone="red">{tr("Lapsed")}</Badge>}
+                  {c === "soon" && <Badge tone="amber">{tr("Lapses soon")}</Badge>}
                 </li>
               );
             })}
           </ul>
         )}
-        {training && passed.error && <EmptyState title="Your training cannot be shown" />}
+        {training && passed.error && <EmptyState title={tr("Your training cannot be shown")} />}
       </div>
     </section>
   );
