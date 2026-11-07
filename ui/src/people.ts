@@ -1,3 +1,4 @@
+import { t as tr } from "@ferrum/client";
 // People's home, the parts that are plain logic (kept apart, so they are tested): dates as the
 // person's own calendar has them, who is away on a day, the work anniversaries coming up, and
 // whether the next check-in is in or out.
@@ -86,7 +87,7 @@ export function anniversaries(employees: Employee[], today: string, days = 14): 
 
 /** "today", "tomorrow", "in 5 days". */
 export function inDaysLabel(n: number): string {
-  return n === 0 ? "today" : n === 1 ? "tomorrow" : `in ${n} days`;
+  return n === 0 ? "today" : n === 1 ? "tomorrow" : tr("in {n} days", { n });
 }
 
 /** Leave days as people say them: "1 day", "2.5 days". */

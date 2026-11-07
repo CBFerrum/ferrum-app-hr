@@ -108,7 +108,7 @@ export function what(i: Item, locale?: string): string {
     case "expense": {
       const s = i.summary;
       const n = s.lines.length;
-      return `Expense claim, ${money(s.claimed, s.currency, s.precision)} in ${n} ${n === 1 ? "line" : "lines"}`;
+      return (n === 1 ? tr("Expense claim, {amount} in 1 line", { amount: money(s.claimed, s.currency, s.precision) }) : tr("Expense claim, {amount} in {n} lines", { amount: money(s.claimed, s.currency, s.precision), n }));
     }
   }
 }
@@ -127,9 +127,9 @@ export function waiting(since: string | null | undefined, now = new Date()): str
   if (n === null) return "";
   if (n === 0) return "today";
   if (n === 1) return "yesterday";
-  if (n < 14) return `${n} days ago`;
-  if (n < 60) return `${Math.round(n / 7)} weeks ago`;
-  return `${Math.round(n / 30)} months ago`;
+  if (n < 14) return tr("{n} days ago", { n });
+  if (n < 60) return tr("{n} weeks ago", { n: Math.round(n / 7) });
+  return tr("{n} months ago", { n: Math.round(n / 30) });
 }
 
 /** Whether it has waited long enough to be worth saying so in red: three days. */
@@ -142,8 +142,8 @@ export function balanceLine(i: LeaveItem): string {
   if (c.balance_after == null) return "Leave without pay: no balance to draw on.";
   const after = Number(c.balance_after);
   const before = Number(c.balance_before ?? 0);
-  if (after < 0) return `${days(Math.abs(after))} short: ${days(before)} left.`;
-  return `${days(after)} left once it is granted (${days(before)} now).`;
+  if (after < 0) return tr("{value} short: {before} left.", { value: days(Math.abs(after)), before: days(before) });
+  return tr("{after} left once it is granted ({before} now).", { after: days(after), before: days(before) });
 }
 
 /** Who else is away then: "2 of 9 in Support are off on these days: Omar and Mina." */
@@ -153,24 +153,24 @@ export function teamLine(i: LeaveItem): string {
   const names = t.away.map((a) => (a.name ?? "Someone").split(/\s+/)[0]);
   const unnamed = t.away_count - names.length;
   const more =
-    unnamed > 0 ? `${names.join(", ")} and ${unnamed} more` : names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names.join("");
+    unnamed > 0 ? tr("{names} and {unnamed} more", { names: names.join(", "), unnamed }) : names.length > 1 ? tr("{value} and {value2}", { value: names.slice(0, -1).join(", "), value2: names[names.length - 1] }) : names.join("");
   const others = Math.max(0, t.size - 1);
-  const asked = t.asking_count ? ` ${t.asking_count === 1 ? "One more has" : `${t.asking_count} more have`} asked for them.` : "";
-  if (!t.away_count) return `Nobody else in ${t.label} is off on these days${others ? ` (${others} ${others === 1 ? "other" : "others"})` : ""}.${asked}`;
-  return `${t.away_count} of ${t.size} in ${t.label} ${t.away_count === 1 ? "is" : "are"} off on these days: ${more}.${asked}`;
+  const asked = t.asking_count ? (t.asking_count === 1 ? tr(" One more has asked for them.") : tr(" {count} more have asked for them.", { count: t.asking_count })) : "";
+  if (!t.away_count) return (others ? (others === 1 ? tr("Nobody else in {team} is off on these days (1 other).", { team: t.label }) : tr("Nobody else in {team} is off on these days ({others} others).", { team: t.label, others })) : tr("Nobody else in {team} is off on these days.", { team: t.label })) + asked;
+  return (t.away_count === 1 ? tr("1 of {size} in {team} is off on these days: {more}.", { size: t.size, team: t.label, more }) : tr("{away} of {size} in {team} are off on these days: {more}.", { away: t.away_count, size: t.size, team: t.label, more })) + asked;
 }
 
 /** "Came in 09:05, left 18:10", for what the employee says. */
 export function claimedTimes(i: AttendanceItem): string {
   const { in_time, out_time } = i.summary;
-  return [in_time ? `came in at ${in_time}` : "", out_time ? `left at ${out_time}` : ""].filter(Boolean).join(", ");
+  return [in_time ? tr("came in at {in_time}", { in_time }) : "", out_time ? tr("left at {out_time}", { out_time }) : ""].filter(Boolean).join(", ");
 }
 
 /** What the days hold now: "Absent on 6 Oct" and the punches there are on them. */
 export function recordedLine(i: AttendanceItem, locale?: string): string {
   const c = i.context;
   if (!c) return "";
-  const marks = c.recorded.length ? c.recorded.map((r) => `${r.status} on ${span(r.date, null, locale)}`).join(", ") : "Nothing is marked on these days yet";
+  const marks = c.recorded.length ? c.recorded.map((r) => tr("{status} on {value}", { status: r.status, value: span(r.date, null, locale) })).join(", ") : "Nothing is marked on these days yet";
   const punches = c.punches.length ? c.punches.map((p) => `${p.log_type ? `${p.log_type.toLowerCase()} ` : ""}${p.at.slice(11, 16)}`).join(", ") : "no punches";
   return `${marks}; ${punches}.`;
 }

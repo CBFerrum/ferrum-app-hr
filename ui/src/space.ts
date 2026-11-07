@@ -148,7 +148,7 @@ export function comingUp(leave: Time[], holidays: Holiday[], today: string, limi
 export function when(u: { from: string; to: string }, today: string): string {
   if (u.from <= today && today <= u.to) return "now";
   const d = daysBetween(today, u.from);
-  return d === 1 ? "tomorrow" : d < 14 ? `in ${d} days` : d < 60 ? `in ${Math.round(d / 7)} weeks` : `in ${Math.round(d / 30)} months`;
+  return d === 1 ? "tomorrow" : d < 14 ? t("in {d} days", { d }) : d < 60 ? t("in {n} weeks", { n: Math.round(d / 7) }) : t("in {n} months", { n: Math.round(d / 30) });
 }
 
 // ───────────── requests together ─────────────
