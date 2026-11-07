@@ -4,6 +4,8 @@
 
 The assistant knows what its records mean in its pages (contributes.shell.assistant): their states, what counts and where figures come from, with questions it suggests asking there. Personal and health details are in field groups: Employee.date_of_birth (personal), Employee.blood_group (personal), EmployeePromotion.revised_ctc (pay), JobOffer.ctc (pay). Every role that read or wrote them is granted the group, so people see what they saw, and an AI provider gets them only where the workspace's egress policy allows the group.
 
+Its reports keep to the workspace's egress policy too (FERRUM-AI-003): run for an AI provider the workspace has not allowed them, upcoming events leave birthdays out, and the income tax and bank reports, which read salary slips and bank details, are refused. Two tests expected the platform's old word for a duplicate and now read its message, which names the fields ("another Job Applicant already has this Email Id and Job Opening").
+
 ## 0.8.10
 
 Rebuilt with Ferrum-Frontend 5b22e7b: its own words carry built-in Arabic and Hindi (207 words each, ui/src/locales, translated by the model and to be reviewed by native speakers), fetched for the page's language only. The labels it keeps in objects, its dialogs, its page titles and the words it keeps in variables go through t() as well, and the names and sizes it shows as they are keep their order right to left. Its pages are drawn once their words are in, and its entry carries only the parts of the kit it uses.
