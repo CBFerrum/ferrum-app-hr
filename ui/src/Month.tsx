@@ -6,7 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useSearchParams } from "react-router";
-import { api, todayIso } from "@ferrum/client";
+import { api, todayIso, t } from "@ferrum/client";
 import { Button, Dialog, ErrorState, Icon, Spinner } from "@ferrum/kit";
 import { useMe } from "@ferrum/records";
 import type { Holiday } from "./calendar";
@@ -36,7 +36,7 @@ function DayDialog({ day, mark, zone, onClose, onFix }: { day: MonthDay; mark: A
       title={LONG(day.day)}
       footer={
         <>
-          <Button onClick={onClose}>Close</Button>
+          <Button onClick={onClose}>{t("Close")}</Button>
           <Button
             variant="primary"
             onClick={() => {
@@ -44,42 +44,42 @@ function DayDialog({ day, mark, zone, onClose, onFix }: { day: MonthDay; mark: A
               onFix();
             }}
           >
-            Ask for it to be put right
+            {t("Ask for it to be put right")}
           </Button>
         </>
       }
     >
       {mark ? (
         <dl className="ppl-facts">
-          <dt>Marked</dt>
+          <dt>{t("Marked")}</dt>
           <dd>{mark.status}</dd>
           {mark.in_time && (
             <>
-              <dt>Came in</dt>
+              <dt>{t("Came in")}</dt>
               <dd>
                 {clockTime(mark.in_time, zone)}
-                {mark.late_entry && <span className="ppl-late"> · late</span>}
+                {mark.late_entry && <span className="ppl-late"> {t("· late")}</span>}
               </dd>
             </>
           )}
           {mark.out_time && (
             <>
-              <dt>Left</dt>
+              <dt>{t("Left")}</dt>
               <dd>
                 {clockTime(mark.out_time, zone)}
-                {mark.early_exit && <span className="ppl-late"> · early</span>}
+                {mark.early_exit && <span className="ppl-late"> {t("· early")}</span>}
               </dd>
             </>
           )}
           {Number(mark.working_hours) > 0 && (
             <>
-              <dt>Hours</dt>
+              <dt>{t("Hours")}</dt>
               <dd>{Number(mark.working_hours)}</dd>
             </>
           )}
         </dl>
       ) : (
-        <p className="muted">Nothing is marked for this day. If you worked, ask for it to be put right, and your approver decides.</p>
+        <p className="muted">{t("Nothing is marked for this day. If you worked, ask for it to be put right, and your approver decides.")}</p>
       )}
     </Dialog>
   );
@@ -122,15 +122,15 @@ export function Month({ employee, onFix }: { employee: Employee; onFix: (day: st
   return (
     <section className="card" aria-labelledby="ppl-month-title">
       <div className="card-head">
-        <h2 id="ppl-month-title">Your attendance</h2>
+        <h2 id="ppl-month-title">{t("Your attendance")}</h2>
         <div className="ppl-month-nav">
-          <button type="button" className="icon-btn" aria-label="Earlier month" onClick={() => go(-1)}>
+          <button type="button" className="icon-btn" aria-label={t("Earlier month")} onClick={() => go(-1)}>
             <Icon name="left" size={15} />
           </button>
           <span className="ppl-month-name" aria-live="polite">
             {monthName(anchor)}
           </span>
-          <button type="button" className="icon-btn" aria-label="Later month" onClick={() => go(1)}>
+          <button type="button" className="icon-btn" aria-label={t("Later month")} onClick={() => go(1)}>
             <Icon name="chevronRight" size={15} />
           </button>
         </div>
@@ -139,7 +139,7 @@ export function Month({ employee, onFix }: { employee: Employee; onFix: (day: st
         {q.error ? (
           <ErrorState error={q.error} onRetry={() => void q.refetch()} />
         ) : !q.data ? (
-          <Spinner label="Loading the month" />
+          <Spinner label={t("Loading the month")} />
         ) : (
           <>
             <table className="ppl-month">
@@ -188,7 +188,7 @@ export function Month({ employee, onFix }: { employee: Employee; onFix: (day: st
                 </li>
               ))}
               <li data-tone="off">
-                <span aria-hidden="true" /> Day off
+                <span aria-hidden="true" /> {t("Day off")}
               </li>
             </ul>
             {counts && (counts.present || counts.home || counts.half || counts.absent || counts.leave) ? (
@@ -207,7 +207,7 @@ export function Month({ employee, onFix }: { employee: Employee; onFix: (day: st
                   .join(" · ")}
               </p>
             ) : (
-              <p className="muted ppl-counts">Nothing is marked this month yet.</p>
+              <p className="muted ppl-counts">{t("Nothing is marked this month yet.")}</p>
             )}
           </>
         )}

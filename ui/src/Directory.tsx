@@ -7,7 +7,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { api, bootstrap, routeBase, todayIso } from "@ferrum/client";
+import { api, bootstrap, routeBase, todayIso, t } from "@ferrum/client";
 import { Button, EmptyState, ErrorState, Spinner, toast, useDebounced, useShellTitle } from "@ferrum/kit";
 import { useMetaIndex } from "@ferrum/records";
 import { addDays } from "./dates";
@@ -51,8 +51,8 @@ function List({ data, q, department }: { data: Directory; q: string; department:
           <Card key={p.id} p={p} detail={data.detail} />
         ))}
       </ul>
-      {found.length > 120 && <p className="muted">Showing 120 of {found.length}: search to narrow them down.</p>}
-      {data.truncated && <p className="muted">The company is larger than this list can hold: search finds only those shown.</p>}
+      {found.length > 120 && <p className="muted">{t("Showing 120 of {length}: search to narrow them down.", { length: found.length })}</p>}
+      {data.truncated && <p className="muted">{t("The company is larger than this list can hold: search finds only those shown.")}</p>}
     </>
   );
 }
@@ -188,20 +188,20 @@ function Chart({ data, q }: { data: Directory; q: string }) {
     setJump(null);
   }, [jump, rows.length]);
 
-  if (!data.people.length) return <EmptyState title="No one here yet" icon="user" />;
+  if (!data.people.length) return <EmptyState title={t("No one here yet")} icon="user" />;
   return (
     <div className="stack ppl-tight">
       <div className="row">
         <Button size="sm" onClick={() => setOpen(everyone(tree))}>
-          Open every line
+          {t("Open every line")}
         </Button>
         <Button size="sm" onClick={() => setOpen(new Set())}>
-          Close them
+          {t("Close them")}
         </Button>
         <span className="faint">{data.people.length} people</span>
       </div>
       {matches.length > 0 && (
-        <ul className="ppl-found" aria-label="People found" data-ferrum-nocard>
+        <ul className="ppl-found" aria-label={t("People found")} data-ferrum-nocard>
           {matches.map((m) => (
             <li key={m.id}>
               <button
@@ -218,7 +218,7 @@ function Chart({ data, q }: { data: Directory; q: string }) {
           ))}
         </ul>
       )}
-      <ul className="ppl-tree" role="tree" aria-label="Who reports to whom" data-ferrum-nocard>
+      <ul className="ppl-tree" role="tree" aria-label={t("Who reports to whom")} data-ferrum-nocard>
         {rows.map((r, i) => (
           <Row
             key={r.node.person.id}
@@ -233,7 +233,7 @@ function Chart({ data, q }: { data: Directory; q: string }) {
           />
         ))}
       </ul>
-      <p className="faint">{rows.length} shown. The arrow keys walk the chart: right opens a line, left closes it.</p>
+      <p className="faint">{t("{length} shown. The arrow keys walk the chart: right opens a line, left closes it.", { length: rows.length })}</p>
     </div>
   );
 }
@@ -249,7 +249,7 @@ function Milestones({ people }: { people: Person[] }) {
     <>
       <section className="card" aria-labelledby="ppl-joined">
         <div className="card-head">
-          <h2 id="ppl-joined">Joined this month</h2>
+          <h2 id="ppl-joined">{t("Joined this month")}</h2>
         </div>
         <div className="card-body">
           {joined.length ? (
@@ -261,13 +261,13 @@ function Milestones({ people }: { people: Person[] }) {
               ))}
             </ul>
           ) : (
-            <p className="muted">Nobody new in the last 30 days.</p>
+            <p className="muted">{t("Nobody new in the last 30 days.")}</p>
           )}
         </div>
       </section>
       <section className="card" aria-labelledby="ppl-anniversaries">
         <div className="card-head">
-          <h2 id="ppl-anniversaries">Work anniversaries</h2>
+          <h2 id="ppl-anniversaries">{t("Work anniversaries")}</h2>
         </div>
         <div className="card-body">
           {coming.length ? (
@@ -282,7 +282,7 @@ function Milestones({ people }: { people: Person[] }) {
               ))}
             </ul>
           ) : (
-            <p className="muted">None in the next two weeks.</p>
+            <p className="muted">{t("None in the next two weeks.")}</p>
           )}
         </div>
       </section>
@@ -296,23 +296,23 @@ function Careers() {
   return (
     <section className="card" aria-labelledby="ppl-careers">
       <div className="card-head">
-        <h2 id="ppl-careers">Your careers page</h2>
+        <h2 id="ppl-careers">{t("Your careers page")}</h2>
       </div>
       <div className="card-body stack ppl-tight">
-        <p className="muted">Anyone can read your published openings here and apply, without signing in.</p>
-        <input className="input" readOnly aria-label="Address of the careers page" value={url} onFocus={(e) => e.currentTarget.select()} />
+        <p className="muted">{t("Anyone can read your published openings here and apply, without signing in.")}</p>
+        <input className="input" readOnly aria-label={t("Address of the careers page")} value={url} onFocus={(e) => e.currentTarget.select()} />
         <div className="row">
           <Button
             size="sm"
-            onClick={() => void navigator.clipboard.writeText(url).then(() => toast("Address copied"), () => toast("Select the address and copy it", "error"))}
+            onClick={() => void navigator.clipboard.writeText(url).then(() => toast(t("Address copied")), () => toast(t("Select the address and copy it"), "error"))}
           >
-            Copy the address
+            {t("Copy the address")}
           </Button>
           <a className="btn btn-default btn-sm" href={url} target="_blank" rel="noreferrer">
-            Open it
+            {t("Open it")}
           </a>
           <Link className="btn btn-default btn-sm" to="/e/JobOpening">
-            Openings
+            {t("Openings")}
           </Link>
         </div>
       </div>
@@ -357,25 +357,25 @@ export function People() {
         </div>
       </header>
       <div className="ppl-tools">
-        <div className="segmented" role="group" aria-label="Show">
+        <div className="segmented" role="group" aria-label={t("Show")}>
           <button type="button" aria-pressed={view === "list"} onClick={() => set({ view: null })}>
-            Directory
+            {t("Directory")}
           </button>
           <button type="button" aria-pressed={view === "chart"} onClick={() => set({ view: "chart" })}>
-            Org chart
+            {t("Org chart")}
           </button>
         </div>
         <input
           className="input ppl-search"
           type="search"
           placeholder={view === "chart" ? "Find someone in the chart" : "Search by name, role or department"}
-          aria-label="Search people"
+          aria-label={t("Search people")}
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
         {view === "list" && departments.length > 1 && (
-          <select className="select ppl-dept" aria-label="Department" value={department} onChange={(e) => set({ department: e.target.value || null })}>
-            <option value="">All departments</option>
+          <select className="select ppl-dept" aria-label={t("Department")} value={department} onChange={(e) => set({ department: e.target.value || null })}>
+            <option value="">{t("All departments")}</option>
             {departments.map((d) => (
               <option key={d} value={d}>
                 {d}
@@ -387,7 +387,7 @@ export function People() {
       {dir.error ? (
         <ErrorState error={dir.error} onRetry={() => void dir.refetch()} />
       ) : !dir.data ? (
-        <Spinner label="Loading people" />
+        <Spinner label={t("Loading people")} />
       ) : (
         <div className={aside ? "ppl-people-grid" : undefined}>
           <div className="stack ppl-tight">{view === "chart" ? <Chart data={dir.data} q={q} /> : <List data={dir.data} q={q} department={department} />}</div>

@@ -7,7 +7,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useState } from "react";
 import { Link } from "react-router";
-import { api, errorMessage, formatDateTime, todayIso } from "@ferrum/client";
+import { api, errorMessage, formatDateTime, todayIso, t } from "@ferrum/client";
 import { Badge, Button, EmptyState, ErrorState, Spinner, statusTone, toast, useLiveEntity, useShellTitle } from "@ferrum/kit";
 import { useMe } from "@ferrum/records";
 import type { Holiday } from "./calendar";
@@ -39,7 +39,7 @@ function CheckIn({ employee }: { employee: Employee }) {
     queryFn: ({ signal }) => rows<Checkin>("EmployeeCheckin", { filters: f([["employee", "=", employee.id]]), sort: "log_time desc", limit: 1, fields: "log_type,log_time" }, signal).then((r) => r.rows[0]),
   });
   const [busy, setBusy] = useState(false);
-  if (last.isLoading) return <Spinner small label="Loading your check-in" />;
+  if (last.isLoading) return <Spinner small label={t("Loading your check-in")} />;
   const next = nextLogType(last.data, today);
   const record = async () => {
     setBusy(true);
@@ -60,7 +60,7 @@ function CheckIn({ employee }: { employee: Employee }) {
       </Button>
       {last.data?.log_time && (
         <span className="faint">
-          Last {last.data.log_type === "IN" ? "in" : "out"} {formatDateTime(last.data.log_time)}
+          {t("Last")} {last.data.log_type === "IN" ? "in" : "out"} {formatDateTime(last.data.log_time)}
         </span>
       )}
     </div>
@@ -72,9 +72,9 @@ function Balances({ employee }: { employee: Employee }) {
     queryKey: ["people", "balance", employee.id],
     queryFn: ({ signal }) => api.get<{ rows: BalanceRow[] }>("/api/reports/leave_balance", { employee: employee.id }, signal).then((r) => r.rows),
   });
-  if (q.error) return <ErrorState error={q.error} title="Your leave cannot be shown" onRetry={() => void q.refetch()} />;
-  if (!q.data) return <Spinner label="Loading your leave" />;
-  if (!q.data.length) return <p className="muted">No leave is allocated to you for this period yet.</p>;
+  if (q.error) return <ErrorState error={q.error} title={t("Your leave cannot be shown")} onRetry={() => void q.refetch()} />;
+  if (!q.data) return <Spinner label={t("Loading your leave")} />;
+  if (!q.data.length) return <p className="muted">{t("No leave is allocated to you for this period yet.")}</p>;
   return (
     <ul className="ppl-balances" data-ferrum-nocard>
       {q.data.map((b) => {
@@ -119,8 +119,8 @@ function Coming({ employee }: { employee: Employee }) {
     },
   });
   if (q.error) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
-  if (!q.data) return <Spinner label="Loading what is coming up" />;
-  if (!q.data.length) return <p className="muted">No time off or holidays in the next two months.</p>;
+  if (!q.data) return <Spinner label={t("Loading what is coming up")} />;
+  if (!q.data.length) return <p className="muted">{t("No time off or holidays in the next two months.")}</p>;
   return (
     <ul className="ppl-coming" data-ferrum-nocard>
       {q.data.map((u) => (
@@ -166,25 +166,25 @@ function Requests({ employee, onFix }: { employee: Employee; onFix: () => void }
     <div className="stack ppl-tight">
       <div className="row ppl-actions">
         <Link className="btn btn-primary btn-sm" to={`/e/LeaveApplication/new?employee=${employee.id}`}>
-          Ask for leave
+          {t("Ask for leave")}
         </Link>
         {attendance && (
           <Button size="sm" onClick={onFix}>
-            Fix attendance
+            {t("Fix attendance")}
           </Button>
         )}
         {claims && (
           <Link className="btn btn-default btn-sm" to={`/e/ExpenseClaim/new?employee=${employee.id}`}>
-            Claim expenses
+            {t("Claim expenses")}
           </Link>
         )}
       </div>
       {q.error ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} />
       ) : !q.data ? (
-        <Spinner label="Loading your requests" />
+        <Spinner label={t("Loading your requests")} />
       ) : !q.data.length ? (
-        <p className="muted">You have not asked for anything yet.</p>
+        <p className="muted">{t("You have not asked for anything yet.")}</p>
       ) : (
         <ul className="ppl-requests" data-ferrum-nocard>
           {q.data.map((r) => (
@@ -238,18 +238,18 @@ export function PeopleHome() {
       </header>
       {waiting > 0 && (
         <Link className="ppl-banner" to="/approvals">
-          <strong>{waiting === 1 ? "1 request is" : `${waiting} requests are`} waiting for your decision</strong>
-          <span>Review them</span>
+          <strong>{waiting === 1 ? "1 request is" : `${waiting} requests are`} {t("waiting for your decision")}</strong>
+          <span>{t("Review them")}</span>
         </Link>
       )}
       {mine.error ? (
         <ErrorState error={mine.error} onRetry={() => void mine.refetch()} />
       ) : mine.isLoading || !me ? (
-        <Spinner label="Loading your space" />
+        <Spinner label={t("Loading your space")} />
       ) : !person ? (
-        <EmptyState title="Your sign-in is not linked to an employee record" icon="user">
-          <p className="muted">HR can link it. Then your leave, attendance and payslips are here.</p>
-          <Link to="/calendar">See who is away</Link>
+        <EmptyState title={t("Your sign-in is not linked to an employee record")} icon="user">
+          <p className="muted">{t("HR can link it. Then your leave, attendance and payslips are here.")}</p>
+          <Link to="/calendar">{t("See who is away")}</Link>
         </EmptyState>
       ) : (
         <div className="ppl-space">
@@ -268,7 +268,7 @@ export function PeopleHome() {
             </Section>
           </div>
           <div className="ppl-col">
-            <Suspense fallback={<Loading label="Loading your attendance" />}>
+            <Suspense fallback={<Loading label={t("Loading your attendance")} />}>
               <Month employee={person} onFix={(day) => setFixing(day)} />
               <Pay employee={person} />
             </Suspense>

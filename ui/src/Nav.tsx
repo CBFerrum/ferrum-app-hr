@@ -5,7 +5,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { NavLink } from "react-router";
-import { api } from "@ferrum/client";
+import { api, t } from "@ferrum/client";
 import { useLiveEntity } from "@ferrum/kit";
 import { useMe } from "@ferrum/records";
 import type { Item } from "./inbox";
@@ -30,13 +30,13 @@ export function Nav() {
   const waiting = useInbox().data?.length ?? 0;
   const decides = !!me && (me.user.is_admin || me.user.roles.some((r) => DECIDERS.includes(r)));
   return (
-    <nav className="ppl-tabs" aria-label="People">
+    <nav className="ppl-tabs" aria-label={t("People")}>
       <NavLink to="/" end>
-        My space
+        {t("My space")}
       </NavLink>
       {(decides || waiting > 0) && (
         <NavLink to="/approvals">
-          Approvals
+          {t("Approvals")}
           {waiting > 0 && (
             <span className="ppl-count" aria-label={`${waiting} waiting`}>
               {waiting}
@@ -44,8 +44,8 @@ export function Nav() {
           )}
         </NavLink>
       )}
-      <NavLink to="/calendar">Calendar</NavLink>
-      <NavLink to="/directory">People</NavLink>
+      <NavLink to="/calendar">{t("Calendar")}</NavLink>
+      <NavLink to="/directory">{t("People")}</NavLink>
     </nav>
   );
 }
