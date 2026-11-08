@@ -33,7 +33,7 @@ export function Fix({ employee, day, onClose }: { employee: string; day: string 
     e.preventDefault();
     setProblems({});
     setError(null);
-    if (!what.trim()) return setProblems({ explanation: "Say what happened, so that your approver can decide" });
+    if (!what.trim()) return setProblems({ explanation: t("Say what happened, so that your approver can decide") });
     setBusy(true);
     try {
       const made = await api.post<{ approver?: string | null }>(
@@ -111,7 +111,7 @@ export function Fix({ employee, day, onClose }: { employee: string; day: string 
           </div>
         )}
         <label className="check-field row">
-          <input type="checkbox" checked={half} onChange={(e) => setHalf(e.target.checked)} /> {t("Only half of")} {several ? t("the first day") : t("the day")}
+          <input type="checkbox" checked={half} onChange={(e) => setHalf(e.target.checked)} /> {(several ? t("Only half of the first day") : t("Only half of the day"))}
         </label>
         <Field label={t("Tell your approver more")} htmlFor="fix-what" required error={problems.explanation}>
           <textarea id="fix-what" className="textarea" rows={3} value={what} maxLength={2000} onChange={(e) => setWhat(e.target.value)} />

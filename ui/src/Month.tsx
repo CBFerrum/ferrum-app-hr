@@ -24,7 +24,7 @@ const clockTime = (iso: string | null | undefined, zone?: string) =>
   iso ? new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZone: zone }) : "";
 
 function dayWords(d: MonthDay): string {
-  const what = d.mark ?? (d.off ? d.off : d.future ? "" : "nothing marked");
+  const what = d.mark ?? (d.off ? d.off : d.future ? "" : t("nothing marked"));
   return [LONG(d.day), what].filter(Boolean).join(": ");
 }
 
@@ -194,14 +194,14 @@ export function Month({ employee, onFix }: { employee: Employee; onFix: (day: st
             {counts && (counts.present || counts.home || counts.half || counts.absent || counts.leave) ? (
               <p className="faint ppl-counts">
                 {isolate([
-                  counts.present && `${counts.present} present`,
-                  counts.home && `${counts.home} at home`,
-                  counts.half && `${counts.half} half ${counts.half === 1 ? "day" : "days"}`,
-                  counts.absent && `${counts.absent} absent`,
-                  counts.leave && `${counts.leave} on leave`,
-                  counts.late && `${counts.late} late`,
-                  counts.early && `${counts.early} left early`,
-                  counts.hours > 0 && `${counts.hours} hours`,
+                  counts.present && t("{present} present", { present: counts.present }),
+                  counts.home && t("{home} at home", { home: counts.home }),
+                  counts.half && (counts.half === 1 ? t("{half} half day", { half: counts.half }) : t("{half} half days", { half: counts.half })),
+                  counts.absent && t("{absent} absent", { absent: counts.absent }),
+                  counts.leave && t("{leave} on leave", { leave: counts.leave }),
+                  counts.late && t("{late} late", { late: counts.late }),
+                  counts.early && t("{early} left early", { early: counts.early }),
+                  counts.hours > 0 && t("{hours} hours", { hours: counts.hours }),
                 ]
                   .filter(Boolean)
                   .join(" · "))}

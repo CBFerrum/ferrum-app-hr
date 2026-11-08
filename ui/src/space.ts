@@ -75,7 +75,7 @@ export interface MonthDay {
  *  whether it is still to come. A day with no mark and not off is simply blank. */
 export function attendanceMonth(anchor: string, attended: Attended[], holidays: Holiday[], today: string): MonthDay[][] {
   const marks = new Map(attended.map((a) => [a.attendance_date, a.status as Mark]));
-  const off = new Map(holidays.map((h) => [h.date, h.weekly_off ? "Weekly off" : h.name]));
+  const off = new Map(holidays.map((h) => [h.date, h.weekly_off ? t("Weekly off") : h.name]));
   const weeks: MonthDay[][] = [];
   const first = startOfMonth(anchor);
   const last = endOfMonth(anchor);
@@ -135,7 +135,7 @@ export function comingUp(leave: Time[], holidays: Holiday[], today: string, limi
   const items: Upcoming[] = [];
   for (const l of leave) {
     if (!isDay(l.from_date) || l.to_date < today || !["Approved", "Open"].includes(l.status)) continue;
-    items.push({ key: `l-${l.id}`, from: l.from_date, to: l.to_date, kind: "leave", label: l.leave_type ?? t("Leave"), note: l.status === "Open" ? "waiting for approval" : "" });
+    items.push({ key: `l-${l.id}`, from: l.from_date, to: l.to_date, kind: "leave", label: l.leave_type ?? t("Leave"), note: l.status === "Open" ? t("waiting for approval") : "" });
   }
   for (const h of holidays) {
     if (h.weekly_off || h.date < today) continue;
@@ -164,10 +164,10 @@ export interface Request {
   status: string;
 }
 
-const ASKS: Record<string, string> = { "Missed Check-in": "Missed check-in", "Work From Home": "Working from home", "On Duty": "On duty" };
+const ASKS: Record<string, string> = { get "Missed Check-in"() { return t("Missed check-in"); }, get "Work From Home"() { return t("Working from home"); }, get "On Duty"() { return t("On duty"); } };
 
 /** A claim's status in the words of the person who made it. */
-export const claimStatus = (status: string | null | undefined): string => (status === "Draft" ? "Waiting for approval" : status === "Unpaid" ? "Approved, to be paid" : (status ?? ""));
+export const claimStatus = (status: string | null | undefined): string => (status === "Draft" ? t("Waiting for approval") : status === "Unpaid" ? t("Approved, to be paid") : (status ?? ""));
 
 export function requests(
   leave: { id: string; leave_type?: string | null; from_date: string; to_date: string; status: string }[],

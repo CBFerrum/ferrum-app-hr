@@ -109,7 +109,7 @@ function Row({
           type="button"
           className="ppl-reports"
           tabIndex={-1}
-          aria-label={t("{value} the {length} {value2} who report to {name}", { value: open ? "Hide" : "Show", length: node.children.length, value2: node.children.length === 1 ? "person" : "people", name: String(p.name) })}
+          aria-label={(node.children.length === 1 ? t("{value} the {length} person who report to {name}", { value: open ? t("Hide") : t("Show"), length: node.children.length, name: String(p.name) }) : t("{value} the {length} people who report to {name}", { value: open ? t("Hide") : t("Show"), length: node.children.length, name: String(p.name) }))}
           onClick={onToggle}
         >
           {node.children.length}

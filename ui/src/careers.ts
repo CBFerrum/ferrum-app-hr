@@ -26,10 +26,10 @@ export const looksLikeLink = (v: string): boolean => /^https?:\/\/[^\s]+$/i.test
 /** What is wrong with the form, field by field. Nothing is wrong when it is empty. */
 export function problems(a: Application): Partial<Record<keyof Application, string>> {
   const out: Partial<Record<keyof Application, string>> = {};
-  if (!a.name.trim()) out.name = "Tell us your name";
+  if (!a.name.trim()) out.name = t("Tell us your name");
   else if (a.name.trim().length > LIMITS.name) out.name = t("Use at most {name} characters", { name: LIMITS.name });
-  if (!a.email.trim()) out.email = "Tell us your email address, so that we can reply";
-  else if (!looksLikeEmail(a.email) || a.email.trim().length > LIMITS.email) out.email = "This does not look like an email address";
+  if (!a.email.trim()) out.email = t("Tell us your email address, so that we can reply");
+  else if (!looksLikeEmail(a.email) || a.email.trim().length > LIMITS.email) out.email = t("This does not look like an email address");
   if (a.phone.trim().length > LIMITS.phone) out.phone = t("Use at most {phone} characters", { phone: LIMITS.phone });
   if (a.resume_link.trim() && !looksLikeLink(a.resume_link)) out.resume_link = "Give a web address that starts with https://";
   if (a.cover_letter.trim().length > LIMITS.cover_letter) out.cover_letter = t("Use at most {cover_letter} characters", { cover_letter: LIMITS.cover_letter });
