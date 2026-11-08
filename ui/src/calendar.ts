@@ -79,7 +79,7 @@ export function rows(away: Away[], days: string[]): Row[] {
   const by = new Map<string, Row>();
   for (const a of away) {
     if (!days.some((d) => covers(a, d))) continue;
-    const row = by.get(a.employee) ?? { employee: a.employee, name: a.name ?? "Someone", leave_type: a.leave_type ?? null, cells: days.map(() => null) };
+    const row = by.get(a.employee) ?? { employee: a.employee, name: a.name ?? t("Someone"), leave_type: a.leave_type ?? null, cells: days.map(() => null) };
     days.forEach((d, i) => {
       if (!covers(a, d)) return;
       const next = part(a, d);
@@ -101,6 +101,6 @@ export function departments(away: Away[]): string[] {
 /** What a day says to someone who cannot see it: "2 away", "Holiday: Diwali", "Weekly off". */
 export function dayNote(away: Away[], holiday: Holiday | undefined, day: string): string {
   const n = new Set(awayOn(away, day).filter((a) => !a.pending).map((a) => a.employee)).size;
-  const parts = [holiday ? (holiday.weekly_off ? "weekly off" : `holiday: ${holiday.name}`) : "", n ? t("{n} away", { n }) : ""].filter(Boolean);
+  const parts = [holiday ? (holiday.weekly_off ? t("weekly off") : `holiday: ${holiday.name}`) : "", n ? t("{n} away", { n }) : ""].filter(Boolean);
   return parts.join(", ");
 }

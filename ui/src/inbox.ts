@@ -98,12 +98,12 @@ export function what(i: Item, locale?: string): string {
   switch (i.kind) {
     case "leave": {
       const s = i.summary;
-      return [s.leave_type ?? "Leave", span(s.from_date, s.to_date, locale), days(s.days)].join(", ");
+      return [s.leave_type ?? tr("Leave"), span(s.from_date, s.to_date, locale), days(s.days)].join(", ");
     }
     case "attendance": {
       const s = i.summary;
-      const reason = s.reason === "Work From Home" ? "Working from home" : s.reason === "On Duty" ? "On duty away from the office" : "Missed check-in";
-      return [reason, span(s.from_date, s.to_date, locale), s.half_day ? "with a half day" : ""].filter(Boolean).join(", ");
+      const reason = s.reason === "Work From Home" ? tr("Working from home") : s.reason === "On Duty" ? tr("On duty away from the office") : tr("Missed check-in");
+      return [reason, span(s.from_date, s.to_date, locale), s.half_day ? tr("with a half day") : ""].filter(Boolean).join(", ");
     }
     case "expense": {
       const s = i.summary;
@@ -139,7 +139,7 @@ export const stale = (since: string | null | undefined, now = new Date()): boole
 export function balanceLine(i: LeaveItem): string {
   const c = i.context;
   if (!c) return "";
-  if (c.balance_after == null) return "Leave without pay: no balance to draw on.";
+  if (c.balance_after == null) return tr("Leave without pay: no balance to draw on.");
   const after = Number(c.balance_after);
   const before = Number(c.balance_before ?? 0);
   if (after < 0) return tr("{value} short: {before} left.", { value: days(Math.abs(after)), before: days(before) });
@@ -150,7 +150,7 @@ export function balanceLine(i: LeaveItem): string {
 export function teamLine(i: LeaveItem): string {
   const t = i.context?.team;
   if (!t) return "";
-  const names = t.away.map((a) => (a.name ?? "Someone").split(/\s+/)[0]);
+  const names = t.away.map((a) => (a.name ?? tr("Someone")).split(/\s+/)[0]);
   const unnamed = t.away_count - names.length;
   const more =
     unnamed > 0 ? tr("{names} and {unnamed} more", { names: names.join(", "), unnamed }) : names.length > 1 ? tr("{value} and {value2}", { value: names.slice(0, -1).join(", "), value2: names[names.length - 1] }) : names.join("");
@@ -170,7 +170,7 @@ export function claimedTimes(i: AttendanceItem): string {
 export function recordedLine(i: AttendanceItem, locale?: string): string {
   const c = i.context;
   if (!c) return "";
-  const marks = c.recorded.length ? c.recorded.map((r) => tr("{status} on {value}", { status: r.status, value: span(r.date, null, locale) })).join(", ") : "Nothing is marked on these days yet";
+  const marks = c.recorded.length ? c.recorded.map((r) => tr("{status} on {value}", { status: r.status, value: span(r.date, null, locale) })).join(", ") : tr("Nothing is marked on these days yet");
   const punches = c.punches.length ? c.punches.map((p) => `${p.log_type ? `${p.log_type.toLowerCase()} ` : ""}${p.at.slice(11, 16)}`).join(", ") : "no punches";
   return `${marks}; ${punches}.`;
 }
@@ -190,9 +190,9 @@ export function badSanctions(lines: Line[], edits: Record<string, string>): Reco
   for (const l of lines) {
     if (!(l.id in edits)) continue;
     const v = Number(edits[l.id]);
-    if (edits[l.id].trim() === "" || !Number.isFinite(v)) out[l.id] = "Enter an amount";
-    else if (v < 0) out[l.id] = "Cannot be below zero";
-    else if (v > Number(l.amount ?? 0)) out[l.id] = "Cannot be more than was claimed";
+    if (edits[l.id].trim() === "" || !Number.isFinite(v)) out[l.id] = tr("Enter an amount");
+    else if (v < 0) out[l.id] = tr("Cannot be below zero");
+    else if (v > Number(l.amount ?? 0)) out[l.id] = tr("Cannot be more than was claimed");
   }
   return out;
 }

@@ -56,7 +56,7 @@ function Names({ away, title }: { away: Away[]; title: string }) {
             <span className="ppl-away-text">
               <strong>{a.name ?? t("Someone")}</strong>
               <span className="faint">
-                {isolate([a.leave_type, span(a.from_date, a.to_date), a.half_day_date ? "half a day" : "", a.department].filter(Boolean).join(" · "))}
+                {isolate([a.leave_type, span(a.from_date, a.to_date), a.half_day_date ? t("half a day") : "", a.department].filter(Boolean).join(" · "))}
               </span>
             </span>
             {a.pending && <Badge tone="amber">{t("Asked for")}</Badge>}
@@ -225,7 +225,7 @@ export function TeamCalendar() {
     <Spinner label={t("Loading the calendar")} />
   ) : !cal.has_record && cal.scope === "team" ? (
     <EmptyState title={t("There is no team to show yet")} icon="user">
-      <p className="muted">{t("Your sign-in is not linked to an employee record, so there is no team around you.")} {cal.everyone_allowed ? t("You can look at everyone instead.") : t("HR can link it.")}</p>
+      <p className="muted">{(cal.everyone_allowed ? t("Your sign-in is not linked to an employee record, so there is no team around you. You can look at everyone instead.") : t("Your sign-in is not linked to an employee record, so there is no team around you. HR can link it."))}</p>
       {cal.everyone_allowed && <Button onClick={() => set({ scope: "all" })}>{t("Show everyone")}</Button>}
     </EmptyState>
   ) : (
@@ -266,7 +266,7 @@ export function TeamCalendar() {
         <div>
           <Nav />
           <p className="page-sub" aria-live="polite">
-            {cal ? (cal.scope === "all" ? t("Everyone, {size} people", { size: cal.size }) : t("Your team, {size} {value}", { size: cal.size, value: cal.size === 1 ? "person" : "people" })) : " "}
+            {cal ? (cal.scope === "all" ? t("Everyone, {size} people", { size: cal.size }) : (cal.size === 1 ? t("Your team, {size} person", { size: cal.size }) : t("Your team, {size} people", { size: cal.size }))) : " "}
           </p>
         </div>
       </header>

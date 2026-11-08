@@ -133,7 +133,7 @@ function Card({
   onReject: () => void;
 }) {
   const key = keyOf(item);
-  const name = item.employee.name ?? "Someone";
+  const name = item.employee.name ?? tr("Someone");
   const ref = useRef<HTMLLIElement>(null);
   // The keyboard's place stays in view.
   useEffect(() => {
@@ -161,10 +161,10 @@ function Card({
       <Context item={item} />
       {item.kind === "expense" && <Lines item={item} edits={edits} onEdit={onEdit} />}
       <div className="ppl-card-actions">
-        <Button variant="primary" size="sm" icon="check" disabled={bad} onClick={onApprove} aria-label={tr("Approve {name}'s {value}", { name, value: item.kind === "expense" ? "claim" : "request" })}>
+        <Button variant="primary" size="sm" icon="check" disabled={bad} onClick={onApprove} aria-label={(item.kind === "expense" ? tr("Approve {name}'s claim", { name }) : tr("Approve {name}'s request", { name }))}>
           {tr("Approve")}
         </Button>
-        <Button size="sm" onClick={onReject} aria-label={tr("Reject {name}'s {value}", { name, value: item.kind === "expense" ? "claim" : "request" })}>
+        <Button size="sm" onClick={onReject} aria-label={(item.kind === "expense" ? tr("Reject {name}'s claim", { name }) : tr("Reject {name}'s request", { name }))}>
           {tr("Reject…")}
         </Button>
         <Link className="ppl-open" to={`/e/${item.entity}/${item.id}`}>
@@ -233,7 +233,7 @@ export function Inbox() {
   };
 
   const decide = async (i: Item, action: "Approve" | "Reject", note = ""): Promise<boolean> => {
-    const name = i.employee.name ?? "the request";
+    const name = i.employee.name ?? tr("the request");
     take(i);
     try {
       let version = i.version;
@@ -263,7 +263,7 @@ export function Inbox() {
     for (const i of ready) if (await decide(i, "Approve")) done++;
     setPicked(new Set());
     setWorking(false);
-    if (items.length > 1) toast(tr("Approved {done} of {length}{value}", { done, length: items.length, value: ready.length < items.length ? `; fix the amounts on ${items.length - ready.length} first` : "" }));
+    if (items.length > 1) toast((ready.length < items.length ? tr("Approved {done} of {length}; fix the amounts on {value1} first", { done, length: items.length, value1: items.length - ready.length }) : tr("Approved {done} of {length}", { done, length: items.length })));
   };
 
   // J and K move, A approves and R rejects the one you are on. Typing is never taken for a shortcut.
@@ -320,7 +320,7 @@ export function Inbox() {
         <div className="ppl-bulk" role="region" aria-label={tr("Selected requests")}>
           <strong>{tr("{length} selected", { length: chosen.length })}</strong>
           <Button variant="primary" size="sm" icon="check" loading={working} onClick={() => void approveSome(chosen)}>
-            {tr("Approve")} {chosen.length === 1 ? tr("it") : tr("them")}
+            {(chosen.length === 1 ? tr("Approve it") : tr("Approve them"))}
           </Button>
           <Button size="sm" onClick={() => setPicked(new Set())}>
             {tr("Clear")}

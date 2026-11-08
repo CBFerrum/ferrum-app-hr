@@ -86,7 +86,7 @@ function Documents({ employee, training }: { employee: Employee; training: boole
       </div>
       <div className="card-body stack ppl-tight">
         {files.error ? (
-          <p className="muted">{tr("Your documents cannot be shown (")}{isolate(errorMessage(files.error))}).</p>
+          <p className="muted">{tr("Your documents cannot be shown ({error}).", { error: errorMessage(files.error) })}</p>
         ) : !files.data ? (
           <Spinner small label={tr("Loading your documents")} />
         ) : !files.data.length ? (

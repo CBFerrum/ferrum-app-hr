@@ -60,7 +60,7 @@ function CheckIn({ employee }: { employee: Employee }) {
       </Button>
       {last.data?.log_time && (
         <span className="faint">
-          {t("Last")} {last.data.log_type === "IN" ? t("in") : t("out")} {isolate(formatDateTime(last.data.log_time))}
+          {last.data.log_type === "IN" ? t("Last in {at}", { at: formatDateTime(last.data.log_time) }) : t("Last out {at}", { at: formatDateTime(last.data.log_time) })}
         </span>
       )}
     </div>
@@ -238,7 +238,7 @@ export function PeopleHome() {
       </header>
       {waiting > 0 && (
         <Link className="ppl-banner" to="/approvals">
-          <strong>{waiting === 1 ? t("1 request is") : t("{waiting} requests are", { waiting })} {t("waiting for your decision")}</strong>
+          <strong>{(waiting === 1 ? t("1 request is waiting for your decision") : t("{waiting} requests are waiting for your decision", { waiting }))}</strong>
           <span>{t("Review them")}</span>
         </Link>
       )}
@@ -254,16 +254,16 @@ export function PeopleHome() {
       ) : (
         <div className="ppl-space">
           <div className="ppl-col">
-            <Section id="ppl-today" heading="Today">
+            <Section id="ppl-today" heading={t("Today")}>
               <CheckIn employee={person} />
             </Section>
-            <Section id="ppl-leave" heading="Your leave">
+            <Section id="ppl-leave" heading={t("Your leave")}>
               <Balances employee={person} />
             </Section>
-            <Section id="ppl-coming" heading="Coming up">
+            <Section id="ppl-coming" heading={t("Coming up")}>
               <Coming employee={person} />
             </Section>
-            <Section id="ppl-requests" heading="Your requests">
+            <Section id="ppl-requests" heading={t("Your requests")}>
               <Requests employee={person} onFix={() => setFixing(null)} />
             </Section>
           </div>
