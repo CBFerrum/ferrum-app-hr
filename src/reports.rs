@@ -196,7 +196,7 @@ impl ReportSource for HrReports {
                 match name {
                     "salary_register" => salary_register(data),
                     "payroll_summary" => payroll_summary(data),
-                    _ => income_tax(&mut tx, ctx, data).await?,
+                    _ => income_tax(&mut tx, ctx, co.id, (from, to), data).await?,
                 }
             }
             "bank_remittance" => {
@@ -755,21 +755,48 @@ fn payroll_summary(data: RegisterData) -> Value {
     json!({"columns": columns, "rows": rows, "totals": totals, "meta": {"truncated": data.truncated}})
 }
 
-async fn income_tax(tx: &mut Tx, ctx: &Ctx, data: RegisterData) -> Result<Value> {
+/// Per employee: what their slips in the period paid and deducted, and the opening figures within
+/// it (what was paid before the first slip made here, and by a previous employer that year), so a
+/// year's totals are the taxable income and tax each slip's income tax counted.
+async fn income_tax(tx: &mut Tx, ctx: &Ctx, company: Uuid, (from, to): (NaiveDate, NaiveDate), data: RegisterData) -> Result<Value> {
     let tax_id = sees(ctx, "tax_id");
-    let mut per: BTreeMap<(String, Uuid), (Option<String>, i64, Decimal, Decimal, Decimal)> = BTreeMap::new();
+    #[derive(Default)]
+    struct Year {
+        number: Option<String>,
+        slips: i64,
+        gross: Decimal,
+        taxable: Decimal,
+        tax: Decimal,
+        before: (Decimal, Decimal),
+        previous: (Decimal, Decimal),
+    }
+    let mut per: BTreeMap<(String, Uuid), Year> = BTreeMap::new();
     for s in &data.slips {
-        let e = per.entry((s.employee_name.clone().unwrap_or_default(), s.employee_id)).or_insert((
-            s.employee.clone(),
-            0,
-            Decimal::ZERO,
-            Decimal::ZERO,
-            Decimal::ZERO,
-        ));
-        e.1 += 1;
-        e.2 += s.gross;
-        e.3 += s.taxable;
-        e.4 += s.tax;
+        let e = per.entry((s.employee_name.clone().unwrap_or_default(), s.employee_id)).or_default();
+        e.number = s.employee.clone();
+        e.slips += 1;
+        e.gross += s.gross;
+        e.taxable += s.taxable;
+        e.tax += s.tax;
+    }
+    // Opening figures whose payroll year starts in the period and whose last day is in it, as slips are.
+    let mut qb = QueryBuilder::new(
+        "select e.id, e.employee_name, e.number, coalesce(sum(o.taxable_earnings), 0), coalesce(sum(o.tax_deducted), 0), \
+         coalesce(sum(o.previous_employer_income), 0), coalesce(sum(o.previous_employer_tax), 0) from e_payroll_opening o \
+         join e_employee e on e.tenant_id = o.tenant_id and e.id = o.employee \
+         join e_payroll_period p on p.tenant_id = o.tenant_id and p.id = o.payroll_period where o.docstatus = 1 and o.tenant_id = ",
+    );
+    qb.push_bind(ctx.tenant).push(" and o.company = ").push_bind(company);
+    qb.push(" and p.start_date >= ").push_bind(from).push(" and o.up_to_date <= ").push_bind(to);
+    push_own(&mut qb, &own_only(ctx, "PayrollOpening"));
+    qb.push(" group by e.id, e.employee_name, e.number");
+    let openings: Vec<(Uuid, Option<String>, Option<String>, Decimal, Decimal, Decimal, Decimal)> =
+        if ctx.schema.entity("PayrollOpening").is_some() { qb.build_query_as().fetch_all(&mut **tx).await? } else { Vec::new() };
+    for (emp, name, number, taxable, tax, prev_income, prev_tax) in openings {
+        let e = per.entry((name.unwrap_or_default(), emp)).or_default();
+        e.number = e.number.take().or(number);
+        e.before = (taxable, tax);
+        e.previous = (prev_income, prev_tax);
     }
     let ids: Vec<Uuid> = per.keys().map(|k| k.1).collect();
     let pans: HashMap<Uuid, Option<String>> = if tax_id {
@@ -785,9 +812,12 @@ async fn income_tax(tx: &mut Tx, ctx: &Ctx, data: RegisterData) -> Result<Value>
     };
     let rows: Vec<Value> = per
         .into_iter()
-        .map(|((name, emp), (no, n, gross, taxable, tax))| {
-            json!({"employee": no, "employee_name": name, "tax_id": pans.get(&emp).cloned().flatten(), "slips": n, "gross_pay": money(gross),
-                "taxable_earnings": money(taxable), "income_tax": money(tax)})
+        .map(|((name, emp), y)| {
+            json!({"employee": y.number, "employee_name": name, "tax_id": pans.get(&emp).cloned().flatten(), "slips": y.slips, "gross_pay": money(y.gross),
+                "taxable_earnings": money(y.taxable), "income_tax": money(y.tax),
+                "opening_taxable": money(y.before.0), "opening_tax": money(y.before.1),
+                "previous_employer_income": money(y.previous.0), "previous_employer_tax": money(y.previous.1),
+                "total_taxable": money(y.taxable + y.before.0 + y.previous.0), "total_tax": money(y.tax + y.before.1 + y.previous.1)})
         })
         .collect();
     let mut columns = vec![col("employee", "Employee", "data"), col("employee_name", "Name", "data")];
@@ -799,8 +829,27 @@ async fn income_tax(tx: &mut Tx, ctx: &Ctx, data: RegisterData) -> Result<Value>
         col("gross_pay", "Gross Pay", "currency"),
         col("taxable_earnings", "Taxable Earnings", "currency"),
         col("income_tax", "Income Tax", "currency"),
+        col("opening_taxable", "Taxable Before Here", "currency"),
+        col("opening_tax", "Tax Before Here", "currency"),
+        col("previous_employer_income", "Previous Employer's Income", "currency"),
+        col("previous_employer_tax", "Previous Employer's Tax", "currency"),
+        col("total_taxable", "Year's Taxable Income", "currency"),
+        col("total_tax", "Year's Income Tax", "currency"),
     ]);
-    let names: Vec<String> = ["gross_pay", "taxable_earnings", "income_tax"].iter().map(|s| s.to_string()).collect();
+    let names: Vec<String> = [
+        "gross_pay",
+        "taxable_earnings",
+        "income_tax",
+        "opening_taxable",
+        "opening_tax",
+        "previous_employer_income",
+        "previous_employer_tax",
+        "total_taxable",
+        "total_tax",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     let totals = sum_columns(&rows, &names);
     Ok(json!({"columns": columns, "rows": rows, "totals": totals, "meta": {"truncated": data.truncated}}))
 }
