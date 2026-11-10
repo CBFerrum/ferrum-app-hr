@@ -1,7 +1,7 @@
 package: payroll_erp
-version: 0.1.0
+version: 0.2.0
 label: Payroll and ERP
-description: Salary components' accounts, payroll runs posting one balanced accrual journal and a bank entry, and the cost centers salaries post to.
+description: Salary components' accounts, payroll runs posting one balanced accrual journal (earnings, deductions and employer contributions) and a bank entry, and the cost centers salaries post to.
 depends: [payroll, accounting]
 field_prefix: pay_
 

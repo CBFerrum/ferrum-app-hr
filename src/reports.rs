@@ -602,7 +602,7 @@ struct Slip {
 
 struct RegisterData {
     slips: Vec<Slip>,
-    /// (abbr, name, type) in display order: earnings, then deductions.
+    /// (abbr, name, type) in display order: earnings, then deductions, then employer contributions.
     components: Vec<(String, String, String)>,
     amounts: HashMap<(Uuid, String), Decimal>,
     truncated: bool,
@@ -654,16 +654,23 @@ async fn register_data(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>, fr
         "select r.parent_id, c.abbr, c.component_name, c.component_type, r.amount from e_salary_slip__earnings r \
          join e_salary_component c on c.tenant_id = r.tenant_id and c.id = r.salary_component where r.tenant_id = $1 and r.parent_id = any($2) \
          union all select r.parent_id, c.abbr, c.component_name, c.component_type, r.amount from e_salary_slip__deductions r \
+         join e_salary_component c on c.tenant_id = r.tenant_id and c.id = r.salary_component where r.tenant_id = $1 and r.parent_id = any($2) \
+         union all select r.parent_id, c.abbr, c.component_name, c.component_type, r.amount from e_salary_slip__employer_contributions r \
          join e_salary_component c on c.tenant_id = r.tenant_id and c.id = r.salary_component where r.tenant_id = $1 and r.parent_id = any($2)",
     )
     .bind(ctx.tenant)
     .bind(&ids)
     .fetch_all(&mut **tx)
     .await?;
-    let mut components: BTreeMap<(bool, String), (String, String, String)> = BTreeMap::new();
+    let mut components: BTreeMap<(u8, String), (String, String, String)> = BTreeMap::new();
     let mut amounts = HashMap::new();
     for (slip, abbr, name, kind, amount) in lines {
-        components.insert((kind == "Deduction", name.clone()), (abbr.clone(), name, kind));
+        let rank = match kind.as_str() {
+            "Earning" => 0,
+            "Deduction" => 1,
+            _ => 2,
+        };
+        components.insert((rank, name.clone()), (abbr.clone(), name, kind));
         *amounts.entry((slip, abbr)).or_insert(Decimal::ZERO) += amount;
     }
     Ok(RegisterData { slips, components: components.into_values().collect(), amounts, truncated })
