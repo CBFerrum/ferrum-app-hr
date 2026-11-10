@@ -8,10 +8,12 @@
 
 use crate::expense::bank_param;
 use chrono::{NaiveDate, Utc};
-use ferrum_domain::util::{company, id, money, s};
+use ferrum_domain::util::{b, company, id, money, s};
 use ferrum_kernel::{Doc, Error, HookCtx, Result};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use uuid::Uuid;
 
 pub(crate) const PAIN: &str = "ISO 20022 (pain.001)";
 pub(crate) const CSV: &str = "CSV";
@@ -91,23 +93,46 @@ pub(crate) async fn bank_file(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -
     if debtor.iban.is_none() && debtor.account.is_none() {
         return Err(Error::invalid("the company's Bank Account has neither an IBAN nor an account number"));
     }
+    // What the bank entry pays, one transfer to each employee: held salaries are left out, and what
+    // is still owed from an earlier slip goes with this one.
+    let due = super::payments::due(hc, run).await?;
+    let mut per: Vec<(Uuid, Option<String>, Option<String>, Decimal)> = Vec::new();
+    for x in &due {
+        match per.iter_mut().find(|p| p.0 == x.employee) {
+            Some(p) => {
+                p.3 += x.amount;
+                if x.own {
+                    p.2 = x.number.clone();
+                }
+            }
+            None => per.push((x.employee, x.name.clone(), x.number.clone(), x.amount)),
+        }
+    }
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<Decimal>, Option<String>)> =
-        sqlx::query_as(
-            "select ss.employee_name, e.salary_mode, e.bank_name, e.bank_account_no, e.ifsc_code, e.iban, ss.net_pay, ss.number from e_salary_slip ss \
-         join e_employee e on e.tenant_id = ss.tenant_id and e.id = ss.employee where ss.tenant_id = $1 and ss.payroll_entry = $2 and ss.docstatus = 1 \
-         order by ss.employee_name, ss.number",
+    let banks: HashMap<Uuid, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> =
+        sqlx::query_as::<_, (Uuid, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)>(
+            "select id, salary_mode, bank_name, bank_account_no, ifsc_code, iban from e_employee where tenant_id = $1 and id = any($2)",
         )
         .bind(hc.ctx.tenant)
-        .bind(run)
+        .bind(per.iter().map(|p| p.0).collect::<Vec<_>>())
         .fetch_all(&mut **hc.tx)
-        .await?;
+        .await?
+        .into_iter()
+        .map(|(e, mode, bank, account, routing, iban)| (e, (mode, bank, account, routing, iban)))
+        .collect();
+    let rows = per
+        .into_iter()
+        .map(|(e, name, slip, amount)| {
+            let (mode, bank, account, routing, iban) = banks.get(&e).cloned().unwrap_or_default();
+            (name, mode, bank, account, routing, iban, Some(amount), slip)
+        })
+        .collect();
     let (payees, missing) = payees(rows);
     if !missing.is_empty() {
         return Err(Error::invalid(format!("no bank account for {}: add it to their employee record, or pay them another way", missing.join(", "))));
     }
     if payees.is_empty() {
-        return Err(Error::invalid("nobody in this run is paid by bank"));
+        return Err(Error::invalid(if due.is_empty() { super::run::nothing_due(hc, run).await? } else { "nobody in this run is paid by bank".into() }));
     }
     let pay_on = match param("execution_date") {
         Some(v) => NaiveDate::parse_from_str(&v, "%Y-%m-%d").map_err(|_| Error::field("execution_date", "is a day"))?,
@@ -116,7 +141,11 @@ pub(crate) async fn bank_file(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -
     let number = s(doc, "number").unwrap_or("PAYROLL").to_string();
     let now = Utc::now();
     let message_id = format!("{number}-{}", now.format("%Y%m%d%H%M%S"));
-    let reference = format!("Salary {} to {}", s(doc, "start_date").unwrap_or_default(), s(doc, "end_date").unwrap_or_default());
+    let reference = if b(doc, "off_cycle") {
+        format!("Salary paid off-cycle {}", s(doc, "start_date").unwrap_or_default())
+    } else {
+        format!("Salary {} to {}", s(doc, "start_date").unwrap_or_default(), s(doc, "end_date").unwrap_or_default())
+    };
     let order = Order {
         message_id: &message_id,
         created: &now.format("%Y-%m-%dT%H:%M:%S").to_string(),
@@ -139,8 +168,8 @@ pub(crate) async fn bank_file(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -
     }))
 }
 
-/// The run's slips as payments: those paid by bank with something to pay, and the names of those
-/// paid by bank without an account to pay into.
+/// What is due as payments: those paid by bank with something to pay, and the names of those paid
+/// by bank without an account to pay into.
 pub(crate) fn payees(
     rows: Vec<(Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<Decimal>, Option<String>)>,
 ) -> (Vec<Payee>, Vec<String>) {
