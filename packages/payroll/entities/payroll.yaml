@@ -4,11 +4,11 @@
   module: payroll
   title_field: component_name
   search_fields: [abbr]
-  description: An earning or deduction. Formulas are CEL over base, variable, gross, payment_days, working_days, lwp_days, absent_days and the abbreviations of the components above it.
+  description: An earning, a deduction or an employer contribution (the employer's share of provident fund, insurance or social security, never part of gross or net pay). Formulas are CEL over base, variable, gross, payment_days, working_days, lwp_days, absent_days and the abbreviations of the components above it.
   fields:
     - {name: component_name, type: data, required: true, unique: true, in_list: true}
     - {name: abbr, type: data, required: true, unique: true, max_length: 30, label: Abbreviation, in_list: true, description: "Name used in formulas, e.g. BS"}
-    - {name: component_type, type: select, options: [Earning, Deduction], required: true, in_list: true, in_filter: true}
+    - {name: component_type, type: select, options: [Earning, Deduction, Employer Contribution], required: true, in_list: true, in_filter: true}
     - {name: description, type: text}
     - {name: amount_based_on_formula, type: check}
     - {name: formula, type: code, visible_if: "doc.amount_based_on_formula", required_if: "doc.amount_based_on_formula", description: "e.g. base * 0.4 or gross > 21000 ? 0 : gross * 0.0075"}
@@ -50,7 +50,7 @@
   submittable: true
   company_scoped: true
   title_field: structure_name
-  description: Earnings are computed first, then deductions, each in row order; a formula may use the abbreviations of rows above it.
+  description: Earnings are computed first, then deductions, then employer contributions, each in row order; a formula may use the abbreviations of rows above it.
   fields:
     - {name: structure_name, type: data, required: true, in_list: true}
     - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
@@ -59,6 +59,7 @@
     - {name: is_active, type: check, default: true, read_only: true, in_list: true, in_filter: true}
     - {name: earnings, type: table, of: SalaryDetail}
     - {name: deductions, type: table, of: SalaryDetail}
+    - {name: employer_contributions, type: table, of: SalaryDetail, description: "The employer's own cost on top of pay (provident fund, insurance, social security): never paid to the employee, posted as a cost and a liability"}
     - {name: leave_encashment_amount_per_day, type: currency, currency: currency, min: "0"}
     - {name: notes, type: text}
   actions:
@@ -325,13 +326,49 @@
     - {name: payment_days, type: decimal, read_only: true, in_list: true}
     - {name: earnings, type: table, of: SalaryDetail}
     - {name: deductions, type: table, of: SalaryDetail}
+    - {name: employer_contributions, type: table, of: SalaryDetail}
     - {name: gross_pay, type: currency, currency: currency, read_only: true, in_list: true}
     - {name: total_deduction, type: currency, currency: currency, read_only: true}
     - {name: net_pay, type: currency, currency: currency, read_only: true, in_list: true}
     - {name: rounded_total, type: currency, currency: currency, read_only: true}
+    - {name: total_employer_contribution, type: currency, currency: currency, read_only: true, description: "The employer's cost on top of gross pay"}
     - {name: taxable_earnings, type: currency, currency: currency, read_only: true, description: Taxable earnings less tax-exempt deductions}
+    - {name: final_settlement, type: check, read_only: true, description: "The employee leaves in this period: income tax is settled to the year's actual liability"}
     - {name: income_tax_deducted, type: currency, currency: currency, read_only: true}
     - {name: status, type: select, options: [Draft, Submitted, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
   rules:
     - {name: ordered_dates, check: "doc.start_date == null || doc.end_date == null || doc.end_date >= doc.start_date", message: "End date must not be before start date"}
   list: {columns: [number, employee_name, start_date, end_date, net_pay, status], sort: start_date desc}
+
+- name: PayrollOpening
+  label: Opening Payroll Figures
+  label_plural: Opening Payroll Figures
+  kind: document
+  internal: true
+  reference: restricted
+  module: payroll
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-OPN-{YYYY}-{seq:5}"}
+  description: "An employee's pay and tax in a payroll year before the first salary slip made here: what the system you moved from paid, and what a previous employer paid them that year. Income tax on every later slip counts them; slips made here start after its last day."
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: payroll_period, type: link, to: PayrollPeriod, required: true, in_list: true, in_filter: true}
+    - {name: up_to_date, type: date, required: true, in_list: true, label: Up To, description: "The last day these figures cover; slips made here start after it"}
+    - {name: taxable_earnings, type: currency, min: "0", in_list: true, description: "Taxable earnings less tax-exempt deductions paid by this company before the first slip made here"}
+    - {name: tax_deducted, type: currency, min: "0", in_list: true, label: Income Tax Deducted}
+    - {name: previous_employer, type: data, description: "A previous employer in the same payroll year"}
+    - {name: previous_employer_income, type: currency, min: "0", label: Previous Employer's Taxable Income}
+    - {name: previous_employer_tax, type: currency, min: "0", label: Previous Employer's Income Tax}
+    - {name: notes, type: text}
+  form:
+    - {label: Employee, fields: [employee, employee_name, company, payroll_period, up_to_date]}
+    - {label: Paid by this company, fields: [taxable_earnings, tax_deducted]}
+    - {label: Paid by a previous employer, fields: [previous_employer, previous_employer_income, previous_employer_tax]}
+    - {label: Notes, collapsible: true, fields: [notes]}
+  list: {columns: [number, employee_name, payroll_period, up_to_date, taxable_earnings, tax_deducted], sort: up_to_date desc}

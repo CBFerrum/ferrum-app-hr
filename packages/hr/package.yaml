@@ -1,5 +1,5 @@
 package: hr
-version: 0.2.2
+version: 0.3.0
 label: Human Resources
 description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
 depends: [core]
@@ -9,20 +9,22 @@ overlays:
   - entity: Company
     ops:
       - {op: add_field, field: {name: hr_default_holiday_list, type: link, to: HolidayList, label: Default Holiday List}}
+      - {op: add_field, field: {name: hr_notice_period_days, type: int, min: "0", label: Notice Period (Days), description: "Notice due from employees whose record sets none"}}
 
 modules:
   - name: hr
     label: HR
     icon: users
     order: 70
-    items: [Employee, Department, Designation, Branch, EmployeeGrade, EmploymentType, EmployeeOnboarding, EmployeeSeparation, EmployeePromotion,
-            EmployeeTransfer, report:employee_directory, report:headcount, report:employee_events]
+    # The full and final statement comes with the connector to ERP (hr_erp); without it the item drops out.
+    items: [Employee, Department, Designation, Branch, EmployeeGrade, EmploymentType, EmployeeOnboarding, EmployeeSeparation, FullAndFinalStatement,
+            EmployeePromotion, EmployeeTransfer, report:employee_directory, report:headcount, report:employee_events]
   - name: attendance
     label: Attendance & Leave
     icon: calendar
     order: 71
-    items: [Attendance, AttendanceRequest, EmployeeCheckin, ShiftType, ShiftAssignment, HolidayList, LeaveApplication, LeaveAllocation, LeaveType, LeavePolicy,
-            LeaveLedgerEntry, report:monthly_attendance_sheet, report:leave_balance]
+    items: [Attendance, AttendanceRequest, EmployeeCheckin, ShiftType, ShiftAssignment, HolidayList, LeaveApplication, LeaveAllocation, LeaveEncashment,
+            LeaveType, LeavePolicy, LeaveLedgerEntry, report:monthly_attendance_sheet, report:leave_balance]
   - name: recruitment
     label: Recruitment
     icon: user-plus
@@ -208,6 +210,12 @@ seed:
       - {leave_type_name: Sick Leave, max_leaves_allowed: 12}
       - {leave_type_name: Privilege Leave, max_leaves_allowed: 18, applicable_after: 90, is_carry_forward: true, maximum_carry_forwarded_leaves: 30, allow_encashment: true, encashment_threshold_days: 10}
       - {leave_type_name: Leave Without Pay, is_lwp: true}
+# 0.9.0: a separation submitted before it made its employee Left at once, also while they served
+# notice. Those whose last working day has not passed are at work again until it has; the upkeep
+# makes them Left after it.
+backfills:
+  - {name: serving_notice, entity: Employee, needs: "t.status = 'Left' and t.relieving_date >= current_date and exists (select 1 from e_employee_separation s where s.tenant_id = t.tenant_id and s.employee = t.id and s.docstatus = 1 and s.relieving_date = t.relieving_date)",
+     set: "status = 'Active'"}
 handover:
   - {entity: Employee, field: leave_approver}
   - {entity: Employee, field: expense_approver}

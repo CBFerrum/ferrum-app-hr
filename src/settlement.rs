@@ -1,15 +1,21 @@
-//! The full and final statement of an employee who leaves: what is paid to them (their open
-//! expense claims, and lines added such as gratuity or notice pay) and what is recovered from them
-//! (their unsettled advances, and lines added), gathered from their records. One journal entry
-//! settles it: it debits what is paid, credits what is recovered and pays the difference from the
-//! bank (or takes it in), and submitting it settles each claim and advance the statement names, as
-//! their own payments do; cancelling it undoes that.
+//! The full and final statement of an employee who leaves, gathered from their records. Paid to
+//! them: the pay earned up to the last working day that no slip covers yet (a salary slip of its
+//! own, which settles the year's income tax, submitted with the statement), their encashable leave
+//! as of that day (used up from their balance on submit), notice pay when the employer ended the
+//! notice early, gratuity by the company's rule, their open expense claims. Recovered from them:
+//! notice not served, their unsettled advances. Each line can be adjusted with a reason, and lines
+//! can be added. One journal entry settles it: it debits what is paid, credits what is recovered
+//! and pays the difference from the bank (or takes it in), and submitting it settles each claim and
+//! advance the statement names, as their own payments do; cancelling it undoes that.
 
 use crate::expense::{advance_moved, bank_param, claim_paid, net_on, payment_entry};
-use crate::{lookup, stamp_company};
+use crate::leave::{self, LedgerEntry, allocation_on, available};
+use crate::payroll::formula::{Formula, Vars};
+use crate::people::company_account;
+use crate::{lookup, opt_date, stamp_company};
 use async_trait::async_trait;
-use chrono::NaiveDate;
-use ferrum_domain::util::{company, d, elevated, id, money, round, rows, s, set, sys};
+use chrono::{Datelike, Duration, Months, NaiveDate};
+use ferrum_domain::util::{Company, b, company, d, elevated, get, id, money, round, rows, s, set, sys};
 use ferrum_kernel::{Action, Doc, DocHook, Error, FieldError, HookCtx, HookRegistry, Result};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -22,6 +28,8 @@ pub(crate) const KIND: &str = "Full and Final Statement";
 const ENTITY: &str = "FullAndFinalStatement";
 const CLAIM: &str = "Expense Claim";
 const ADVANCE: &str = "Employee Advance";
+const SLIP: &str = "Salary Slip";
+const ENCASHMENT: &str = "Leave Encashment";
 
 pub(crate) fn register(h: &mut HookRegistry) {
     h.register(ENTITY, Arc::new(StatementHook)).register("EmployeeSeparation", Arc::new(FromSeparation));
@@ -126,23 +134,291 @@ async fn outstanding(hc: &mut HookCtx<'_>, st: &Doc) -> Result<(Vec<Value>, Vec<
     .fetch_all(&mut **hc.tx)
     .await?;
     let by_hand = |table: &str| rows(st, table).into_iter().filter(|r| s(r, "reference_type").is_none()).map(Value::Object);
-    let mut payables: Vec<Value> = claims
+    let (mut payables, mut receivables) = if hc.ctx.schema.entity("SalarySlip").is_some() { leaving(hc, st).await? } else { (Vec::new(), Vec::new()) };
+    payables.extend(claims
         .into_iter()
         .map(|(claim, number, account, amount, posted)| {
             json!({"component": "Expense claim", "reference_type": CLAIM, "reference": claim.to_string(), "reference_number": number,
-                   "account": account.map(|a| a.to_string()), "amount": money(amount), "remark": format!("Approved, posted {posted}")})
-        })
-        .collect();
+                   "account": account.map(|a| a.to_string()), "amount": money(amount), "gathered_amount": money(amount), "remark": format!("Approved, posted {posted}")})
+        }));
+    receivables.extend(advances.into_iter().map(|(advance, number, account, amount, purpose)| {
+        json!({"component": "Employee advance", "reference_type": ADVANCE, "reference": advance.to_string(), "reference_number": number,
+                   "account": account.map(|a| a.to_string()), "amount": money(amount), "gathered_amount": money(amount), "remark": purpose})
+    }));
+    // An amount a person adjusted, with their reason, stays when gathering again.
+    for (table, list) in [("payables", &mut payables), ("receivables", &mut receivables)] {
+        let old = rows(st, table);
+        for line in list.iter_mut() {
+            let same = |r: &&Doc| r.get("reference_type") == line.get("reference_type") && r.get("reference") == line.get("reference");
+            if let Some(o) =
+                old.iter().find(same).filter(|o| o.get("gathered_amount").is_some_and(|g| !g.is_null()) && d(o, "amount") != d(o, "gathered_amount"))
+            {
+                line["amount"] = o.get("amount").cloned().unwrap_or_default();
+                line["reason"] = o.get("reason").cloned().unwrap_or_default();
+            }
+        }
+    }
     payables.extend(by_hand("payables"));
-    let mut receivables: Vec<Value> = advances
-        .into_iter()
-        .map(|(advance, number, account, amount, purpose)| {
-            json!({"component": "Employee advance", "reference_type": ADVANCE, "reference": advance.to_string(), "reference_number": number,
-                   "account": account.map(|a| a.to_string()), "amount": money(amount), "remark": purpose})
-        })
-        .collect();
     receivables.extend(by_hand("receivables"));
     Ok((payables, receivables))
+}
+
+/// Years of service from joining to the last working day (both counted), with a part year counted
+/// as the company's rule says.
+pub(crate) fn service_years(joined: NaiveDate, last: NaiveDate, part: &str) -> Decimal {
+    let end = last + Duration::days(1);
+    let after = |years: u32| joined.checked_add_months(Months::new(12 * years)).unwrap_or(NaiveDate::MAX);
+    let mut years = 0;
+    while after(years + 1) <= end {
+        years += 1;
+    }
+    let (from, next) = (after(years), after(years + 1));
+    let rest = match part {
+        "Completed years only" => Decimal::ZERO,
+        "Pro rata" => round(Decimal::from((end - from).num_days()) / Decimal::from((next - from).num_days()), 4),
+        // India's: a part year of more than six months counts as a year.
+        _ if from.checked_add_months(Months::new(6)).is_some_and(|half| end > half) => Decimal::ONE,
+        _ => Decimal::ZERO,
+    };
+    Decimal::from(years) + rest
+}
+
+/// Whether `years` of service are complete by the last working day.
+pub(crate) fn served(joined: NaiveDate, last: NaiveDate, years: u32) -> bool {
+    joined.checked_add_months(Months::new(12 * years)).is_some_and(|d| d <= last + Duration::days(1))
+}
+
+/// A gathered line, with what was gathered kept beside the amount a person may adjust.
+fn line(
+    component: String,
+    kind: &str,
+    reference: Uuid,
+    number: Option<String>,
+    account: Uuid,
+    amount: Decimal,
+    quantity: Option<Decimal>,
+    remark: String,
+) -> Value {
+    json!({"component": component, "reference_type": kind, "reference": reference.to_string(), "reference_number": number, "account": account.to_string(),
+           "amount": money(amount), "gathered_amount": money(amount), "quantity": quantity.map(money), "remark": remark})
+}
+
+/// The pay earned up to the last working day that no salary slip covers yet: a draft slip of the
+/// statement's own for the pay period the day falls in, made again at each gathering. None when a
+/// slip (a payroll run's, or one made by hand) covers the day already, or nothing is assigned.
+async fn last_pay(hc: &mut HookCtx<'_>, st: &Doc, emp: &Doc, last: NaiveDate) -> Result<Option<Doc>> {
+    let user = elevated(hc.ctx);
+    for r in rows(st, "payables").iter().filter(|r| s(r, "reference_type") == Some(SLIP)) {
+        if let Some(old) = lookup(hc, "SalarySlip", id(r, "reference")).await?
+            && docstatus(&old) == 0
+        {
+            hc.kernel.delete_tx(&user, hc.tx, "SalarySlip", id(&old, "id").unwrap_or_default(), None).await?;
+        }
+    }
+    let emp_id = id(emp, "id").unwrap_or_default();
+    let covered: bool = sqlx::query_scalar(
+        "select exists (select 1 from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus < 2 and start_date <= $3 and end_date >= $3)",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(emp_id)
+    .bind(last)
+    .fetch_one(&mut **hc.tx)
+    .await?;
+    let Some(ssa) = crate::payroll::assignment_on(hc, emp_id, last).await? else { return Ok(None) };
+    if covered {
+        return Ok(None);
+    }
+    let structure = get(hc.kernel, hc.ctx, hc.tx, "SalaryStructure", id(&ssa, "salary_structure").unwrap_or_default()).await?;
+    let paid_to: Option<NaiveDate> =
+        sqlx::query_scalar("select max(end_date) from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus < 2 and end_date < $3")
+            .bind(hc.ctx.tenant)
+            .bind(emp_id)
+            .bind(last)
+            .fetch_one(&mut **hc.tx)
+            .await?;
+    let after_paid = paid_to.map(|p| p + Duration::days(1));
+    let (start, end) = match s(&structure, "payroll_frequency") {
+        Some(f @ ("Weekly" | "Fortnightly")) => {
+            let len = if f == "Weekly" { 7 } else { 14 };
+            let start = after_paid.filter(|a| *a > last - Duration::days(len - 1)).unwrap_or(last - Duration::days(len - 1));
+            (start, start + Duration::days(len - 1))
+        }
+        _ => {
+            let first = last.with_day(1).unwrap_or(last);
+            let month_end = first.checked_add_months(Months::new(1)).map_or(last, |n| n - Duration::days(1));
+            (after_paid.map_or(first, |a| a.max(first)), month_end)
+        }
+    };
+    if let Some(gap) = after_paid.filter(|a| *a < start) {
+        return Err(Error::invalid(format!(
+            "no salary slip pays {} for {gap} to {}; run payroll for it before the full and final statement",
+            s(emp, "employee_name").unwrap_or_default(),
+            start - Duration::days(1)
+        )));
+    }
+    let mut slip = Doc::new();
+    set(&mut slip, "employee", emp_id.to_string());
+    set(&mut slip, "start_date", start.to_string());
+    set(&mut slip, "end_date", end.to_string());
+    set(&mut slip, "posting_date", st.get("transaction_date").cloned().unwrap_or_default());
+    Ok(Some(hc.kernel.insert_tx(&user, hc.tx, "SalarySlip", slip).await?))
+}
+
+/// What leaving brings to the statement: the last pay, leave encashed, notice short and gratuity.
+/// A day's pay is the last salary slip's full gross over its working days.
+async fn leaving(hc: &mut HookCtx<'_>, st: &Doc) -> Result<(Vec<Value>, Vec<Value>)> {
+    let (mut pay, mut recover) = (Vec::new(), Vec::new());
+    let Some(sep) = lookup(hc, "EmployeeSeparation", id(st, "separation")).await? else { return Ok((pay, recover)) };
+    let (Some(last), Some(sep_id)) = (opt_date(&sep, "relieving_date"), id(&sep, "id")) else { return Ok((pay, recover)) };
+    let emp = get(hc.kernel, hc.ctx, hc.tx, "Employee", id(st, "employee").unwrap_or_default()).await?;
+    let emp_id = id(&emp, "id").unwrap_or_default();
+    let co = company(hc.kernel, hc.ctx, hc.tx, id(&emp, "company").unwrap_or_default()).await?;
+    let p = co.precision;
+
+    // ── the last pay ──
+    if let Some(slip) = last_pay(hc, st, &emp, last).await? {
+        let net = d(&slip, "net_pay");
+        if net > Decimal::ZERO {
+            let payable = company_account(hc, co.id, "pay_payroll_payable_account", "payroll payable account").await?;
+            let from = s(&slip, "start_date").unwrap_or_default().to_string();
+            let tax = if b(&slip, "final_settlement") { ", income tax settled for the year" } else { "" };
+            pay.push(line(
+                format!("Pay from {from} to {last}"),
+                SLIP,
+                id(&slip, "id").unwrap_or_default(),
+                s(&slip, "number").map(str::to_string),
+                payable,
+                net,
+                None,
+                format!("Net pay of its own salary slip{tax}"),
+            ));
+        }
+    }
+    let basis: Option<Uuid> = sqlx::query_scalar(
+        "select id from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus < 2 and start_date <= $3 order by end_date desc limit 1",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(emp_id)
+    .bind(last)
+    .fetch_optional(&mut **hc.tx)
+    .await?;
+    let Some(basis) = lookup(hc, "SalarySlip", basis).await? else { return Ok((pay, recover)) };
+    let full: Vec<Doc> = rows(&basis, "earnings");
+    let gross: Decimal = full.iter().filter(|r| !b(r, "statistical_component")).map(|r| d(r, "default_amount")).sum();
+    let working = d(&basis, "total_working_days");
+    let day_pay = if working.is_zero() { Decimal::ZERO } else { gross / working };
+    let expense = company_account(hc, co.id, "pay_salary_expense_account", "default salary expense account").await?;
+
+    // ── leave encashed ──
+    let per_day = match lookup(hc, "SalaryStructure", id(&basis, "salary_structure")).await? {
+        Some(st) if d(&st, "leave_encashment_amount_per_day") > Decimal::ZERO => d(&st, "leave_encashment_amount_per_day"),
+        _ => day_pay,
+    };
+    let types: Vec<(Uuid, String)> = sqlx::query_as(
+        "select id, leave_type_name from e_leave_type where tenant_id = $1 and allow_encashment and not coalesce(disabled, false) order by leave_type_name",
+    )
+    .bind(hc.ctx.tenant)
+    .fetch_all(&mut **hc.tx)
+    .await?;
+    for (lt, name) in types {
+        let Some(alloc) = allocation_on(hc.tx, hc.ctx.tenant, emp_id, lt, last).await? else { continue };
+        let days = available(hc.tx, hc.ctx.tenant, emp_id, lt, alloc, None).await?;
+        let amount = round(days * per_day, p);
+        if days > Decimal::ZERO && amount > Decimal::ZERO {
+            let rate = round(per_day, p).normalize();
+            pay.push(line(
+                format!("{name} encashed"),
+                ENCASHMENT,
+                lt,
+                Some(name),
+                expense,
+                amount,
+                Some(days),
+                format!("{} days left on {last}, at {rate} a day", days.normalize()),
+            ));
+        }
+    }
+
+    // ── notice short ──
+    let short = Decimal::from(sep.get("notice_shortfall_days").and_then(Value::as_i64).unwrap_or(0));
+    let amount = round(short * day_pay, p);
+    let remark = format!("{} days of notice short, at {} a day", short.normalize(), round(day_pay, p).normalize());
+    match s(&sep, "shortfall_settlement") {
+        _ if amount <= Decimal::ZERO => {}
+        Some("Recover from Employee") => recover.push(line(
+            "Notice not served".into(),
+            "Notice Recovery",
+            sep_id,
+            s(&sep, "number").map(str::to_string),
+            expense,
+            amount,
+            Some(short),
+            remark,
+        )),
+        Some("Pay in Lieu of Notice") => {
+            pay.push(line("Pay in lieu of notice".into(), "Notice Pay", sep_id, s(&sep, "number").map(str::to_string), expense, amount, Some(short), remark))
+        }
+        _ => {}
+    }
+
+    // ── gratuity ──
+    if let Some(g) = gratuity(hc, &co, &sep, &emp, last, &full, gross).await? {
+        pay.push(line("Gratuity".into(), "Gratuity", sep_id, s(&sep, "number").map(str::to_string), expense, round(g.0, p), Some(g.1), g.2));
+    }
+    Ok((pay, recover))
+}
+
+/// Gratuity by the company's rule: (amount, years counted, how). None when the company pays none,
+/// the employee has not served the minimum (which a death waives), or nothing is due.
+async fn gratuity(
+    hc: &mut HookCtx<'_>,
+    co: &Company,
+    sep: &Doc,
+    emp: &Doc,
+    last: NaiveDate,
+    earnings: &[Doc],
+    gross: Decimal,
+) -> Result<Option<(Decimal, Decimal, String)>> {
+    let per_year = d(&co.doc, "hr_gratuity_days_per_year");
+    let Some(joined) = opt_date(emp, "date_of_joining").filter(|_| per_year > Decimal::ZERO) else { return Ok(None) };
+    let min = co.doc.get("hr_gratuity_min_years").and_then(Value::as_u64).unwrap_or(0) as u32;
+    if s(sep, "reason") != Some("Death") && !served(joined, last, min) {
+        return Ok(None);
+    }
+    let years = service_years(joined, last, s(&co.doc, "hr_gratuity_part_year").unwrap_or_default());
+    let month = match s(&co.doc, "hr_gratuity_pay_formula") {
+        Some(src) => {
+            let abbrs: Vec<String> = sqlx::query_scalar("select abbr from e_salary_component where tenant_id = $1 and abbr is not null")
+                .bind(hc.ctx.tenant)
+                .fetch_all(&mut **hc.tx)
+                .await?;
+            let mut vars = Vars::default();
+            for a in &abbrs {
+                vars.set(a, Decimal::ZERO);
+            }
+            for r in earnings {
+                if let Some(a) = s(r, "abbr") {
+                    vars.set(a, d(r, "default_amount"));
+                }
+            }
+            vars.set("gross", gross);
+            Formula::compile(src).and_then(|f| f.amount(&vars)).map_err(|m| Error::invalid(format!("the company's gratuity pay formula: {m}")))?
+        }
+        None => gross,
+    };
+    let in_month = Some(d(&co.doc, "hr_gratuity_days_in_month")).filter(|v| *v > Decimal::ZERO).unwrap_or(Decimal::from(30));
+    let amount = month * per_year / in_month * years;
+    if amount <= Decimal::ZERO {
+        return Ok(None);
+    }
+    let how = format!(
+        "{} years from {joined} to {last}: {} days' pay a year, a day being a month's {} over {}",
+        years.normalize(),
+        per_year.normalize(),
+        month.normalize(),
+        in_month.normalize()
+    );
+    Ok(Some((amount, years, how)))
 }
 
 /// Fills a draft statement's lines with what is open now. Written with engine rights: what a line
@@ -217,6 +493,23 @@ impl DocHook for StatementHook {
                 {
                     errors.push(FieldError::new("account", "belongs to another company").in_row(table, i));
                 }
+                let gathered = r.get("gathered_amount").filter(|g| !g.is_null()).map(|_| d(r, "gathered_amount"));
+                let Some(gathered) = gathered.filter(|g| *g != d(r, "amount")) else { continue };
+                let what = s(r, "component").unwrap_or_default();
+                if s(r, "reference_type") == Some(SLIP) {
+                    errors.push(
+                        FieldError::new(
+                            "amount",
+                            format!(
+                                "{what} is its salary slip's net pay ({}); change the slip with an additional salary and get the outstanding amounts again",
+                                gathered.normalize()
+                            ),
+                        )
+                        .in_row(table, i),
+                    );
+                } else if s(r, "reason").is_none() {
+                    errors.push(FieldError::new("reason", format!("say why {what} differs from the {} gathered", gathered.normalize())).in_row(table, i));
+                }
             }
         }
         if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
@@ -225,7 +518,78 @@ impl DocHook for StatementHook {
     async fn before_submit(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
         // What it names is still open for what it says.
         settle_lines(hc, doc, Decimal::ONE, false).await?;
+        let last = lookup(hc, "EmployeeSeparation", id(doc, "separation")).await?.and_then(|sep| opt_date(&sep, "relieving_date"));
+        let employee = id(doc, "employee").unwrap_or_default();
+        for r in rows(doc, "payables") {
+            match s(&r, "reference_type") {
+                // The last pay's slip, computed again with what is known now, still pays what the line says.
+                Some(SLIP) => {
+                    let slip = lookup(hc, "SalarySlip", id(&r, "reference")).await?.filter(|sl| docstatus(sl) == 0);
+                    let slip =
+                        slip.ok_or_else(|| Error::invalid("the last pay's salary slip is gone or no longer a draft; get the outstanding amounts again"))?;
+                    let mut v = Doc::new();
+                    set(&mut v, "posting_date", doc.get("transaction_date").cloned().unwrap_or_default());
+                    let slip = hc.kernel.update_tx(&elevated(hc.ctx), hc.tx, "SalarySlip", id(&slip, "id").unwrap_or_default(), v, None).await?;
+                    if d(&slip, "net_pay") != d(&r, "amount") {
+                        return Err(Error::invalid(format!(
+                            "the last pay's salary slip now pays {} where the statement says {}; get the outstanding amounts again",
+                            d(&slip, "net_pay").normalize(),
+                            d(&r, "amount").normalize()
+                        )));
+                    }
+                }
+                Some(ENCASHMENT) => {
+                    let (Some(lt), Some(last)) = (id(&r, "reference"), last) else { continue };
+                    let left = match allocation_on(hc.tx, hc.ctx.tenant, employee, lt, last).await? {
+                        Some(a) => available(hc.tx, hc.ctx.tenant, employee, lt, a, None).await?,
+                        None => Decimal::ZERO,
+                    };
+                    if d(&r, "quantity") > left {
+                        return Err(Error::invalid(format!(
+                            "only {} days of {} are left to encash on {last}; get the outstanding amounts again",
+                            left.normalize(),
+                            s(&r, "reference_number").unwrap_or_default()
+                        )));
+                    }
+                }
+                _ => {}
+            }
+        }
         set(doc, "status", "Unpaid");
+        Ok(())
+    }
+
+    /// The last pay's slip is submitted (its accrual posted) and the leave encashed is used up.
+    async fn on_submit(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let me = id(doc, "id").ok_or_else(|| Error::internal("statement without id"))?;
+        let last = lookup(hc, "EmployeeSeparation", id(doc, "separation")).await?.and_then(|sep| opt_date(&sep, "relieving_date")).unwrap_or_default();
+        let employee = id(doc, "employee").unwrap_or_default();
+        for r in rows(doc, "payables") {
+            let Some(reference) = id(&r, "reference") else { continue };
+            match s(&r, "reference_type") {
+                Some(SLIP) => {
+                    hc.kernel.submit_tx(&elevated(hc.ctx), hc.tx, "SalarySlip", reference, None).await?;
+                }
+                Some(ENCASHMENT) => {
+                    let e = LedgerEntry {
+                        employee,
+                        leave_type: reference,
+                        kind: "Leave Encashment".into(),
+                        transaction: me,
+                        number: s(doc, "number").map(str::to_string),
+                        allocation: allocation_on(hc.tx, hc.ctx.tenant, employee, reference, last).await?.map(|a| a.0),
+                        leaves: -d(&r, "quantity"),
+                        from: last,
+                        to: last,
+                        carry_forward: false,
+                        lwp: false,
+                        reversal: false,
+                    };
+                    leave::post(hc, e).await?;
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -236,7 +600,25 @@ impl DocHook for StatementHook {
         Ok(())
     }
 
+    /// A draft statement takes its draft slip with it.
+    async fn before_delete(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        for r in rows(doc, "payables").iter().filter(|r| s(r, "reference_type") == Some(SLIP)) {
+            if let Some(slip) = lookup(hc, "SalarySlip", id(r, "reference")).await?.filter(|sl| docstatus(sl) == 0) {
+                hc.kernel.delete_tx(&elevated(hc.ctx), hc.tx, "SalarySlip", id(&slip, "id").unwrap_or_default(), None).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Undoes the last pay's slip (its accrual reversed) and gives back the leave encashed.
     async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let me = id(doc, "id").unwrap_or_default();
+        for r in rows(doc, "payables").iter().filter(|r| s(r, "reference_type") == Some(SLIP)) {
+            if let Some(slip) = lookup(hc, "SalarySlip", id(r, "reference")).await?.filter(|sl| docstatus(sl) == 1) {
+                hc.kernel.cancel_tx(&elevated(hc.ctx), hc.tx, "SalarySlip", id(&slip, "id").unwrap_or_default(), None).await?;
+            }
+        }
+        leave::reverse(hc, me).await?;
         let mut v = Doc::new();
         set(&mut v, "status", "Cancelled");
         hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, ENTITY, id(doc, "id").unwrap_or_default(), v).await
@@ -272,6 +654,21 @@ struct FromSeparation;
 
 #[async_trait]
 impl DocHook for FromSeparation {
+    /// A separation its submitted statement settles stays: the employee was paid off on it.
+    async fn before_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let settled: Option<String> = sqlx::query_scalar(
+            "select coalesce(number, id::text) from e_full_and_final_statement where tenant_id = $1 and separation = $2 and docstatus = 1 limit 1",
+        )
+        .bind(hc.ctx.tenant)
+        .bind(id(doc, "id"))
+        .fetch_optional(&mut **hc.tx)
+        .await?;
+        match settled {
+            Some(n) => Err(Error::invalid(format!("full and final statement {n} settles this separation; cancel it first"))),
+            None => Ok(()),
+        }
+    }
+
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, _params: &Value) -> Result<Option<Value>> {
         if name != "make_full_and_final" {
             return Ok(None);
@@ -301,5 +698,25 @@ impl DocHook for FromSeparation {
                 n => format!("The statement is made with the {n} amounts open"),
             },
         })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_counts_part_years_by_the_rule() {
+        let day = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let years = |joined: &str, last: &str, part: &str| service_years(day(joined), day(last), part);
+        // Five years complete on the eve of the fifth anniversary, the last working day counted.
+        assert!(served(day("2021-08-20"), day("2026-08-19"), 5));
+        assert!(!served(day("2021-08-21"), day("2026-08-19"), 5));
+        assert_eq!(years("2021-08-20", "2026-08-19", ""), Decimal::from(5));
+        // More than six months counts as a year; six exactly does not.
+        assert_eq!(years("2023-01-01", "2026-08-14", ""), Decimal::from(4));
+        assert_eq!(years("2023-01-01", "2026-06-30", ""), Decimal::from(3));
+        assert_eq!(years("2023-01-01", "2026-08-14", "Completed years only"), Decimal::from(3));
+        assert_eq!(years("2023-01-01", "2026-07-01", "Pro rata"), Decimal::new(34986, 4), "182 of 365 days");
     }
 }
