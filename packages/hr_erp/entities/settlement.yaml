@@ -3,7 +3,7 @@
   kind: child
   fields:
     - {name: component, type: data, required: true, max_length: 140, in_list: true, description: "What it is: the last pay, leave encashed, notice pay or recovery, gratuity, an expense claim, an advance…"}
-    - {name: reference_type, type: select, options: [Expense Claim, Employee Advance, Salary Slip, Leave Encashment, Notice Pay, Notice Recovery, Gratuity], read_only: true, in_list: true}
+    - {name: reference_type, type: select, options: [Expense Claim, Employee Advance, Salary Slip, Payroll Salary, Leave Encashment, Notice Pay, Notice Recovery, Gratuity], read_only: true, in_list: true}
     - {name: reference, type: data, read_only: true, hidden: true, label: Reference Id}
     - {name: reference_number, type: data, read_only: true, in_list: true, label: Reference}
     - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}
