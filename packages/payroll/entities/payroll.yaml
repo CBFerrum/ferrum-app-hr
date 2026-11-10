@@ -371,8 +371,8 @@
   rules:
     - {name: ordered_dates, check: "doc.start_date == null || doc.end_date == null || doc.end_date >= doc.start_date", message: "End date must not be before start date"}
   actions:
-    - {name: make_correction, label: Correct, docstatus: [1], permission: submit, condition: "doc.payroll_entry != null && doc.replaced_by == null",
-       params: [{name: posting_date, type: date, label: Posting Date, description: "The day the correction is booked (today when empty)"}]}
+    # Takes the slip back (its share of the run's accrual reversed, today) and makes a draft for the same period in its place.
+    - {name: make_correction, label: Correct, docstatus: [1], permission: submit, condition: "doc.payroll_entry != null && doc.replaced_by == null"}
     - {name: hold_salary, label: Hold Salary, docstatus: [1], permission: submit, condition: "doc.payroll_entry != null && !doc.held",
        params: [{name: reason, type: text, label: Reason, required: true}]}
     - {name: release_salary, label: Release Salary, docstatus: [1], permission: submit, condition: "doc.held"}
