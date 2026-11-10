@@ -1,6 +1,7 @@
 //! Payroll runs: pick the employees, create and submit their salary slips, post one balanced
 //! accrual journal for the whole run (earnings debit their expense accounts, deductions credit
-//! their liability accounts, each slip's net pay credits payroll payable) and pay it through a
+//! their liability accounts, employer contributions debit their cost and credit what is owed on
+//! them, each slip's net pay credits payroll payable) and pay it through a
 //! bank journal entry. Cancelling reverses the journal and then cancels the slips; it is refused
 //! while a payment stands.
 
@@ -29,13 +30,23 @@ async fn cost_center(hc: &mut HookCtx<'_>, emp: &Doc, default: Option<Uuid>) -> 
 }
 
 /// A component's account for the company: its own, else (earnings only) the company's default
-/// salary expense account. Deductions are liabilities to someone specific and need their own.
-async fn component_account(hc: &mut HookCtx<'_>, cache: &mut HashMap<Uuid, Uuid>, component: Uuid, company: Uuid) -> Result<Uuid> {
+/// salary expense account. Deductions and employer contributions are liabilities to someone
+/// specific and need their own. Second, the cost an employer contribution debits: its expense
+/// account, else the company's default salary expense account.
+async fn component_account(hc: &mut HookCtx<'_>, cache: &mut HashMap<Uuid, (Uuid, Uuid)>, component: Uuid, company: Uuid) -> Result<(Uuid, Uuid)> {
     if let Some(a) = cache.get(&component) {
         return Ok(*a);
     }
     let comp = get(hc.kernel, hc.ctx, hc.tx, "SalaryComponent", component).await?;
-    let own = rows(&comp, "accounts").iter().find(|r| id(r, "company") == Some(company)).and_then(|r| id(r, "account"));
+    let row = rows(&comp, "accounts").into_iter().find(|r| id(r, "company") == Some(company));
+    let own = row.as_ref().and_then(|r| id(r, "account"));
+    let expense = match row.as_ref().and_then(|r| id(r, "expense_account")) {
+        Some(a) => a,
+        None if s(&comp, "component_type") == Some("Employer Contribution") => {
+            company_account(hc, company, "pay_salary_expense_account", "default salary expense account").await?
+        }
+        None => Uuid::nil(),
+    };
     let account = match own {
         Some(a) => a,
         None if s(&comp, "component_type") == Some("Earning") => {
@@ -48,8 +59,8 @@ async fn component_account(hc: &mut HookCtx<'_>, cache: &mut HashMap<Uuid, Uuid>
             )));
         }
     };
-    cache.insert(component, account);
-    Ok(account)
+    cache.insert(component, (account, expense));
+    Ok((account, expense))
 }
 
 /// Posts the salary accrual of `slips` as one balanced journal entry of `source`.
@@ -71,13 +82,16 @@ pub(crate) async fn post_accrual(
         let emp = get(hc.kernel, hc.ctx, hc.tx, "Employee", id(slip, "employee").unwrap_or_default()).await?;
         let name = s(&emp, "employee_name").unwrap_or_default().to_string();
         let cc = cost_center(hc, &emp, default_cc).await?;
-        for (table, sign) in [("earnings", Decimal::ONE), ("deductions", -Decimal::ONE)] {
+        for (table, sign) in [("earnings", Decimal::ONE), ("deductions", -Decimal::ONE), ("employer_contributions", -Decimal::ONE)] {
             for r in rows(slip, table) {
                 if b(&r, "statistical_component") || d(&r, "amount").is_zero() {
                     continue;
                 }
-                let account = component_account(hc, &mut accounts, id(&r, "salary_component").unwrap_or_default(), company_id).await?;
+                let (account, expense) = component_account(hc, &mut accounts, id(&r, "salary_component").unwrap_or_default(), company_id).await?;
                 entry.lines.push(Line::new(account, sign * d(&r, "amount"), &co.currency_code).cost_center(cc));
+                if table == "employer_contributions" {
+                    entry.lines.push(Line::new(expense, d(&r, "amount"), &co.currency_code).cost_center(cc).remarks(format!("Employer's share for {name}")));
+                }
             }
         }
         let net = d(slip, "net_pay");

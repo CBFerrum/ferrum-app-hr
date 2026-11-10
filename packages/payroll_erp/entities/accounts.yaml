@@ -3,4 +3,5 @@
   kind: child
   fields:
     - {name: company, type: link, to: Company, required: true, in_list: true}
-    - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}
+    - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true, description: "An earning's expense, a deduction's liability, or the liability an employer contribution is owed on"}
+    - {name: expense_account, type: link, to: Account, link_filters: {is_group: false}, in_list: true, description: "An employer contribution's cost; the company's default salary expense account when empty"}

@@ -1,7 +1,7 @@
 package: payroll
-version: 0.2.0
+version: 0.3.0
 label: Payroll
-description: Salary components with CEL formulas, salary structures and assignments, payroll periods and progressive income tax with exemption declarations, salary slips prorated by payment days, payroll runs, additional salary and leave encashment.
+description: Salary components with CEL formulas (earnings, deductions and employer contributions), salary structures and assignments, payroll periods and progressive income tax with exemption declarations and opening year-to-date figures, salary slips prorated by payment days, payroll runs, additional salary and leave encashment.
 depends: [hr]
 field_prefix: pay_
 
@@ -15,8 +15,9 @@ modules:
     label: Payroll
     icon: banknote
     order: 75
-    items: [PayrollEntry, SalarySlip, SalaryStructure, SalaryStructureAssignment, SalaryComponent, AdditionalSalary, LeaveEncashment, PayrollPeriod,
-            IncomeTaxSlab, EmployeeTaxExemptionDeclaration, EmployeeTaxExemptionCategory, report:salary_register, report:payroll_summary,
+    # The full and final statement comes with the connector to ERP (hr_erp); without it the item drops out.
+    items: [PayrollEntry, SalarySlip, FullAndFinalStatement, SalaryStructure, SalaryStructureAssignment, SalaryComponent, AdditionalSalary, PayrollPeriod,
+            PayrollOpening, IncomeTaxSlab, EmployeeTaxExemptionDeclaration, EmployeeTaxExemptionCategory, report:salary_register, report:payroll_summary,
             report:bank_remittance, report:income_tax_deductions]
 
 roles:
@@ -34,6 +35,7 @@ roles:
       - {entity: LeaveEncashment, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
       - {entity: PayrollEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: SalarySlip, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PayrollOpening, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
       - {entity: Employee, read: true, read_groups: [bank, identity, personal]}
       - {entity: Department, read: true}
       - {entity: Designation, read: true}
@@ -55,9 +57,11 @@ roles:
       - {entity: LeaveEncashment, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
       - {entity: PayrollEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: SalarySlip, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PayrollOpening, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
   - name: Employee
     permissions:
       - {entity: SalarySlip, read: true, if_owner: true}
+      - {entity: PayrollOpening, read: true, if_owner: true}
       - {entity: LeaveEncashment, read: true, if_owner: true}
       - {entity: EmployeeTaxExemptionDeclaration, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: PayrollPeriod, read: true}
@@ -78,3 +82,4 @@ personal_data:
   - {entity: SalarySlip, match: employee_user, retain: "Payroll and tax records"}
   - {entity: EmployeeTaxExemptionDeclaration, match: employee_user, retain: "Payroll and tax records"}
   - {entity: LeaveEncashment, match: employee_user, retain: "Payroll and tax records"}
+  - {entity: PayrollOpening, match: employee_user, retain: "Payroll and tax records"}

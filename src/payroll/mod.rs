@@ -35,6 +35,7 @@ pub(crate) fn register(h: &mut HookRegistry) {
         .register("AdditionalSalary", Arc::new(AdditionalSalaryHook))
         .register("LeaveEncashment", Arc::new(EncashmentHook))
         .register("SalarySlip", Arc::new(slip::SlipHook))
+        .register("PayrollOpening", Arc::new(OpeningHook))
         .register("PayrollEntry", Arc::new(run::RunHook));
 }
 
@@ -93,10 +94,12 @@ impl DocHook for ComponentHook {
             if !seen.insert(co) {
                 errors.push(FieldError::new("company", "has two accounts").in_row("accounts", i));
             }
-            if let Some(a) = lookup(hc, "Account", Some(acc)).await?
-                && id(&a, "company") != Some(co)
-            {
-                errors.push(FieldError::new("account", "belongs to another company").in_row("accounts", i));
+            for (field, account) in [("account", Some(acc)), ("expense_account", id(r, "expense_account"))] {
+                if let Some(a) = lookup(hc, "Account", account).await?
+                    && id(&a, "company") != Some(co)
+                {
+                    errors.push(FieldError::new(field, "belongs to another company").in_row("accounts", i));
+                }
             }
         }
         if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
@@ -124,7 +127,7 @@ struct StructureHook;
 #[async_trait]
 impl DocHook for StructureHook {
     async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
-        for table in ["earnings", "deductions"] {
+        for table in slip::TABLES {
             let mut list = rows(doc, table);
             for r in list.iter_mut() {
                 if let Some(comp) = lookup(hc, "SalaryComponent", id(r, "salary_component")).await? {
@@ -146,7 +149,7 @@ impl DocHook for StructureHook {
         let mut known: Vec<String> = Vec::new();
         let mut seen = HashSet::new();
         let mut tax_rows = 0;
-        for (table, kind) in [("earnings", "Earning"), ("deductions", "Deduction")] {
+        for (table, kind) in [("earnings", "Earning"), ("deductions", "Deduction"), ("employer_contributions", "Employer Contribution")] {
             for (i, r) in rows(doc, table).iter().enumerate() {
                 let Some(comp) = lookup(hc, "SalaryComponent", id(r, "salary_component")).await? else { continue };
                 let name = s(&comp, "component_name").unwrap_or_default().to_string();
@@ -342,6 +345,62 @@ async fn submitted_slip_on(hc: &mut HookCtx<'_>, employee: Option<Uuid>, day: Op
     .bind(day)
     .fetch_optional(&mut **hc.tx)
     .await?)
+}
+
+/// An employee's pay and tax in a payroll year before the first slip made here. Income tax on
+/// later slips counts them (`slip::income_tax`); they may not overlap a slip already submitted here,
+/// and a slip may not start on or before their last day, so nothing counts twice.
+struct OpeningHook;
+
+#[async_trait]
+impl DocHook for OpeningHook {
+    async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        stamp_company(hc, doc).await?;
+        Ok(())
+    }
+
+    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        crate::people::same_company(hc, doc, "payroll_period", "PayrollPeriod").await?;
+        let (Some(period), Some(up_to)) = (lookup(hc, "PayrollPeriod", id(doc, "payroll_period")).await?, opt_date(doc, "up_to_date")) else { return Ok(()) };
+        let (Some(p_start), Some(p_end)) = (opt_date(&period, "start_date"), opt_date(&period, "end_date")) else { return Ok(()) };
+        let name = s(doc, "employee_name").unwrap_or("the employee").to_string();
+        if up_to < p_start || up_to > p_end {
+            return Err(Error::field(
+                "up_to_date",
+                format!("is outside payroll period {} ({p_start} to {p_end})", s(&period, "period_name").unwrap_or_default()),
+            ));
+        }
+        let dup: Option<String> = sqlx::query_scalar(
+            "select coalesce(number, id::text) from e_payroll_opening where tenant_id = $1 and employee = $2 and payroll_period = $3 \
+             and docstatus < 2 and id <> $4 limit 1",
+        )
+        .bind(hc.ctx.tenant)
+        .bind(id(doc, "employee"))
+        .bind(id(doc, "payroll_period"))
+        .bind(id(doc, "id"))
+        .fetch_optional(&mut **hc.tx)
+        .await?;
+        if let Some(n) = dup {
+            return Err(Error::field("payroll_period", format!("opening payroll figures {n} already cover this payroll period for {name}")));
+        }
+        let paid: Option<(String, NaiveDate, NaiveDate)> = sqlx::query_as(
+            "select coalesce(number, id::text), start_date, end_date from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus = 1 \
+             and start_date <= $4 and end_date >= $3 order by start_date limit 1",
+        )
+        .bind(hc.ctx.tenant)
+        .bind(id(doc, "employee"))
+        .bind(p_start)
+        .bind(up_to)
+        .fetch_optional(&mut **hc.tx)
+        .await?;
+        if let Some((n, from, to)) = paid {
+            return Err(Error::field(
+                "up_to_date",
+                format!("salary slip {n} ({from} to {to}) already pays {name} here; opening figures cover only the time before the first slip made here"),
+            ));
+        }
+        Ok(())
+    }
 }
 
 struct AdditionalSalaryHook;

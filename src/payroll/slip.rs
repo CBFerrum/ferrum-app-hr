@@ -3,12 +3,15 @@
 //! * working days are the period's days (less holidays when the company excludes them);
 //!   payment days are the working days the employee was employed (joining/relieving), less
 //!   approved leave without pay and absences marked in attendance (half days count half);
-//! * structure rows are evaluated earnings first, then deductions, in order. Formulas see the
-//!   full-period amounts of the rows above (`BS`, `HRA`, … and `gross`), and each row is then
-//!   prorated by payment days when its component says so (ERPNext's semantics);
+//! * structure rows are evaluated earnings first, then deductions, then employer contributions, in
+//!   order. Formulas see the full-period amounts of the rows above (`BS`, `HRA`, … and `gross`),
+//!   and each row is then prorated by payment days when its component says so (ERPNext's
+//!   semantics). Employer contributions are never part of gross or net pay;
 //! * additional salary for the period is added (or replaces the structure amount); income tax is
-//!   the year's tax on projected taxable salary, less tax already deducted, spread over the
-//!   periods left in the payroll period.
+//!   the year's tax on projected taxable salary (with the opening figures of the year: what the
+//!   system moved from and a previous employer paid), less tax already deducted, spread over the
+//!   periods left in the payroll period. In the period an employee leaves it is the year's actual
+//!   tax less what was deducted: nothing is spread over months they will not work.
 
 use super::formula::{Formula, Vars, annual_tax};
 use super::{FLAGS, assignment_on, row_formula, run};
@@ -25,6 +28,18 @@ use std::collections::{BTreeMap, HashMap};
 use uuid::Uuid;
 
 pub(crate) struct SlipHook;
+
+/// The three tables of a structure and a slip, in the order they are computed.
+pub(crate) const TABLES: [&str; 3] = ["earnings", "deductions", "employer_contributions"];
+
+/// The table a component's rows go in.
+pub(crate) fn table_of(comp: &Doc) -> &'static str {
+    match s(comp, "component_type") {
+        Some("Deduction") => "deductions",
+        Some("Employer Contribution") => "employer_contributions",
+        _ => "earnings",
+    }
+}
 
 /// Payroll sub-periods from `from` to the end of the payroll period, this one included.
 pub fn periods_left(frequency: &str, from: NaiveDate, period_end: NaiveDate) -> i64 {
@@ -190,14 +205,14 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     let mut tax: Vec<Doc> = Vec::new();
     let mut gross_full = Decimal::ZERO;
     let mut errors = Vec::new();
-    for table in ["earnings", "deductions"] {
+    for table in TABLES {
         for r in rows(&structure, table) {
             if let Some(a) = s(&r, "abbr") {
                 vars.set(a, Decimal::ZERO);
             }
         }
     }
-    for table in ["earnings", "deductions"] {
+    for table in TABLES {
         for (i, r) in rows(&structure, table).into_iter().enumerate() {
             let Some(comp) = lookup(hc, "SalaryComponent", id(&r, "salary_component")).await? else { continue };
             if b(&comp, "disabled") {
@@ -255,21 +270,22 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     // Additional salary for components outside the structure.
     for (comp_id, (a, _)) in extra {
         let comp = get(hc.kernel, hc.ctx, hc.tx, "SalaryComponent", comp_id).await?;
-        let table = if s(&comp, "component_type") == Some("Deduction") { "deductions" } else { "earnings" };
-        out.entry(table).or_default().push(Row { component: comp, amount: a, default_amount: Decimal::ZERO, additional: a });
+        out.entry(table_of(&comp)).or_default().push(Row { component: comp, amount: a, default_amount: Decimal::ZERO, additional: a });
     }
 
     // ── income tax ──
     let sum = |rows: &[Row], f: fn(&Row) -> Decimal, keep: &dyn Fn(&Row) -> bool| -> Decimal { rows.iter().filter(|r| keep(r)).map(f).sum() };
     let earn = out.remove("earnings").unwrap_or_default();
     let mut ded = out.remove("deductions").unwrap_or_default();
+    let con = out.remove("employer_contributions").unwrap_or_default();
     let taxable_earning = |r: &Row| r.flag("is_tax_applicable") && !r.flag("statistical_component");
     let exempt_deduction = |r: &Row| r.flag("exempted_from_income_tax") && !r.flag("statistical_component");
     let taxable_now = sum(&earn, |r| r.amount, &taxable_earning) - sum(&ded, |r| r.amount, &exempt_deduction);
     let taxable_full = sum(&earn, |r| r.default_amount, &taxable_earning) - sum(&ded, |r| r.default_amount, &exempt_deduction);
     let mut tax_total = Decimal::ZERO;
+    let leaving = opt_date(&emp, "relieving_date").is_some_and(|r| r <= end);
     for comp in tax {
-        let t = income_tax(hc, doc, &ssa, &co, &frequency, start, end, taxable_now, taxable_full).await?;
+        let t = income_tax(hc, doc, &ssa, &co, &frequency, (start, end, leaving), taxable_now, taxable_full).await?;
         let t = round_amount(t, b(&comp, "round_to_the_nearest_integer"), co.precision);
         tax_total += t;
         ded.push(Row { component: comp, amount: t, default_amount: t, additional: Decimal::ZERO });
@@ -283,7 +299,8 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     if net < Decimal::ZERO {
         return Err(Error::invalid(format!("deductions ({}) exceed earnings ({}) for {name}", deductions.normalize(), gross.normalize())));
     }
-    for (table, list) in [("earnings", earn), ("deductions", ded)] {
+    let contributions = sum(&con, |r| r.amount, &counted);
+    for (table, list) in [("earnings", earn), ("deductions", ded), ("employer_contributions", con)] {
         let old: HashMap<String, String> =
             rows(doc, table).iter().filter_map(|r| Some((s(r, "salary_component")?.to_string(), s(r, "id")?.to_string()))).collect();
         let mut made = Vec::new();
@@ -308,6 +325,8 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     set(doc, "total_deduction", money(deductions));
     set(doc, "net_pay", money(net));
     set(doc, "rounded_total", money(round_amount(net, true, co.precision)));
+    set(doc, "total_employer_contribution", money(contributions));
+    set(doc, "final_settlement", leaving);
     set(doc, "taxable_earnings", money(taxable_now));
     set(doc, "income_tax_deducted", money(tax_total));
     Ok(())
@@ -321,8 +340,7 @@ async fn income_tax(
     ssa: &Doc,
     co: &Company,
     frequency: &str,
-    start: NaiveDate,
-    end: NaiveDate,
+    (start, end, leaving): (NaiveDate, NaiveDate, bool),
     taxable_now: Decimal,
     taxable_full: Decimal,
 ) -> Result<Decimal> {
@@ -350,7 +368,20 @@ async fn income_tax(
     .bind(id(doc, "id"))
     .fetch_one(&mut **hc.tx)
     .await?;
-    let left = periods_left(frequency, start, p_end);
+    // What was paid before the first slip made here, and by a previous employer that year.
+    let (opening_taxable, opening_tax): (Decimal, Decimal) = sqlx::query_as(
+        "select coalesce(sum(coalesce(taxable_earnings, 0) + coalesce(previous_employer_income, 0)), 0), \
+         coalesce(sum(coalesce(tax_deducted, 0) + coalesce(previous_employer_tax, 0)), 0) from e_payroll_opening \
+         where tenant_id = $1 and employee = $2 and payroll_period = $3 and docstatus = 1",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(id(doc, "employee"))
+    .bind(period)
+    .fetch_one(&mut **hc.tx)
+    .await?;
+    let (prev_taxable, prev_tax) = (prev_taxable + opening_taxable, prev_tax + opening_tax);
+    // A leaver's last slip settles the year: nothing is projected or spread beyond it.
+    let left = if leaving { 1 } else { periods_left(frequency, start, p_end) };
     let declared: Decimal = if b(&slab, "allow_tax_exemption") {
         sqlx::query_scalar(
             "select coalesce(sum(total_exemption_amount), 0) from e_employee_tax_exemption_declaration where tenant_id = $1 and employee = $2 \
@@ -400,6 +431,25 @@ impl DocHook for SlipHook {
         .await?;
         if let Some(n) = clash {
             return Err(Error::field("start_date", format!("salary slip {n} already covers part of this period for the employee")));
+        }
+        // Opening figures count the pay up to their day; a slip here starts after it, so nothing counts twice.
+        let opening: Option<(String, NaiveDate)> = sqlx::query_as(
+            "select coalesce(o.number, o.id::text), o.up_to_date from e_payroll_opening o join e_payroll_period p on p.tenant_id = o.tenant_id \
+             and p.id = o.payroll_period where o.tenant_id = $1 and o.employee = $2 and o.docstatus = 1 and p.start_date <= $3 and o.up_to_date >= $3 limit 1",
+        )
+        .bind(hc.ctx.tenant)
+        .bind(id(doc, "employee"))
+        .bind(start)
+        .fetch_optional(&mut **hc.tx)
+        .await?;
+        if let Some((n, up_to)) = opening {
+            return Err(Error::field(
+                "start_date",
+                format!(
+                    "opening payroll figures {n} already count {}'s pay up to {up_to}; a slip made here starts after it",
+                    s(doc, "employee_name").unwrap_or("the employee")
+                ),
+            ));
         }
         Ok(())
     }
