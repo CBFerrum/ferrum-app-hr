@@ -131,6 +131,11 @@ fn payments_made_before_the_upgrade() {
 }
 
 #[test]
+fn pay_that_repeats() {
+    run(repeats_scenario());
+}
+
+#[test]
 fn hr_and_payroll_without_erp() {
     run(alone_scenario());
 }
@@ -3094,4 +3099,180 @@ async fn upgrade_scenario() {
 
 fn money(v: Decimal) -> String {
     v.to_string()
+}
+
+// ───────────────────────────── 0.11.0: changes after payroll, loans, pay that repeats ─────────────────────────────
+
+/// A workspace paying flat monthly salaries (every day of a month a working day, so a day is a
+/// thirtieth of September's pay), with income tax, a payroll manager, an HR manager and an accountant.
+struct P {
+    t: T,
+    pm: Ctx,
+    hr: Ctx,
+    acct: Ctx,
+    st: Doc,
+    slab: Doc,
+}
+
+impl P {
+    async fn new(slug: &str) -> P {
+        let t = T::new(slug).await;
+        let pm = t.user(&format!("pm@{slug}.test"), &["Payroll Manager"]).await;
+        let hr = t.user(&format!("hr@{slug}.test"), &["HR Manager"]).await;
+        let acct = t.user(&format!("acct@{slug}.test"), &["Accounts Manager"]).await;
+        let flat = t
+            .ins(
+                &pm,
+                "SalaryComponent",
+                json!({"component_name": "Flat Pay", "abbr": "FLAT", "component_type": "Earning", "amount_based_on_formula": true,
+                       "formula": "base", "depends_on_payment_days": true, "is_tax_applicable": true}),
+            )
+            .await;
+        let it = t.one("SalaryComponent", json!({"abbr": "IT"})).await;
+        t.k.update(&pm, "SalaryComponent", uid(&it), obj(json!({"accounts": [{"company": t.c(), "account": t.account("TDS Payable").await}]})), None)
+            .await
+            .unwrap();
+        let st = t
+            .ins_submit(
+                &pm,
+                "SalaryStructure",
+                json!({"structure_name": "Flat", "company": t.c(), "payroll_frequency": "Monthly", "earnings": [{"salary_component": flat["id"]}],
+                       "deductions": [{"salary_component": it["id"]}]}),
+            )
+            .await;
+        let slab = t
+            .ins(&pm, "IncomeTaxSlab", json!({"slab_name": "New Regime", "effective_from": "2026-04-01", "standard_tax_exemption_amount": "75000",
+                "slabs": [{"from_amount": "0", "to_amount": "400000", "percent_deduction": "0"}, {"from_amount": "400000", "to_amount": "800000", "percent_deduction": "5"},
+                          {"from_amount": "800000", "to_amount": "0", "percent_deduction": "10"}]}))
+            .await;
+        t.ins(&pm, "PayrollPeriod", json!({"period_name": "FY 2026-27", "company": t.c(), "start_date": "2026-04-01", "end_date": "2027-03-31"})).await;
+        P { t, pm, hr, acct, st, slab }
+    }
+
+    async fn hire(&self, first: &str, base: &str) -> Doc {
+        let e = self.t.employee(first, json!({"bank_name": "HDFC", "bank_account_no": format!("00{}", first.len() * 1111), "ifsc_code": "HDFC0000001"})).await;
+        self.t
+            .ins_submit(
+                &self.pm,
+                "SalaryStructureAssignment",
+                json!({"employee": e["id"], "salary_structure": self.st["id"], "from_date": "2026-04-01", "base": base, "income_tax_slab": self.slab["id"]}),
+            )
+            .await;
+        e
+    }
+
+    /// A payroll run of the period with its slips made (and submitted when `submit`).
+    async fn run(&self, start: &str, end: &str, submit: bool) -> Uuid {
+        let pe = self.t.ins(&self.pm, "PayrollEntry", json!({"company": self.t.c(), "posting_date": end, "start_date": start, "end_date": end})).await;
+        let id = vid(&self.t.act(&self.pm, "PayrollEntry", uid(&pe), "get_employees", json!({})).await);
+        self.t.submit(&self.pm, "PayrollEntry", id).await;
+        self.t.act(&self.pm, "PayrollEntry", id, "create_salary_slips", json!({})).await;
+        if submit {
+            self.t.act(&self.pm, "PayrollEntry", id, "submit_salary_slips", json!({})).await;
+        }
+        id
+    }
+
+    /// The employee's live regular slip of the period starting on `start`.
+    async fn slip(&self, e: &Doc, start: &str) -> Doc {
+        let rows = self.t.list(&self.t.admin, "SalarySlip", json!({"employee": e["id"], "start_date": start, "off_cycle": false})).await;
+        let live: Vec<&Doc> = rows.iter().filter(|r| r["docstatus"] != json!(2)).collect();
+        assert_eq!(live.len(), 1, "{} {start}", e["first_name"]);
+        self.t.get("SalarySlip", uid(live[0])).await
+    }
+
+    /// Corrects a submitted slip and submits the correction.
+    async fn correct(&self, slip: &Doc) -> Doc {
+        let fix = self.t.act(&self.pm, "SalarySlip", uid(slip), "make_correction", json!({})).await;
+        self.t.submit(&self.pm, "SalarySlip", vid(&fix)).await
+    }
+}
+
+fn amount_of(s: &Doc, table: &str, abbr: &str) -> Decimal {
+    s[table].as_array().unwrap().iter().find(|r| r["abbr"] == json!(abbr)).map(|r| dec(&r["amount"])).unwrap_or_default()
+}
+
+/// An allowance paid with four months' pay, stopped after two; another carried on at a new amount;
+/// the first month corrected after the stop; every other month; its full tax taken per occurrence.
+async fn repeats_scenario() {
+    let p = P::new("hrrep").await;
+    let t = &p.t;
+    let shift = t
+        .ins(
+            &p.pm,
+            "SalaryComponent",
+            json!({"component_name": "Shift Allowance", "abbr": "SHA", "component_type": "Earning", "depends_on_payment_days": false, "is_tax_applicable": true}),
+        )
+        .await;
+    let (asha, ben, dev, chen) = (p.hire("Asha", "100000").await, p.hire("Ben", "100000").await, p.hire("Dev", "100000").await, p.hire("Chen", "100000").await);
+    let repeat = |e: &Doc, amount: &str, from: &str, until: Option<&str>, every: i64, full_tax: bool| {
+        let v = json!({"employee": e["id"], "salary_component": shift["id"], "amount": amount, "payroll_date": from, "recurring": true,
+                       "to_date": until, "every": every, "deduct_full_tax": full_tax});
+        let p = &p;
+        async move { p.t.ins_submit(&p.pm, "AdditionalSalary", v).await }
+    };
+    // Asha's 3,000 for September to December, its full tax taken each time; Ben's 1,000 until stopped,
+    // every month; Dev's 2,000 every other month. Chen is given Asha's as two one-offs marked the same.
+    let a_shift = repeat(&asha, "3000", "2026-09-15", Some("2026-12-31"), 1, true).await;
+    let b_shift = repeat(&ben, "1000", "2026-09-01", None, 1, false).await;
+    repeat(&dev, "2000", "2026-09-01", None, 2, false).await;
+    for day in ["2026-09-30", "2026-10-31"] {
+        t.ins_submit(
+            &p.pm,
+            "AdditionalSalary",
+            json!({"employee": chen["id"], "salary_component": shift["id"], "amount": "3000", "payroll_date": day, "deduct_full_tax": true}),
+        )
+        .await;
+    }
+    refused(
+        t.try_ins(
+            &p.pm,
+            "AdditionalSalary",
+            json!({"employee": asha["id"], "salary_component": shift["id"], "amount": "1", "payroll_date": "2026-09-01",
+            "recurring": true, "off_cycle": true}),
+        )
+        .await,
+        "not off-cycle",
+    );
+
+    for (start, end) in [("2026-09-01", "2026-09-30"), ("2026-10-01", "2026-10-31")] {
+        p.run(start, end, true).await;
+        let (a, c) = (p.slip(&asha, start).await, p.slip(&chen, start).await);
+        assert_eq!((amount_of(&a, "earnings", "SHA"), amount_of(&p.slip(&ben, start).await, "earnings", "SHA")), (n("3000"), n("1000")), "{start}");
+        // Its full tax per occurrence, as a one-off marked so has it.
+        assert_eq!((amount_of(&a, "deductions", "IT"), dec(&a["net_pay"])), (amount_of(&c, "deductions", "IT"), dec(&c["net_pay"])), "{start}");
+        assert!(amount_of(&a, "deductions", "IT") > amount_of(&p.slip(&ben, start).await, "deductions", "IT"));
+    }
+    let s_asha = p.slip(&asha, "2026-09-01").await;
+    assert_eq!(amount_of(&p.slip(&dev, "2026-09-01").await, "earnings", "SHA"), n("2000"));
+    assert_eq!(amount_of(&p.slip(&dev, "2026-10-01").await, "earnings", "SHA"), Decimal::ZERO, "every other month");
+    refused(t.k.cancel(&p.pm, "AdditionalSalary", uid(&b_shift), None).await, "Stop or Change");
+
+    // Stopped after two, and Ben's carried on at 1,500.
+    let stop = t.act(&p.pm, "AdditionalSalary", uid(&a_shift), "stop_or_change", json!({})).await;
+    assert!(stop["message"].as_str().unwrap().contains("2026-10-31"), "{stop}");
+    assert_eq!(t.get("AdditionalSalary", uid(&a_shift)).await["to_date"], json!("2026-10-31"));
+    refused(t.k.run_action(&p.pm, "AdditionalSalary", uid(&a_shift), "stop_or_change", json!({})).await, "for the last time");
+    let changed = t.act(&p.pm, "AdditionalSalary", uid(&b_shift), "stop_or_change", json!({"amount": "1500"})).await;
+    let b_new = t.get("AdditionalSalary", vid(&changed)).await;
+    assert_eq!((b_new["payroll_date"].clone(), dec(&b_new["amount"]), b_new["recurring"].clone()), (json!("2026-11-01"), n("1500"), json!(true)));
+
+    p.run("2026-11-01", "2026-11-30", true).await;
+    assert_eq!(amount_of(&p.slip(&asha, "2026-11-01").await, "earnings", "SHA"), Decimal::ZERO, "stopped");
+    assert_eq!(amount_of(&p.slip(&ben, "2026-11-01").await, "earnings", "SHA"), n("1500"));
+    assert_eq!(amount_of(&p.slip(&dev, "2026-11-01").await, "earnings", "SHA"), n("2000"));
+    // September corrected after the stop: it still pays the allowance of its period, once.
+    let fixed = p.correct(&s_asha).await;
+    assert_eq!((amount_of(&fixed, "earnings", "SHA"), dec(&fixed["net_pay"])), (n("3000"), dec(&s_asha["net_pay"])));
+    let fixed_ben = p.correct(&p.slip(&ben, "2026-09-01").await).await;
+    assert_eq!(amount_of(&fixed_ben, "earnings", "SHA"), n("1000"), "September at its own amount");
+    p.run("2026-12-01", "2026-12-31", true).await;
+    assert_eq!(amount_of(&p.slip(&asha, "2026-12-01").await, "earnings", "SHA"), Decimal::ZERO);
+    assert_eq!(amount_of(&p.slip(&ben, "2026-12-01").await, "earnings", "SHA"), n("1500"));
+    // Paid in September and October only.
+    let mut total = Decimal::ZERO;
+    for s in t.list(&t.admin, "SalarySlip", json!({"employee": asha["id"], "docstatus": 1})).await {
+        total += amount_of(&t.get("SalarySlip", uid(&s)).await, "earnings", "SHA");
+    }
+    assert_eq!(total, n("6000"));
 }

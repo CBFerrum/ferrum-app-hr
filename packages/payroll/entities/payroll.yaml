@@ -200,7 +200,7 @@
   company_scoped: true
   title_field: employee_name
   numbering: {template: "HR-ADS-{YYYY}-{seq:5}", date_field: payroll_date}
-  description: A one-off earning or deduction (bonus, arrears, recovery, leave encashment) paid in the salary slip covering its payroll date.
+  description: "An earning or deduction (bonus, arrears, recovery, leave encashment) paid in the salary slip covering its payroll date; or one that repeats, in every slip (or every N-th) from that period until a last one or until stopped."
   fields:
     - {name: employee, type: link, to: Employee, required: true, in_filter: true}
     - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
@@ -208,7 +208,10 @@
     - {name: salary_component, type: link, to: SalaryComponent, required: true, link_filters: {disabled: false}, in_list: true}
     - {name: component_type, type: data, fetch_from: salary_component.component_type, read_only: true, in_list: true}
     - {name: amount, type: currency, required: true, min: "0", in_list: true}
-    - {name: payroll_date, type: date, required: true, in_list: true, in_filter: true}
+    - {name: payroll_date, type: date, required: true, in_list: true, in_filter: true, description: "The day it is paid; for one that repeats, a day in the first period it is paid in"}
+    - {name: recurring, type: check, label: Repeats, in_list: true, in_filter: true, description: "Paid in every regular salary slip from the payroll date's period (or every N-th) until the last period, or until stopped"}
+    - {name: to_date, type: date, label: Until, visible_if: "doc.recurring", description: "A day in the last period it is paid in; empty: until stopped (Stop or Change)"}
+    - {name: every, type: int, label: Every (Periods), default: 1, min: "1", visible_if: "doc.recurring", description: "1: every pay period; 3: every third, starting with the first"}
     - {name: overwrite_salary_structure_amount, type: check, description: Replace the structure's amount for this component instead of adding to it}
     - {name: off_cycle, type: check, label: Off-Cycle, in_filter: true, description: "Paid by an off-cycle payroll entry on its payroll date, not with the period's regular salary slip"}
     - {name: deduct_full_tax, type: check, label: "Deduct its full tax in the period it is paid",
@@ -218,7 +221,18 @@
     - {name: ref_docname, type: data, read_only: true, label: Source}
   rules:
     - {name: positive, check: "doc.amount > 0.0", message: "The amount must be greater than zero"}
-  list: {columns: [number, employee_name, salary_component, amount, payroll_date], sort: payroll_date desc}
+    - {name: repeats_with_regular_pay, check: "!doc.recurring || !doc.off_cycle", message: "One that repeats is paid with regular salary slips, not off-cycle"}
+    - {name: until_after_from, check: "!doc.recurring || doc.to_date == null || doc.to_date >= doc.payroll_date", message: "The last period cannot be before the first"}
+  actions:
+    # From the next period not yet paid: stopped, or carried on at a new amount by a new additional salary.
+    - name: stop_or_change
+      label: Stop or Change
+      docstatus: [1]
+      permission: submit
+      condition: "doc.recurring"
+      params:
+        - {name: amount, type: data, label: New Amount, description: "Empty: it stops. Otherwise it carries on at this amount from the next period not yet paid"}
+  list: {columns: [number, employee_name, salary_component, amount, payroll_date, recurring], sort: payroll_date desc}
 
 - name: LeaveEncashment
   label: Leave Encashment
