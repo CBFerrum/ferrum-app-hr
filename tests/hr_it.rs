@@ -111,6 +111,11 @@ fn opening_figures_and_a_leavers_tax() {
 }
 
 #[test]
+fn notice_and_full_and_final_settlement() {
+    run(notice_scenario());
+}
+
+#[test]
 fn hr_and_payroll_without_erp() {
     run(alone_scenario());
 }
@@ -1732,18 +1737,26 @@ async fn retire_scenario() {
         )
         .await;
     let e = t.get("Employee", kiran).await;
-    assert_eq!((e["status"].clone(), e["relieving_date"].clone()), (json!("Left"), json!(later.to_string())));
+    assert_eq!((e["status"].clone(), e["relieving_date"].clone()), (json!("Active"), json!(later.to_string())), "at work until their last working day");
     ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("upkeep");
     assert!(active("kiran@hrret.test").await, "their sign-in works until the day");
 
-    // Cancelled, they stay; separated again on today, the upkeep ends the sign-in, once.
+    // Cancelled, they stay; separated again on a day already past, they are Left at once and the
+    // upkeep ends the sign-in, once.
     t.k.cancel(&hr, "EmployeeSeparation", uid(&leaving), None).await.expect("cancelled");
     let e = t.get("Employee", kiran).await;
     assert_eq!((e["status"].clone(), e["relieving_date"].clone()), (json!("Active"), Value::Null));
-    let left =
-        t.ins_submit(&hr, "EmployeeSeparation", json!({"employee": kiran.to_string(), "reason": "Resignation", "relieving_date": today.to_string()})).await;
+    let yesterday = today - chrono::Duration::days(1);
+    let left = t
+        .ins_submit(
+            &hr,
+            "EmployeeSeparation",
+            json!({"employee": kiran.to_string(), "reason": "Resignation", "resignation_letter_date": yesterday.to_string(), "relieving_date": yesterday.to_string()}),
+        )
+        .await;
+    assert_eq!(t.get("Employee", kiran).await["status"], json!("Left"), "the last working day has passed");
     ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("upkeep");
-    assert!(!active("kiran@hrret.test").await, "deprovisioned on the relieving date");
+    assert!(!active("kiran@hrret.test").await, "deprovisioned once the last working day has passed");
     assert!(active("mona@hrret.test").await, "nobody else");
     assert!(t.k.login("hrret", "kiran@hrret.test", PW).await.is_err(), "no sign-in after leaving");
     assert!(t.k.load_ctx(t.tenant, signed_in.user, Some(signed_in.token_version), "it".into()).await.is_err(), "their session ended");
@@ -2071,6 +2084,235 @@ async fn opening_scenario() {
     let last = slip(&dia, 4).await;
     assert_eq!((dec(&last["payment_days"]), last["final_settlement"].clone()), (n("15"), json!(true)));
     assert_eq!(tax(&last), n("39838.71"));
+}
+
+// ───────────────────────────── notice, leaving and the full and final statement ─────────────────────────────
+
+/// Notice served in full, short, waived and ended early by the employer; leave taken while serving
+/// it; a separation withdrawn; a death; gratuity either side of the minimum service; the statement
+/// gathering it all, adjusted with a reason, posted and paid; and a workspace upgraded from when a
+/// separation made its employee Left at once.
+async fn notice_scenario() {
+    let t = T::new("hrnotice").await;
+    let hr = t.user("hr@hrnotice.test", &["HR Manager"]).await;
+    let pm = t.user("pm@hrnotice.test", &["Payroll Manager"]).await;
+    let acct = t.user("acct@hrnotice.test", &["Accounts Manager"]).await;
+    // India's gratuity: 15 days' basic a year on a 26-day month, after five years.
+    let rule = json!({"hr_notice_period_days": 30, "hr_gratuity_min_years": 5, "hr_gratuity_days_per_year": "15", "hr_gratuity_days_in_month": "26",
+                      "hr_gratuity_pay_formula": "BS"});
+    t.k.update(&t.admin, "Company", t.company, obj(rule), None).await.expect("the company's rules");
+    let comp = |abbr: &str| {
+        let t = &t;
+        let abbr = abbr.to_string();
+        async move { t.one("SalaryComponent", json!({"abbr": abbr})).await }
+    };
+    let (bs, hra, sa) = (comp("BS").await, comp("HRA").await, comp("SA").await);
+    let st = t
+        .ins_submit(
+            &pm,
+            "SalaryStructure",
+            json!({"structure_name": "Simple", "company": t.c(), "payroll_frequency": "Monthly",
+                   "earnings": [{"salary_component": bs["id"]}, {"salary_component": hra["id"]}, {"salary_component": sa["id"]}]}),
+        )
+        .await;
+    let pl = t.one("LeaveType", json!({"leave_type_name": "Privilege Leave"})).await;
+    let hire = |first: &'static str, extra: Value| {
+        let (t, hr, pm, st, pl) = (&t, &hr, &pm, &st, &pl);
+        async move {
+            let e = t.employee(first, extra).await;
+            t.ins_submit(
+                pm,
+                "SalaryStructureAssignment",
+                json!({"employee": e["id"], "salary_structure": st["id"], "from_date": "2026-04-01", "base": "62000"}),
+            )
+            .await;
+            t.ins_submit(
+                hr,
+                "LeaveAllocation",
+                json!({"employee": e["id"], "leave_type": pl["id"], "from_date": "2026-01-01", "to_date": "2026-12-31", "new_leaves_allocated": "18"}),
+            )
+            .await;
+            e
+        }
+    };
+    let separate = |e: &Doc, reason: &str, given: &str, last: &str, extra: Value| {
+        let mut v = obj(json!({"employee": e["id"], "reason": reason, "resignation_letter_date": given, "relieving_date": last}));
+        v.extend(obj(extra));
+        let t = &t;
+        let hr = &hr;
+        async move { t.ins_submit(hr, "EmployeeSeparation", Value::Object(v)).await }
+    };
+    let statement = |sep: &Doc| {
+        let (t, hr, sep) = (&t, &hr, uid(sep));
+        async move { t.get("FullAndFinalStatement", vid(&t.act(hr, "EmployeeSeparation", sep, "make_full_and_final", json!({})).await)).await }
+    };
+    let lines = |st: &Doc, table: &str| -> Vec<(String, Decimal)> {
+        st[table].as_array().unwrap().iter().map(|r| (r["reference_type"].as_str().unwrap_or("").to_string(), dec(&r["amount"]))).collect()
+    };
+    let notice = |sep: &Doc| {
+        (sep["notice_period_days"].clone(), sep["notice_served_days"].clone(), sep["notice_shortfall_days"].clone(), sep["shortfall_settlement"].clone())
+    };
+
+    // ───────────── served in full; withdrawn ─────────────
+    let sam = hire("Sam", json!({})).await;
+    let sep = separate(&sam, "Resignation", "2026-07-01", "2026-07-31", json!({})).await;
+    assert_eq!(notice(&sep), (json!(30), json!(30), json!(0), Value::Null), "the company's 30 days, served");
+    assert_eq!(t.get("Employee", uid(&sam)).await["status"], json!("Left"), "the last working day has passed");
+    t.k.cancel(&hr, "EmployeeSeparation", uid(&sep), None).await.expect("withdrawn");
+    let e = t.get("Employee", uid(&sam)).await;
+    assert_eq!((e["status"].clone(), e["relieving_date"].clone()), (json!("Active"), Value::Null), "everything as it was");
+    refused(
+        t.try_ins(&hr, "EmployeeSeparation", json!({"employee": sam["id"], "resignation_letter_date": "2026-08-02", "relieving_date": "2026-08-01"})).await,
+        "after the last working day",
+    );
+
+    // ───────────── served short, leave taken while serving it: the statement ─────────────
+    // Nina owes 60 days' notice, resigns on 11 July and leaves on 20 August (40 days), having taken
+    // two days of privilege leave on the 10th and 11th.
+    let nina = hire("Nina", json!({"notice_period_days": 60})).await;
+    let leave =
+        t.ins(&hr, "LeaveApplication", json!({"employee": nina["id"], "leave_type": pl["id"], "from_date": "2026-08-10", "to_date": "2026-08-11"})).await;
+    t.trans(&hr, "LeaveApplication", uid(&leave), "Approve").await.expect("leave approved");
+    let sep = separate(&nina, "Resignation", "2026-07-11", "2026-08-20", json!({})).await;
+    assert_eq!(notice(&sep), (json!(60), json!(40), json!(20), json!("Recover from Employee")));
+    let fnf = statement(&sep).await;
+    // A day's pay is August's 62,000 over its 31 days: 2,000.
+    assert_eq!(lines(&fnf, "payables"), vec![("Salary Slip".to_string(), n("40000")), ("Leave Encashment".to_string(), n("32000"))], "{fnf:?}");
+    assert_eq!(lines(&fnf, "receivables"), vec![("Notice Recovery".to_string(), n("40000"))]);
+    assert_eq!(dec(&fnf["payables"][1]["quantity"]), n("16"), "18 less the two taken during notice");
+    assert_eq!(dec(&fnf["net_payable"]), n("32000"));
+    let slip = t.get("SalarySlip", fnf["payables"][0]["reference"].as_str().unwrap().parse().unwrap()).await;
+    assert_eq!(
+        (slip["start_date"].clone(), slip["end_date"].clone(), dec(&slip["payment_days"]), slip["docstatus"].clone()),
+        (json!("2026-08-01"), json!("2026-08-31"), n("20"), json!(0))
+    );
+    // Adjusted, with a reason; the last pay follows its slip.
+    let fid = uid(&fnf);
+    let mut recv = fnf["receivables"].as_array().unwrap().clone();
+    recv[0]["amount"] = json!("30000");
+    refused(
+        t.k.update(&hr, "FullAndFinalStatement", fid, obj(json!({"receivables": recv.clone()})), None).await,
+        "say why Notice not served differs from the 40000 gathered",
+    );
+    recv[0]["reason"] = json!("Five days bought out by the new employer");
+    let mut pays = fnf["payables"].as_array().unwrap().clone();
+    pays[0]["amount"] = json!("41000");
+    pays[0]["reason"] = json!("rounding");
+    refused(t.k.update(&hr, "FullAndFinalStatement", fid, obj(json!({"payables": pays})), None).await, "is its salary slip's net pay");
+    t.k.update(&hr, "FullAndFinalStatement", fid, obj(json!({"receivables": recv})), None).await.expect("adjusted");
+    let fnf = t.act(&hr, "FullAndFinalStatement", fid, "get_outstanding", json!({})).await;
+    assert_eq!(lines(&obj(fnf.clone()), "receivables"), vec![("Notice Recovery".to_string(), n("30000"))], "gathering again keeps the adjustment");
+    assert_eq!(fnf["receivables"][0]["reason"], json!("Five days bought out by the new employer"));
+    let slip_id: Uuid = fnf["payables"][0]["reference"].as_str().unwrap().parse().unwrap();
+    assert_eq!(t.list(&t.admin, "SalarySlip", json!({"employee": nina["id"]})).await.len(), 1, "made again, not twice");
+
+    // Submitted: the slip with it (its accrual posted), the leave used up; then paid.
+    t.submit(&hr, "FullAndFinalStatement", fid).await;
+    assert_eq!(t.get("SalarySlip", slip_id).await["docstatus"], json!(1));
+    assert_eq!((t.gl("Salaries").await, t.gl("Payroll Payable").await), (n("40000"), n("-40000")));
+    let balance = |e: &Doc| {
+        let (t, e, pl) = (&t, e["id"].clone(), pl["id"].clone());
+        async move { t.list(&t.admin, "LeaveLedgerEntry", json!({"employee": e, "leave_type": pl})).await.iter().map(|l| dec(&l["leaves"])).sum::<Decimal>() }
+    };
+    assert_eq!(balance(&nina).await, Decimal::ZERO, "18 allocated, 2 taken, 16 encashed");
+    let bank = t.gl("Primary Bank").await;
+    let je = t.act(&hr, "FullAndFinalStatement", fid, "make_payment_entry", json!({})).await;
+    t.submit(&acct, "JournalEntry", vid(&je)).await;
+    assert_eq!(t.gl("Payroll Payable").await, Decimal::ZERO, "the last pay paid");
+    assert_eq!((t.gl("Salaries").await, t.gl("Primary Bank").await), (n("42000"), bank - n("42000")), "40,000 + 32,000 − 30,000");
+    refused(t.k.cancel(&hr, "EmployeeSeparation", uid(&sep), None).await, "settles this separation; cancel it first");
+    // Unwound in order: the slip cancelled with the statement, the leave given back.
+    t.k.cancel(&acct, "JournalEntry", vid(&je), None).await.expect("entry cancelled");
+    t.k.cancel(&hr, "FullAndFinalStatement", fid, None).await.expect("statement cancelled");
+    assert_eq!(t.get("SalarySlip", slip_id).await["docstatus"], json!(2));
+    assert_eq!((t.gl("Salaries").await, t.gl("Payroll Payable").await), (Decimal::ZERO, Decimal::ZERO));
+    assert_eq!(balance(&nina).await, n("16"));
+
+    // ───────────── waived; ended early by the employer ─────────────
+    let omar = hire("Omar", json!({})).await;
+    let sep = separate(&omar, "Resignation", "2026-07-21", "2026-08-10", json!({"shortfall_settlement": "Waive"})).await;
+    assert_eq!(notice(&sep), (json!(30), json!(20), json!(10), json!("Waive")));
+    let fnf = statement(&sep).await;
+    assert!(lines(&fnf, "receivables").is_empty() && lines(&fnf, "payables").iter().all(|l| l.0 != "Notice Pay"), "waived: neither way");
+    let tara = hire("Tara", json!({})).await;
+    let sep = separate(&tara, "Termination", "2026-08-01", "2026-08-11", json!({})).await;
+    assert_eq!(notice(&sep), (json!(30), json!(10), json!(20), json!("Pay in Lieu of Notice")));
+    let fnf = statement(&sep).await;
+    assert!(lines(&fnf, "payables").contains(&("Notice Pay".to_string(), n("40000"))), "{:?}", lines(&fnf, "payables"));
+
+    // ───────────── gratuity either side of five years; a death ─────────────
+    let gratuity = |st: &Doc| lines(st, "payables").into_iter().find(|l| l.0 == "Gratuity").map(|l| l.1);
+    let uma = hire("Uma", json!({"date_of_joining": "2021-08-21"})).await;
+    let fnf = statement(&separate(&uma, "Resignation", "2026-07-20", "2026-08-19", json!({})).await).await;
+    assert_eq!(gratuity(&fnf), None, "a day short of five years");
+    let vik = hire("Vik", json!({"date_of_joining": "2021-08-10"})).await;
+    let fnf = statement(&separate(&vik, "Resignation", "2026-07-20", "2026-08-19", json!({})).await).await;
+    assert_eq!(gratuity(&fnf), Some(n("89423.08")), "31,000 × 15 / 26 × 5");
+    let dev = hire("Dev", json!({"date_of_joining": "2023-01-01", "notice_period_days": 60})).await;
+    let sep = separate(&dev, "Death", "2026-08-14", "2026-08-14", json!({})).await;
+    assert_eq!(notice(&sep), (json!(0), json!(0), json!(0), Value::Null), "no notice is due");
+    let fnf = statement(&sep).await;
+    assert_eq!(gratuity(&fnf), Some(n("71538.46")), "the minimum waived; three years and seven months count as four");
+
+    // ───────────── serving notice now ─────────────
+    let today = chrono::Utc::now().date_naive();
+    let day = |n: i64| (today + chrono::Duration::days(n)).to_string();
+    t.user("ria@hrnotice.test", &["Employee"]).await;
+    let casual = t.one("LeaveType", json!({"leave_type_name": "Casual Leave"})).await;
+    let policy = t
+        .ins(&hr, "LeavePolicy", json!({"title": "Monthly", "year_starts": "January", "leave_policy_details": [{"leave_type": casual["id"], "annual_allocation": "12", "accrual": "Monthly"}]}))
+        .await;
+    let ria = t.employee("Ria", json!({"user": "ria@hrnotice.test", "leave_policy": policy["id"]})).await;
+    let sep = separate(&ria, "Resignation", &day(-10), &day(20), json!({})).await;
+    let e = t.get("Employee", uid(&ria)).await;
+    assert_eq!((e["status"].clone(), e["relieving_date"].clone()), (json!("Active"), json!(day(20))), "at work until the last working day");
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("upkeep");
+    assert_eq!(t.get("Employee", uid(&ria)).await["status"], json!("Active"));
+    let accrued = t.list(&t.admin, "LeaveAllocation", json!({"employee": ria["id"], "leave_policy": policy["id"]})).await;
+    assert_eq!(accrued.len(), 1, "still accruing leave: the upkeep granted her this year's shares");
+    let dir = call(&t, Some(&hr), "GET", "directory", &[], Value::Null).await.expect("directory");
+    let her = dir["people"].as_array().unwrap().iter().find(|p| p["id"] == ria["id"]).expect("still in the directory");
+    assert_eq!(her["leaving"], json!(day(20)), "shown as serving notice");
+    // Time passes: the day after the last working day, the upkeep makes her Left and ends her sign-in.
+    {
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        for table in ["e_employee", "e_employee_separation"] {
+            let (key, id) = if table == "e_employee" { ("id", uid(&ria)) } else { ("id", uid(&sep)) };
+            sqlx::query(sqlx::AssertSqlSafe(format!("update {table} set relieving_date = $3::date where tenant_id = $1 and {key} = $2")))
+                .bind(t.tenant)
+                .bind(id)
+                .bind(day(-1))
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("upkeep");
+    assert_eq!(t.get("Employee", uid(&ria)).await["status"], json!("Left"));
+    assert!(t.k.login("hrnotice", "ria@hrnotice.test", PW).await.is_err(), "her sign-in ended");
+    assert!(call(&t, Some(&hr), "GET", "directory", &[], Value::Null).await.unwrap()["people"].as_array().unwrap().iter().all(|p| p["id"] != ria["id"]));
+
+    // ───────────── upgrading: those the old release made Left while serving notice ─────────────
+    let old = t.employee("Olu", json!({})).await;
+    separate(&old, "Resignation", &day(-5), &day(25), json!({})).await;
+    let gone = t.employee("Gil", json!({})).await;
+    separate(&gone, "Resignation", &day(-40), &day(-10), json!({})).await;
+    {
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        sqlx::query("update e_employee set status = 'Left' where tenant_id = $1 and id = $2").bind(t.tenant).bind(uid(&old)).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    let hr_package = ferrum_app_hr::packages().unwrap().into_iter().find(|p| p.manifest.package == "hr").unwrap();
+    let fill = hr_package.manifest.backfills.iter().find(|b| b.name == "serving_notice").expect("the backfill");
+    {
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        let sql = format!("update e_employee t set {} where t.tenant_id = $1 and ({})", fill.set, fill.needs);
+        let changed = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(t.tenant).execute(&mut *tx).await.unwrap().rows_affected();
+        tx.commit().await.unwrap();
+        assert_eq!(changed, 1, "Olu only");
+    }
+    assert_eq!((t.get("Employee", uid(&old)).await["status"].clone(), t.get("Employee", uid(&gone)).await["status"].clone()), (json!("Active"), json!("Left")));
 }
 
 fn money(v: Decimal) -> String {
