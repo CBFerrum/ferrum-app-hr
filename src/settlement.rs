@@ -2,8 +2,9 @@
 //! them: the pay earned up to the last working day that no slip covers yet (a salary slip of its
 //! own, which settles the year's income tax, submitted with the statement), their encashable leave
 //! as of that day (used up from their balance on submit), notice pay when the employer ended the
-//! notice early, gratuity by the company's rule, their open expense claims. Recovered from them:
-//! notice not served, their unsettled advances. Each line can be adjusted with a reason, and lines
+//! notice early, gratuity by the company's rule, their open expense claims, and a salary of a payroll
+//! run held or still owed (a correction, a release). Recovered from them: notice not served, their
+//! unsettled advances, and what a corrected run slip paid them too much. Each line can be adjusted with a reason, and lines
 //! can be added. One journal entry settles it: it debits what is paid, credits what is recovered
 //! and pays the difference from the bank (or takes it in), and submitting it settles each claim and
 //! advance the statement names, as their own payments do; cancelling it undoes that.
@@ -30,6 +31,8 @@ const CLAIM: &str = "Expense Claim";
 const ADVANCE: &str = "Employee Advance";
 const SLIP: &str = "Salary Slip";
 const ENCASHMENT: &str = "Leave Encashment";
+/// A payroll run's slip still owed (or paid too much) on the last day.
+const RUN_SLIP: &str = "Payroll Salary";
 
 pub(crate) fn register(h: &mut HookRegistry) {
     h.register(ENTITY, Arc::new(StatementHook)).register("EmployeeSeparation", Arc::new(FromSeparation));
@@ -103,6 +106,34 @@ pub(crate) async fn settle(hc: &mut HookCtx<'_>, je: &Doc, target: Uuid, sign: D
         return Err(Error::invalid(format!("the entry must debit what {label} pays and credit what it recovers, on their accounts")));
     }
     settle_lines(hc, &st, sign, write).await?;
+    // The run slips it pays (or recovers) are paid by this entry, if nothing paid them meanwhile.
+    if paying {
+        for (table, side) in [("payables", Decimal::ONE), ("receivables", -Decimal::ONE)] {
+            for r in rows(&st, table).iter().filter(|r| s(r, "reference_type") == Some(RUN_SLIP)) {
+                let slip = lookup(hc, "SalarySlip", id(r, "reference")).await?.filter(|sl| docstatus(sl) == 1);
+                if slip.is_none_or(|sl| d(&sl, "net_pay") - d(&sl, "paid_amount") != side * d(r, "amount")) {
+                    return Err(Error::invalid(format!(
+                        "{} was settled since {label} was made; cancel the statement and make it again",
+                        s(r, "component").unwrap_or("a salary slip")
+                    )));
+                }
+            }
+        }
+    }
+    if write {
+        let je_id = id(je, "id").ok_or_else(|| Error::internal("journal entry without id"))?;
+        if paying {
+            let mut items = Vec::new();
+            for (table, side) in [("payables", Decimal::ONE), ("receivables", -Decimal::ONE)] {
+                for r in rows(&st, table).iter().filter(|r| s(r, "reference_type") == Some(RUN_SLIP)) {
+                    items.push((id(r, "reference").unwrap_or_default(), side * d(r, "amount")));
+                }
+            }
+            crate::payroll::payments::allocate(hc, je_id, &items).await?;
+        } else {
+            crate::payroll::payments::unallocate(hc, je_id).await?;
+        }
+    }
     if write {
         let mut v = Doc::new();
         set(&mut v, "status", if paying { "Paid" } else { "Unpaid" });
@@ -135,6 +166,11 @@ async fn outstanding(hc: &mut HookCtx<'_>, st: &Doc) -> Result<(Vec<Value>, Vec<
     .await?;
     let by_hand = |table: &str| rows(st, table).into_iter().filter(|r| s(r, "reference_type").is_none()).map(Value::Object);
     let (mut payables, mut receivables) = if hc.ctx.schema.entity("SalarySlip").is_some() { leaving(hc, st).await? } else { (Vec::new(), Vec::new()) };
+    if hc.ctx.schema.packages.iter().any(|p| p == crate::PAYROLL_ERP) {
+        let (pay, recover) = run_slips(hc, st, employee).await?;
+        payables.extend(pay);
+        receivables.extend(recover);
+    }
     payables.extend(claims
         .into_iter()
         .map(|(claim, number, account, amount, posted)| {
@@ -203,6 +239,28 @@ fn line(
            "amount": money(amount), "gathered_amount": money(amount), "quantity": quantity.map(money), "remark": remark})
 }
 
+/// Payroll run slips the leaver's statement settles: a salary held (its entry pays it, held or not),
+/// what is still owed on a correction or a released salary, and what a corrected slip paid too much.
+async fn run_slips(hc: &mut HookCtx<'_>, st: &Doc, employee: Uuid) -> Result<(Vec<Value>, Vec<Value>)> {
+    let (mut pay, mut recover) = (Vec::new(), Vec::new());
+    let open = crate::payroll::payments::open_for_leaver(hc, employee).await?;
+    if open.is_empty() {
+        return Ok((pay, recover));
+    }
+    let cid = id(st, "company").ok_or_else(|| Error::field("company", "is required"))?;
+    let payable = company_account(hc, cid, "pay_payroll_payable_account", "payroll payable account").await?;
+    for (slip, number, from, to, owed, held) in open {
+        let (component, remark) = match (owed > Decimal::ZERO, held) {
+            (true, true) => (format!("Salary held, {from} to {to}"), "Held from its run's bank payment; paid by this statement"),
+            (true, false) => (format!("Salary still owed, {from} to {to}"), "Corrected or released after its run was paid"),
+            _ => (format!("Excess salary paid, {from} to {to}"), "Its corrected slip pays less than was paid"),
+        };
+        let l = line(component, RUN_SLIP, slip, number, payable, owed.abs(), None, remark.into());
+        if owed > Decimal::ZERO { pay.push(l) } else { recover.push(l) }
+    }
+    Ok((pay, recover))
+}
+
 /// The pay earned up to the last working day that no salary slip covers yet: a draft slip of the
 /// statement's own for the pay period the day falls in, made again at each gathering. None when a
 /// slip (a payroll run's, or one made by hand) covers the day already, or nothing is assigned.
@@ -217,7 +275,8 @@ async fn last_pay(hc: &mut HookCtx<'_>, st: &Doc, emp: &Doc, last: NaiveDate) ->
     }
     let emp_id = id(emp, "id").unwrap_or_default();
     let covered: bool = sqlx::query_scalar(
-        "select exists (select 1 from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus < 2 and start_date <= $3 and end_date >= $3)",
+        "select exists (select 1 from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus < 2 and start_date <= $3 and end_date >= $3 \
+         and not coalesce(off_cycle, false))",
     )
     .bind(hc.ctx.tenant)
     .bind(emp_id)
@@ -229,13 +288,14 @@ async fn last_pay(hc: &mut HookCtx<'_>, st: &Doc, emp: &Doc, last: NaiveDate) ->
         return Ok(None);
     }
     let structure = get(hc.kernel, hc.ctx, hc.tx, "SalaryStructure", id(&ssa, "salary_structure").unwrap_or_default()).await?;
-    let paid_to: Option<NaiveDate> =
-        sqlx::query_scalar("select max(end_date) from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus < 2 and end_date < $3")
-            .bind(hc.ctx.tenant)
-            .bind(emp_id)
-            .bind(last)
-            .fetch_one(&mut **hc.tx)
-            .await?;
+    let paid_to: Option<NaiveDate> = sqlx::query_scalar(
+        "select max(end_date) from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus < 2 and end_date < $3 and not coalesce(off_cycle, false)",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(emp_id)
+    .bind(last)
+    .fetch_one(&mut **hc.tx)
+    .await?;
     let after_paid = paid_to.map(|p| p + Duration::days(1));
     let (start, end) = match s(&structure, "payroll_frequency") {
         Some(f @ ("Weekly" | "Fortnightly")) => {
@@ -295,7 +355,8 @@ async fn leaving(hc: &mut HookCtx<'_>, st: &Doc) -> Result<(Vec<Value>, Vec<Valu
         }
     }
     let basis: Option<Uuid> = sqlx::query_scalar(
-        "select id from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus < 2 and start_date <= $3 order by end_date desc limit 1",
+        "select id from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus < 2 and start_date <= $3 and not coalesce(off_cycle, false) \
+         order by end_date desc limit 1",
     )
     .bind(hc.ctx.tenant)
     .bind(emp_id)
@@ -496,7 +557,12 @@ impl DocHook for StatementHook {
                 let gathered = r.get("gathered_amount").filter(|g| !g.is_null()).map(|_| d(r, "gathered_amount"));
                 let Some(gathered) = gathered.filter(|g| *g != d(r, "amount")) else { continue };
                 let what = s(r, "component").unwrap_or_default();
-                if s(r, "reference_type") == Some(SLIP) {
+                if s(r, "reference_type") == Some(RUN_SLIP) {
+                    errors.push(
+                        FieldError::new("amount", format!("{what} is what its salary slip still owes ({}); it is settled as it is", gathered.normalize()))
+                            .in_row(table, i),
+                    );
+                } else if s(r, "reference_type") == Some(SLIP) {
                     errors.push(
                         FieldError::new(
                             "amount",
@@ -520,6 +586,18 @@ impl DocHook for StatementHook {
         settle_lines(hc, doc, Decimal::ONE, false).await?;
         let last = lookup(hc, "EmployeeSeparation", id(doc, "separation")).await?.and_then(|sep| opt_date(&sep, "relieving_date"));
         let employee = id(doc, "employee").unwrap_or_default();
+        // A run slip it settles still owes what the line says.
+        for (table, side) in [("payables", Decimal::ONE), ("receivables", -Decimal::ONE)] {
+            for r in rows(doc, table).iter().filter(|r| s(r, "reference_type") == Some(RUN_SLIP)) {
+                let slip = lookup(hc, "SalarySlip", id(r, "reference")).await?.filter(|sl| docstatus(sl) == 1);
+                if slip.is_none_or(|sl| d(&sl, "net_pay") - d(&sl, "paid_amount") != side * d(r, "amount")) {
+                    return Err(Error::invalid(format!(
+                        "{} no longer owes what the statement says; get the outstanding amounts again",
+                        s(r, "component").unwrap_or("a salary slip")
+                    )));
+                }
+            }
+        }
         for r in rows(doc, "payables") {
             match s(&r, "reference_type") {
                 // The last pay's slip, computed again with what is known now, still pays what the line says.
@@ -570,6 +648,7 @@ impl DocHook for StatementHook {
                 Some(SLIP) => {
                     hc.kernel.submit_tx(&elevated(hc.ctx), hc.tx, "SalarySlip", reference, None).await?;
                 }
+
                 Some(ENCASHMENT) => {
                     let e = LedgerEntry {
                         employee,

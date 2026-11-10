@@ -610,18 +610,38 @@ impl PaymentHook {
                 let field = if kind == "Employee Advance" { "paid_amount" } else { "return_amount" };
                 return advance_moved(hc, &doc, &label, field, delta, write).await;
             }
+            // A payroll entry's bank entry pays each salary it lists in full, as the bank file does:
+            // checked against what is due now, and recorded slip by slip.
             _ => {
-                let paid = d(&doc, "paid_amount") + delta;
-                let net_pay = d(&doc, "total_net_pay");
-                if paid > net_pay || paid < Decimal::ZERO {
-                    return Err(Error::invalid(format!("{label} has only {} left to pay", (net_pay - d(&doc, "paid_amount")).normalize())));
+                let je_id = id(je, "id").ok_or_else(|| Error::internal("journal entry without id"))?;
+                if sign > Decimal::ZERO {
+                    let due = crate::payroll::payments::due(hc, target).await?;
+                    let total: Decimal = due.iter().map(|x| x.amount).sum();
+                    if total <= Decimal::ZERO {
+                        return Err(Error::invalid(format!("{label}: {}", crate::payroll::run::nothing_due(hc, target).await?)));
+                    }
+                    if amount != total {
+                        return Err(Error::invalid(format!(
+                            "{label} has {} due now and the entry pays {}; make the bank entry again",
+                            total.normalize(),
+                            amount.normalize()
+                        )));
+                    }
+                    if write {
+                        let items: Vec<(Uuid, Decimal)> = due.iter().map(|x| (x.slip, x.amount)).collect();
+                        crate::payroll::payments::allocate(hc, je_id, &items).await?;
+                    }
+                } else if write {
+                    crate::payroll::payments::unallocate(hc, je_id).await?;
                 }
-                v.insert("paid_amount".into(), money(paid));
-                v.insert("status".into(), json!(if paid == net_pay { "Paid" } else { "Slips Submitted" }));
+                v.insert("paid_amount".into(), money(d(&doc, "paid_amount") + delta));
             }
         }
         if write {
             hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, entity, target, v).await?;
+            if entity == "PayrollEntry" {
+                crate::payroll::payments::run_status(hc, target).await?;
+            }
         }
         Ok(())
     }
