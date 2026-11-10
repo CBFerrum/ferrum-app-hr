@@ -58,6 +58,14 @@ pub fn periods_left(frequency: &str, from: NaiveDate, period_end: NaiveDate) -> 
     n.max(1)
 }
 
+/// Pay periods from the one holding `first` to the one holding `day` (0: the same one).
+pub(crate) fn periods_between(frequency: &str, first: NaiveDate, day: NaiveDate) -> i64 {
+    match frequency {
+        "Weekly" | "Fortnightly" => (day - first).num_days().div_euclid(if frequency == "Weekly" { 7 } else { 14 }),
+        _ => (day.year() * 12 + day.month() as i32 - first.year() * 12 - first.month() as i32) as i64,
+    }
+}
+
 fn round_amount(v: Decimal, whole: bool, precision: u32) -> Decimal {
     if whole {
         let mut r = v.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
@@ -411,12 +419,14 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     set(doc, "payment_days", money(days.payment));
 
     // ── components ──
-    // Additional salary of the period, or for an off-cycle slip of its day and named for one.
-    let mut extra: Extra = sqlx::query_as::<_, (Uuid, Decimal, bool, Decimal)>(
-        "select salary_component, sum(amount), bool_or(coalesce(overwrite_salary_structure_amount, false)), \
-         coalesce(sum(amount) filter (where coalesce(deduct_full_tax, false)), 0) from e_additional_salary \
-         where tenant_id = $1 and employee = $2 and docstatus = 1 and payroll_date between $3 and $4 and coalesce(off_cycle, false) = $5 \
-         group by salary_component",
+    // Additional salary of the period, or for an off-cycle slip of its day and named for one; one
+    // that repeats, when this period is one of its occurrences.
+    let mut extra: Extra = BTreeMap::new();
+    for (c, a, o, f, first, every) in sqlx::query_as::<_, (Uuid, Decimal, bool, bool, NaiveDate, Option<i64>)>(
+        "select salary_component, amount, coalesce(overwrite_salary_structure_amount, false), coalesce(deduct_full_tax, false), payroll_date, \
+         case when coalesce(recurring, false) then greatest(coalesce(every, 1), 1) end from e_additional_salary \
+         where tenant_id = $1 and employee = $2 and docstatus = 1 and coalesce(off_cycle, false) = $5 \
+         and (payroll_date between $3 and $4 or (coalesce(recurring, false) and not $5 and payroll_date <= $4 and (to_date is null or to_date >= $3)))",
     )
     .bind(hc.ctx.tenant)
     .bind(emp_id)
@@ -425,9 +435,17 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     .bind(off_cycle)
     .fetch_all(&mut **hc.tx)
     .await?
-    .into_iter()
-    .map(|(c, a, o, f)| (c, (a, o && !off_cycle, f)))
-    .collect();
+    {
+        if every.is_some_and(|n| periods_between(&frequency, first, end) % n != 0) {
+            continue;
+        }
+        let e = extra.entry(c).or_default();
+        e.0 += a;
+        e.1 |= o && !off_cycle;
+        if f {
+            e.2 += a;
+        }
+    }
     // An off-cycle slip pays none of the structure: its full period is worked out only to project the
     // year's income for tax.
     let (mut out, tax) = if off_cycle {
@@ -912,5 +930,15 @@ mod tests {
         assert_eq!(periods_left("Fortnightly", d("2027-03-01"), d("2027-03-31")), 3);
         assert_eq!(periods_left("Monthly", d("2027-05-01"), d("2027-03-31")), 1);
         assert_eq!(round_amount(Decimal::new(15750, 2), true, 2), Decimal::new(15800, 2));
+    }
+
+    #[test]
+    fn periods_of_pay_that_repeats() {
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        assert_eq!(periods_between("Monthly", d("2026-09-15"), d("2026-09-30")), 0);
+        assert_eq!(periods_between("Monthly", d("2026-09-15"), d("2027-01-31")), 4);
+        assert_eq!(periods_between("Weekly", d("2026-10-05"), d("2026-10-11")), 0);
+        assert_eq!(periods_between("Weekly", d("2026-10-05"), d("2026-10-18")), 1);
+        assert_eq!(periods_between("Fortnightly", d("2026-10-05"), d("2026-11-01")), 1);
     }
 }
