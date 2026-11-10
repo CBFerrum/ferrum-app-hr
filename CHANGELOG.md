@@ -29,16 +29,18 @@ For a company moving its payroll here with nothing to put right by hand.
   again carries them once, a period corrected after its arrears were paid counts what was paid, and
   a revision withdrawn before anything paid it leaves nothing behind. Refused: withdrawing an
   assignment a submitted slip's arrears were worked out from.
-- **Income tax on what is paid once** (additional salary added to the structure's amount, arrears,
-  an off-cycle slip) is the tax it brings to the year, taken in the period it is paid, not spread
-  over the months left; regular pay is spread as before, and a leaver's last slip settles the year
-  as before. The year's tax is the same as when the same pay is given without a backdate.
+- **Income tax.** Arrears raise the year's projected tax as additional salary does, spread over the
+  periods left as before. An additional salary can have its full tax deducted in the period it is
+  paid instead (Deduct its full tax in the period it is paid, off by default); an off-cycle slip
+  always deducts the full tax of what it pays, as no later period counts on it. A leaver's last
+  slip settles the year as before. The year's tax is the same, to the cent, as when the same pay is
+  given without a correction or a backdate.
 - **Off-cycle pay.** A payroll entry or a salary slip can be Off-Cycle: for one day (its start date)
   and, for a run, the employees listed. Its slips pay only Additional Salary marked Off-Cycle with
   that payroll date, and arrears, with the tax they bring; never the period's regular pay, which an
   off-cycle slip does not count twice and does not stand in the way of. Get Employees lists those
   with an off-cycle additional salary on the day or something still owed from a corrected or
-  released slip; add others by hand. They post, pay and appear in the bank file and salary register
+  released slip, or arrears due; others can be added by hand. They post, pay and appear in the bank file and salary register
   as any slip does, and later slips' tax counts them. Refused: a second off-cycle slip for the same
   employee and day; an off-cycle additional salary whose day an off-cycle slip already paid.
 - **Held salaries.** A slip of a payroll run can be held (Hold Salary, with a reason) until it is
@@ -48,6 +50,13 @@ For a company moving its payroll here with nothing to put right by hand.
   run's again), and a full and final statement pays it (and anything else still owed or paid too much
   on their run slips) on a line of its own (Payroll Salary), held or not. A run is Paid once every
   slip of it is.
+- **A run paid outside Ferrum** (by the company's own journal entry, or matched on the bank
+  statement) has Record Payment Made Elsewhere (a date and a reference): each of its slips not yet
+  paid and not held counts as paid by that reference, nothing is posted (the company's own entry
+  is), and the run shows it and is Paid. A correction after it pays or recovers only the difference.
+  Undo Payment Made Elsewhere takes it back while no correction counts what it paid. Refused: Make
+  Bank Entry for what was recorded as paid elsewhere (it says so), and cancelling the run before the
+  record is undone.
 - **The bank entry and the bank file pay the same**: each salary of the run in full, with what is
   still owed on the employee's corrected or released slips of other runs, one transfer each. What a
   bank entry pays each slip is kept (Paid Amount on the slip). Refused: a payroll bank entry for
@@ -57,19 +66,18 @@ Data already there: a payroll entry's bank entries made before are shared out ov
 the order the bank file lists them, once, on upgrade (payroll_erp/sql/001), so their slips are paid
 and a run paid in part has its first slips paid. Slips' arrears tables start empty and their rows'
 Arrears at nothing. Salary slips made by hand outside a payroll entry, and a statement's own slip,
-are paid as before, outside these payments. Additional salary added to a regular slip has its tax
-taken in its month, where it was spread before; later slips settle the year either way. Names of the
-new model, fields, actions and option in Arabic and Hindi (36 each in ui/src/locales/names,
-translated by the model, to be reviewed by native speakers).
+are paid as before, outside these payments. Additional salary keeps its tax spread as before
+(Deduct its full tax… starts off). Make Bank Entry stays on a run once it is paid and says there is
+nothing left to pay. Names of the new model, fields, actions and option in Arabic and Hindi (46 each
+in ui/src/locales/names, translated by the model, to be reviewed by native speakers).
 
-An upgrading workspace checks: a payroll entry paid outside Ferrum (no bank entry made from it) is
-unpaid as far as Ferrum knows, so correcting one of its slips would pay the whole corrected slip
-again with the next bank payment; pay such a difference by hand (cancel and make a slip outside the
-run) or record the old payment first.
+An upgrading workspace that pays salaries outside Ferrum records each run already paid that way
+(Record Payment Made Elsewhere) before correcting any of its slips: until then Ferrum counts them
+unpaid, and a correction would pay the whole corrected slip.
 
 Not yet: a revision that takes effect within a period counts for the whole of it, as a slip made now
 for that period would (no split by days); arrears for a component additional salary replaced in a
-period are not worked out; an off-cycle run cannot carry arrears for an employee nobody adds to it.
+period are not worked out.
 
 ## 0.9.0
 
