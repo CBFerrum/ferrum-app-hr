@@ -1,5 +1,5 @@
 package: hr_erp
-version: 0.3.0
+version: 0.4.0
 label: HR and ERP
 description: Expense claims and employee advances, posted to the ledger and paid through it; the full and final statement of an employee who leaves (last pay, leave encashment, notice, gratuity by the company's rule, claims and advances), settled by one journal entry; the company's employee payable and advance accounts.
 depends: [hr, accounting]
