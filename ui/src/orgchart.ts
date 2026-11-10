@@ -11,6 +11,8 @@ export interface Person {
   email?: string | null;
   phone?: string | null;
   joined?: string | null;
+  /** Their last working day, while they serve notice (to those who see every employee). */
+  leaving?: string | null;
 }
 
 export interface Node {

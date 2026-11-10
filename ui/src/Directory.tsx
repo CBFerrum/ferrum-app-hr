@@ -1,14 +1,15 @@
 // The people of the company: a directory to search and an org chart to open a level at a time. The
 // directory is name, role, department, place and work email for everyone; phone numbers and the
-// joiners and anniversaries of the month only for those who see every employee. The chart opens
+// joiners and anniversaries of the month and who is serving notice only for those who see every
+// employee. The chart opens
 // from the people who answer to nobody, each card with how many answer to it; search jumps to
 // someone and opens the lines above them; the keyboard walks it as a tree.
 
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { api, bootstrap, routeBase, todayIso, t, isolate } from "@ferrum/client";
-import { Button, EmptyState, ErrorState, Spinner, toast, useDebounced, useShellTitle } from "@ferrum/kit";
+import { api, bootstrap, formatDate, routeBase, todayIso, t, isolate } from "@ferrum/client";
+import { Badge, Button, EmptyState, ErrorState, Spinner, toast, useDebounced, useShellTitle } from "@ferrum/kit";
 import { useMetaIndex } from "@ferrum/records";
 import { addDays } from "./dates";
 import { Nav } from "./Nav";
@@ -36,6 +37,7 @@ function Card({ p, detail }: { p: Person; detail: boolean }) {
         {p.branch && <span className="faint">{isolate(p.branch)}</span>}
         {p.email && <a href={`mailto:${p.email}`}>{isolate(p.email)}</a>}
         {detail && p.phone && <a href={`tel:${p.phone}`}>{isolate(p.phone)}</a>}
+        {detail && p.leaving && <Badge tone="amber">{t("Serving notice until {date}", { date: formatDate(p.leaving) })}</Badge>}
       </span>
     </li>
   );

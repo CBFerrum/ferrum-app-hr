@@ -11,6 +11,7 @@ import { People } from "./Directory";
 import { Fix } from "./Fix";
 import { PeopleHome } from "./Home";
 import { Month } from "./Month";
+import { Pay } from "./Pay";
 import { Careers } from "./Openings";
 import { TeamCalendar } from "./Team";
 import type { Item } from "./inbox";
@@ -163,7 +164,7 @@ describe("People", () => {
   const people = [
     { id: "a", name: "Asha Rao", designation: "Director", department: "Management", manager: null, email: "asha@acme.test" },
     { id: "b", name: "Ben Ito", designation: "Support Lead", department: "Support", manager: "a", email: "ben@acme.test", phone: "+919845012345", joined: "2026-10-20" },
-    { id: "c", name: "Cy Lund", designation: "Engineer", department: "Support", manager: "b" },
+    { id: "c", name: "Cy Lund", designation: "Engineer", department: "Support", manager: "b", leaving: "2026-11-30" },
   ];
   const dir = (detail: boolean) => (qc: QueryClient) => qc.setQueryData(["people", "directory"], { people, truncated: false, detail });
 
@@ -172,6 +173,7 @@ describe("People", () => {
     for (const word of ["Asha Rao", "Ben Ito", "Cy Lund", "3 people", "Directory", "Org chart", "Search by name, role or department", "All departments", "asha@acme.test"]) expect(html, word).toContain(word);
     expect(html).not.toContain("+919845012345");
     expect(html).not.toContain("Joined this month");
+    expect(html).not.toContain("Serving notice");
   });
 
   it("gives phones and the month's joiners to those who see every employee", () => {
@@ -179,6 +181,7 @@ describe("People", () => {
     expect(html).toContain("tel:+919845012345");
     expect(html).toContain("Joined this month");
     expect(html).toContain("Work anniversaries");
+    expect(html).toMatch(/Serving notice until (30 Nov|Nov 30)/);
   });
 
   it("draws the org chart from the top, closed, with how many report to each", () => {
@@ -227,6 +230,18 @@ describe("My space", () => {
     expect(html).toMatch(/Thursday,? (1 October|October 1): Present/);
     expect(html).toMatch(/Monday,? (5 October|October 5): Absent/);
     expect(html).toMatch(/Friday,? (2 October|October 2): Gandhi Jayanti/);
+  });
+
+  it("links their payslips to their tax declarations, where they may read them", () => {
+    const seed = (declare: boolean) => (qc: QueryClient) => {
+      qc.setQueryData(["people", "slips", "e1"], [{ id: "s1", start_date: "2026-10-01", end_date: "2026-10-31", net_pay: "50000", _titles: { currency: "INR" } }]);
+      if (declare) qc.setQueryData(["meta"], { ...META, entities: [...META.entities, { name: "EmployeeTaxExemptionDeclaration", label: "Tax Exemption Declaration", label_plural: "Tax Exemption Declarations", kind: "document", submittable: true, permissions: perm("own", "own") }] });
+    };
+    const html = draw(<Pay employee={{ id: "e1" }} />, "/", seed(true));
+    expect(html).toContain("Your payslips");
+    expect(html).toContain('href="/e/EmployeeTaxExemptionDeclaration?employee=e1"');
+    expect(html).toContain("Your tax declarations");
+    expect(draw(<Pay employee={{ id: "e1" }} />, "/", seed(false))).not.toContain("Your tax declarations");
   });
 
   it("asks for attendance to be put right, in words a person would say", () => {
