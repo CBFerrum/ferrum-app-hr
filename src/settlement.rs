@@ -288,15 +288,14 @@ async fn last_pay(hc: &mut HookCtx<'_>, st: &Doc, emp: &Doc, last: NaiveDate) ->
         return Ok(None);
     }
     let structure = get(hc.kernel, hc.ctx, hc.tx, "SalaryStructure", id(&ssa, "salary_structure").unwrap_or_default()).await?;
-    let paid_to: Option<NaiveDate> =
-        sqlx::query_scalar(
-            "select max(end_date) from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus < 2 and end_date < $3 and not coalesce(off_cycle, false)",
-        )
-            .bind(hc.ctx.tenant)
-            .bind(emp_id)
-            .bind(last)
-            .fetch_one(&mut **hc.tx)
-            .await?;
+    let paid_to: Option<NaiveDate> = sqlx::query_scalar(
+        "select max(end_date) from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus < 2 and end_date < $3 and not coalesce(off_cycle, false)",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(emp_id)
+    .bind(last)
+    .fetch_one(&mut **hc.tx)
+    .await?;
     let after_paid = paid_to.map(|p| p + Duration::days(1));
     let (start, end) = match s(&structure, "payroll_frequency") {
         Some(f @ ("Weekly" | "Fortnightly")) => {
