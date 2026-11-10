@@ -56,13 +56,13 @@ Holiday lists, shifts, device check-ins and attendance with late entries, early 
 <td width="50%" valign="top">
 
 ### 🌴 Leave
-Types and policies, allocations, approvals, a leave ledger, encashment and carry forward.
+Types and policies, allocations, approvals, a leave ledger, encashment (while employed and on leaving) and carry forward.
 
 </td>
 <td width="50%" valign="top">
 
 ### 🤝 Recruitment to separation
-Openings, applicants, interviews and offers; onboarding, appraisals, promotions, transfers and exits, a leaver's sign-in ended on their last day, and their full and final statement settled by one journal entry.
+Openings, applicants, interviews and offers; onboarding, appraisals, promotions, transfers and exits with their notice served (at work until the last working day, a shortfall recovered, paid in lieu or waived), a leaver's sign-in ended after it, and their full and final statement (last pay, leave encashed, notice, gratuity by the company's rule, claims and advances) settled by one journal entry.
 
 </td>
 </tr>
@@ -70,7 +70,7 @@ Openings, applicants, interviews and offers; onboarding, appraisals, promotions,
 <td width="50%" valign="top">
 
 ### 💸 Payroll
-Components with formulas (CEL), structures, tax slabs with a rebate, cesses and surcharges, and declarations; slips, accrual and bank payment.
+Components with formulas (CEL), employer contributions, structures, tax slabs with a rebate, cesses and surcharges, declarations and opening year-to-date figures for a company moving here mid-year; slips, a leaver's tax settled on their last, accrual and bank payment.
 
 </td>
 <td width="50%" valign="top">
@@ -150,7 +150,7 @@ with them under the same rules as people.
 
 ## Data model
 
-The main records and how they connect (57 entities in all; `packages/` has every field).
+The main records and how they connect (58 entities in all; `packages/` has every field).
 
 ```mermaid
 erDiagram
@@ -207,9 +207,9 @@ erDiagram
 | **HR User** |  | 5 |
 | **Employee** |  | 3 |
 | **Expense Approver** | Sanctions, approves or rejects the expense claims routed to them. | 3 |
-| **Payroll Manager** | Salary structures, payroll runs and payroll reports, including bank details. | 19 |
-| **HR Manager** |  | 11 |
-| **Employee** |  | 5 |
+| **Payroll Manager** | Salary structures, payroll runs and payroll reports, including bank details. | 20 |
+| **HR Manager** |  | 12 |
+| **Employee** |  | 6 |
 | **Payroll Manager** |  | 3 |
 
 <details>
@@ -304,6 +304,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.9.0** | Employer contributions; opening year-to-date figures and a previous employer's; notice served before leaving; a full and final statement that gathers the last pay, leave, notice and gratuity. |
 | **0.8.14** | Its reports' names in Arabic and Hindi. |
 | **0.8.13** | Its names in Arabic and Hindi; the last English sentences translated. |
 | **0.8.12** | Sentences built in code are words too, in Arabic and Hindi. |

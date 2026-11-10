@@ -2,12 +2,15 @@
   label: Full and Final Line
   kind: child
   fields:
-    - {name: component, type: data, required: true, max_length: 140, in_list: true, description: "What it is: an expense claim, an advance, gratuity, notice pay…"}
-    - {name: reference_type, type: select, options: [Expense Claim, Employee Advance], read_only: true, in_list: true}
+    - {name: component, type: data, required: true, max_length: 140, in_list: true, description: "What it is: the last pay, leave encashed, notice pay or recovery, gratuity, an expense claim, an advance…"}
+    - {name: reference_type, type: select, options: [Expense Claim, Employee Advance, Salary Slip, Leave Encashment, Notice Pay, Notice Recovery, Gratuity], read_only: true, in_list: true}
     - {name: reference, type: data, read_only: true, hidden: true, label: Reference Id}
     - {name: reference_number, type: data, read_only: true, in_list: true, label: Reference}
     - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}
+    - {name: quantity, type: decimal, read_only: true, label: Days or Years, description: "Days of leave encashed or notice short, or years of service counted for gratuity"}
     - {name: amount, type: currency, currency: parent.currency, required: true, min: "0.01", in_list: true}
+    - {name: gathered_amount, type: currency, currency: parent.currency, read_only: true, label: Gathered, description: "What Get Outstanding Amounts worked out; another amount needs a reason"}
+    - {name: reason, type: data, max_length: 500, description: "Why the amount differs from what was gathered"}
     - {name: remark, type: data, max_length: 500}
 
 - name: FullAndFinalStatement
@@ -21,7 +24,7 @@
   title_field: employee_name
   owner_fields: [employee_user]
   numbering: {template: "HR-FNF-{YYYY}-{seq:4}", date_field: transaction_date}
-  description: "What is owed each way when an employee leaves: their open expense claims and anything else paid to them, their unsettled advances and anything else recovered. One journal entry settles it all and pays the difference."
+  description: "What is owed each way when an employee leaves, gathered from their records: pay earned up to the last working day and not yet paid (a salary slip of its own, which settles the year's income tax), their encashable leave as of that day, notice short (recovered from them or paid in lieu), gratuity by the company's rule, their open expense claims and unsettled advances. Each line can be adjusted, with a reason. One journal entry settles it all and pays the difference."
   fields:
     - {name: employee, type: link, to: Employee, required: true, in_filter: true}
     - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
@@ -31,8 +34,8 @@
     - {name: separation, type: link, to: EmployeeSeparation, required: true, description: "The employee's submitted separation"}
     - {name: relieving_date, type: date, fetch_from: separation.relieving_date, read_only: true, in_list: true}
     - {name: transaction_date, type: date, required: true, default_expr: today}
-    - {name: payables, type: table, of: FullAndFinalLine, description: "Paid to them: open expense claims, and anything added, such as gratuity or notice pay"}
-    - {name: receivables, type: table, of: FullAndFinalLine, description: "Recovered from them: advances not yet settled, and anything added, such as notice not served"}
+    - {name: payables, type: table, of: FullAndFinalLine, description: "Paid to them: the last pay, leave encashed, notice pay, gratuity, open expense claims, and anything added"}
+    - {name: receivables, type: table, of: FullAndFinalLine, description: "Recovered from them: notice not served, advances not yet settled, and anything added"}
     - {name: total_payable, type: currency, currency: currency, read_only: true, no_copy: true}
     - {name: total_receivable, type: currency, currency: currency, read_only: true, no_copy: true}
     - {name: net_payable, type: currency, currency: currency, read_only: true, no_copy: true, in_list: true, description: "Paid to them when above zero; owed by them when below"}

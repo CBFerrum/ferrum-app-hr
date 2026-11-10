@@ -1,5 +1,5 @@
-// What is theirs on paper: the payslips HR has made for them, the documents kept on their record,
-// and the training they have passed and until when it counts. Each reads only what their own rights
+// What is theirs on paper: the payslips HR has made for them and their tax declarations, the
+// documents kept on their record, and the training they have passed and until when it counts. Each reads only what their own rights
 // reach; a part they cannot read is left out, not shown as broken.
 
 import { useQuery } from "@tanstack/react-query";
@@ -19,7 +19,7 @@ interface Slip {
   gross_pay?: string;
 }
 
-function Payslips({ employee }: { employee: Employee }) {
+function Payslips({ employee, declarations }: { employee: Employee; declarations: boolean }) {
   const q = useQuery({
     queryKey: ["people", "slips", employee.id],
     queryFn: ({ signal }) =>
@@ -49,6 +49,12 @@ function Payslips({ employee }: { employee: Employee }) {
               </li>
             ))}
           </ul>
+        )}
+        {declarations && (
+          <p>
+            <Link to={`/e/EmployeeTaxExemptionDeclaration?employee=${employee.id}`}>{tr("Your tax declarations")}</Link>
+            <span className="faint"> {tr("what you invest or spend that lowers the tax on your pay")}</span>
+          </p>
         )}
       </div>
     </section>
@@ -127,10 +133,11 @@ function Documents({ employee, training }: { employee: Employee; training: boole
 
 export function Pay({ employee }: { employee: Employee }) {
   const slips = useCanRead("SalarySlip");
+  const declarations = useCanRead("EmployeeTaxExemptionDeclaration");
   const training = useCanRead("TrainingRecord");
   return (
     <>
-      {slips && <Payslips employee={employee} />}
+      {slips && <Payslips employee={employee} declarations={!!declarations} />}
       <Documents employee={employee} training={!!training} />
     </>
   );

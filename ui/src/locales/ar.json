@@ -261,5 +261,8 @@
   "{waiting} requests are waiting for your decision": "{waiting} طلبات تنتظر قرارك",
   "{waiting} waiting": "{waiting} بالانتظار",
   "· early": "· مبكرًا",
-  "· late": "· متأخرًا"
+  "· late": "· متأخرًا",
+  "Your tax declarations": "إقراراتك الضريبية",
+  "what you invest or spend that lowers the tax on your pay": "ما تستثمره أو تنفقه فيخفّض الضريبة على راتبك",
+  "Serving notice until {date}": "في فترة الإشعار حتى {date}"
 }

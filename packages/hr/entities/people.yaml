@@ -74,7 +74,8 @@
     - {name: gender, type: select, options: [Male, Female, Other, Prefer not to say], in_filter: true}
     - {name: date_of_birth, type: date, perm_group: personal}
     - {name: date_of_joining, type: date, required: true, in_list: true}
-    - {name: relieving_date, type: date}
+    - {name: relieving_date, type: date, description: "The last working day: a submitted separation sets it, and the employee is Left after it"}
+    - {name: notice_period_days, type: int, min: "0", label: Notice Period (Days), description: "Notice due under their terms; the company's when empty"}
     - {name: department, type: link, to: Department, in_list: true, in_filter: true}
     - {name: designation, type: link, to: Designation, in_list: true, in_filter: true}
     - {name: grade, type: link, to: EmployeeGrade, in_filter: true}
@@ -113,7 +114,7 @@
     - {name: left_needs_relieving_date, check: "doc.status != 'Left' || doc.relieving_date != null", message: "Set the relieving date of an employee who left"}
   form:
     - {label: Employee, fields: [first_name, middle_name, last_name, employee_name, company, status, user, gender, date_of_birth]}
-    - {label: Employment, fields: [date_of_joining, relieving_date, department, designation, grade, branch, employment_type, reports_to, leave_approver, expense_approver]}
+    - {label: Employment, fields: [date_of_joining, relieving_date, notice_period_days, department, designation, grade, branch, employment_type, reports_to, leave_approver, expense_approver]}
     - {label: Attendance and Leave, fields: [holiday_list, default_shift, leave_policy, attendance_device_id]}
     - {label: Contact, collapsible: true, fields: [company_email, personal_email, cell_number, current_address, permanent_address]}
     - {label: Emergency Contact, collapsible: true, fields: [emergency_contact_name, emergency_phone, emergency_relation]}
@@ -166,15 +167,19 @@
   title_field: employee_name
   owner_fields: [employee_user]
   numbering: {template: "HR-SEP-{YYYY}-{seq:4}"}
-  description: "An employee leaving, with its exit checklist. On submit the employee is Left from its relieving date, when their sign-in ends; cancelled, they are Active again."
+  description: "An employee leaving, with its exit checklist and their notice: the day it was given, the days due and the last working day. Submitted, the employee keeps working (paid, accruing leave, on the calendars and in the directory) until the last working day and is Left after it, when their sign-in ends; cancelled, they stay. Notice not served is recovered from them, paid in lieu by the employer, or waived."
   fields:
     - {name: employee, type: link, to: Employee, required: true, in_filter: true}
     - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
     - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
     - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
-    - {name: resignation_letter_date, type: date}
-    - {name: relieving_date, type: date, in_list: true}
-    - {name: reason, type: select, options: [Resignation, Termination, Retirement, Contract End, Other], in_filter: true}
+    - {name: reason, type: select, options: [Resignation, Termination, Retirement, Contract End, Death, Other], in_filter: true}
+    - {name: resignation_letter_date, type: date, label: Notice Given On, description: "The day the employee resigned or was given notice"}
+    - {name: notice_period_days, type: int, min: "0", label: Notice Due (Days), description: "From the employee's notice period, else the company's; none on a death, retirement or contract end"}
+    - {name: relieving_date, type: date, in_list: true, label: Last Working Day}
+    - {name: notice_served_days, type: int, read_only: true, label: Notice Served (Days), description: "From the day notice was given to the last working day"}
+    - {name: notice_shortfall_days, type: int, read_only: true, label: Notice Short (Days)}
+    - {name: shortfall_settlement, type: select, options: [Recover from Employee, Pay in Lieu of Notice, Waive], visible_if: "doc.notice_shortfall_days > 0", label: Notice Short, description: "Recovered when the employee leaves early; paid in lieu when the employer ends it early; or waived. The full and final statement carries it"}
     - {name: exit_interview, type: text}
     - {name: status, type: select, options: [Pending, In Process, Completed], default: Pending, read_only: true, in_list: true, in_filter: true}
     - {name: activities, type: table, of: EmployeeActivity}
