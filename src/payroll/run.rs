@@ -96,9 +96,9 @@ pub(crate) async fn post_accrual(
                 let (account, expense) = component_account(hc, &mut accounts, id(&r, "salary_component").unwrap_or_default(), company_id).await?;
                 entry.lines.push(Line::new(account, sign * side * d(&r, "amount"), &co.currency_code).cost_center(cc));
                 if table == "employer_contributions" {
-                    entry.lines.push(
-                        Line::new(expense, sign * d(&r, "amount"), &co.currency_code).cost_center(cc).remarks(format!("Employer's share for {name}")),
-                    );
+                    entry
+                        .lines
+                        .push(Line::new(expense, sign * d(&r, "amount"), &co.currency_code).cost_center(cc).remarks(format!("Employer's share for {name}")));
                 }
             }
         }
@@ -212,8 +212,11 @@ impl RunHook {
         .bind(me)
         .fetch_all(&mut **hc.tx)
         .await?;
-        let found: Vec<Uuid> = if b(doc, "off_cycle") { off_cycle } else { sqlx::query_scalar(
-            "select e.id from e_employee e where e.tenant_id = $1 and e.company = $2 and e.date_of_joining <= $4 \
+        let found: Vec<Uuid> = if b(doc, "off_cycle") {
+            off_cycle
+        } else {
+            sqlx::query_scalar(
+                "select e.id from e_employee e where e.tenant_id = $1 and e.company = $2 and e.date_of_joining <= $4 \
              and (e.relieving_date is null or e.relieving_date >= $3) and e.status in ('Active', 'Left') \
              and ($5::uuid is null or e.department = $5) and ($6::uuid is null or e.branch = $6) and ($7::uuid is null or e.designation = $7) \
              and (select st.payroll_frequency from e_salary_structure_assignment a \
@@ -223,18 +226,19 @@ impl RunHook {
              and not exists (select 1 from e_salary_slip ss where ss.tenant_id = e.tenant_id and ss.employee = e.id and ss.docstatus < 2 \
                   and not coalesce(ss.off_cycle, false) and ss.start_date <= $4 and ss.end_date >= $3 and ss.payroll_entry is distinct from $9) \
              order by e.employee_name, e.id",
-        )
-        .bind(hc.ctx.tenant)
-        .bind(id(doc, "company"))
-        .bind(start)
-        .bind(end)
-        .bind(id(doc, "department"))
-        .bind(id(doc, "branch"))
-        .bind(id(doc, "designation"))
-        .bind(s(doc, "payroll_frequency").unwrap_or("Monthly"))
-        .bind(me)
-        .fetch_all(&mut **hc.tx)
-        .await? };
+            )
+            .bind(hc.ctx.tenant)
+            .bind(id(doc, "company"))
+            .bind(start)
+            .bind(end)
+            .bind(id(doc, "department"))
+            .bind(id(doc, "branch"))
+            .bind(id(doc, "designation"))
+            .bind(s(doc, "payroll_frequency").unwrap_or("Monthly"))
+            .bind(me)
+            .fetch_all(&mut **hc.tx)
+            .await?
+        };
         let list: Vec<Value> = found.iter().map(|e| json!({"employee": e.to_string()})).collect();
         let mut patch = Doc::new();
         patch.insert("employees".into(), Value::Array(list));
@@ -292,7 +296,8 @@ impl RunHook {
             let cid = id(doc, "company").unwrap_or_default();
             let payable = id(doc, "payroll_payable_account").ok_or_else(|| Error::field("payroll_payable_account", "is required"))?;
             let on = opt_date(doc, "posting_date").unwrap_or_else(today);
-            post_accrual(hc, cid, ("PayrollEntry", me, s(doc, "number").map(str::to_string)), on, &slips, payable, id(doc, "cost_center"), Decimal::ONE).await?;
+            post_accrual(hc, cid, ("PayrollEntry", me, s(doc, "number").map(str::to_string)), on, &slips, payable, id(doc, "cost_center"), Decimal::ONE)
+                .await?;
         }
         let mut flags = Doc::new();
         flags.insert("salary_slips_submitted".into(), json!(true));

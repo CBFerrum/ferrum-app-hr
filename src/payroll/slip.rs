@@ -334,7 +334,8 @@ async fn arrears(hc: &mut HookCtx<'_>, emp: &Doc, co: &Company, me: Option<Uuid>
             *paid.entry(comp).or_default() += amount - additional - arrears;
         }
         let before_here = arrears_paid(hc, emp_id, me, start, end).await?;
-        let comps: Vec<Uuid> = due.keys().chain(paid.keys()).chain(before_here.keys()).copied().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        let comps: Vec<Uuid> =
+            due.keys().chain(paid.keys()).chain(before_here.keys()).copied().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
         for comp in comps.into_iter().filter(|c| !replaced.contains(c)) {
             let due_now = due.get(&comp).map(|x| x.1).unwrap_or_default();
             let paid_for = paid.get(&comp).copied().unwrap_or_default() + before_here.get(&comp).copied().unwrap_or_default();
@@ -442,8 +443,7 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     let sum = |rows: Option<&Vec<Row>>, f: &dyn Fn(&Row) -> Decimal, keep: &dyn Fn(&Row) -> bool| -> Decimal {
         rows.map_or(Decimal::ZERO, |rows| rows.iter().filter(|r| keep(r)).map(f).sum())
     };
-    let taxable_full =
-        sum(out.get("earnings"), &|r| r.default_amount, &taxable_earning) - sum(out.get("deductions"), &|r| r.default_amount, &exempt_deduction);
+    let taxable_full = sum(out.get("earnings"), &|r| r.default_amount, &taxable_earning) - sum(out.get("deductions"), &|r| r.default_amount, &exempt_deduction);
     if off_cycle {
         out.clear();
     }
@@ -497,11 +497,8 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     let deductions = sum(Some(&ded), &|r| r.amount, &counted);
     // What an earlier slip of a payroll run paid too much (corrected after the bank paid it) is taken
     // back from this pay, as far as it goes.
-    let excess: Decimal = if id(doc, "payroll_entry").is_some() {
-        super::payments::excess(hc, emp_id, me).await?.iter().map(|e| e.1).sum()
-    } else {
-        Decimal::ZERO
-    };
+    let excess: Decimal =
+        if id(doc, "payroll_entry").is_some() { super::payments::excess(hc, emp_id, me).await?.iter().map(|e| e.1).sum() } else { Decimal::ZERO };
     let recovery = excess.min((gross - deductions).max(Decimal::ZERO));
     let net = gross - deductions - recovery;
     if net < Decimal::ZERO {

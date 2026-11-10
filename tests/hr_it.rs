@@ -2522,7 +2522,10 @@ async fn corrections_scenario() {
         assert_eq!(dec(&fixed[f]), dec(&s_dev[f]), "{f}");
     }
     // Nobody else is touched; the run's row for Ben is the correction.
-    assert_eq!((t.get("SalarySlip", uid(&s_asha)).await["version"].clone(), net(&t.get("SalarySlip", uid(&s_asha)).await)), (s_asha["version"].clone(), net(&s_asha)));
+    assert_eq!(
+        (t.get("SalarySlip", uid(&s_asha)).await["version"].clone(), net(&t.get("SalarySlip", uid(&s_asha)).await)),
+        (s_asha["version"].clone(), net(&s_asha))
+    );
     let run = t.get("PayrollEntry", sep).await;
     let row_ben = run["employees"].as_array().unwrap().iter().find(|r| r["employee"] == ben["id"]).unwrap().clone();
     assert_eq!((row_ben["salary_slip"].clone(), run["status"].clone()), (fixed["id"].clone(), json!("Slips Submitted")));
@@ -2759,7 +2762,12 @@ async fn arrears_scenario() {
         s[table].as_array().unwrap().iter().find(|r| r["abbr"] == json!(abbr)).map(|r| dec(&r["amount"])).unwrap_or_default()
     };
     let arrears = |s: &Doc| -> Vec<(String, String, Decimal)> {
-        s["arrears"].as_array().unwrap().iter().map(|r| (r["period_start"].as_str().unwrap().to_string(), r["abbr"].as_str().unwrap().to_string(), dec(&r["amount"]))).collect()
+        s["arrears"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["period_start"].as_str().unwrap().to_string(), r["abbr"].as_str().unwrap().to_string(), dec(&r["amount"])))
+            .collect()
     };
     let tax = |s: &Doc| amount(s, "deductions", "IT");
 
@@ -2805,7 +2813,10 @@ async fn arrears_scenario() {
     again.sort();
     assert_eq!(again, want);
     assert_eq!(t.gl("Salaries").await, salaries + n("30000") + n("1800"), "posted as pay, and the employer's share as its cost");
-    assert_eq!(t.gl("Employer PF Payable").await, -(year_raj.iter().chain(year_tom.iter()).map(|s| amount(s, "employer_contributions", "EPFX")).sum::<Decimal>() + n("1800")));
+    assert_eq!(
+        t.gl("Employer PF Payable").await,
+        -(year_raj.iter().chain(year_tom.iter()).map(|s| amount(s, "employer_contributions", "EPFX")).sum::<Decimal>() + n("1800"))
+    );
     // Taxed when paid: the tax the 28,200 more taxable brings to the year.
     assert_eq!(dec(&paid_off["taxable_earnings"]), n("28200"));
     assert!(tax(&paid_off) > Decimal::ZERO);
