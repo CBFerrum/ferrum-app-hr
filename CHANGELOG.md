@@ -23,7 +23,11 @@ For a company moving its HR and payroll here, and its leavers.
   the year's whole income with credit for the tax already paid. They can be imported like other
   records (Payroll Manager). Refused: figures reaching into months a slip submitted here already
   pays, a second set for the same year, a day outside the payroll year, and a slip starting on or
-  before their last day (so nothing counts twice).
+  before their last day (so nothing counts twice). The Income Tax Deductions report shows them on
+  columns of their own (taxable income and tax before here, a previous employer's income and tax)
+  and adds them into each employee's Year's Taxable Income and Year's Income Tax, which for a payroll
+  year are what the last slip's income tax counted; an employee with opening figures and no slip in
+  the period is listed too.
 - **A leaver's tax.** The slip of the period an employee leaves in (their relieving date within it)
   settles the year: the tax on what the year actually paid them, less what was deducted, instead of
   spreading the year's projection over months they will not work. The slip says so (Final
@@ -75,7 +79,7 @@ employer contribution component an account for each company.
 
 Not yet: a leave allocation granted for the whole year is not prorated when someone leaves part-way;
 tax on leave encashment and gratuity paid through the statement (they are not on a slip, so not
-taxed; India exempts both within limits); the income tax report does not add opening figures.
+taxed; India exempts both within limits).
 
 ## 0.8.14
 

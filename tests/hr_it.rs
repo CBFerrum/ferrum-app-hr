@@ -2066,6 +2066,19 @@ async fn opening_scenario() {
     .await;
     assert_eq!(tax(&slip(&chen, 6).await), n("4583.33"));
 
+    // The year's income tax report counts the opening figures, on columns of their own: Ben's year
+    // agrees to the cent with Asha's, made entirely here, and Chen's shows both employers.
+    let year = t.report(&pm, "income_tax_deductions", &[("from_date", "2026-04-01"), ("to_date", "2027-03-31")]).await.expect("tax report");
+    let (a, b, c) = (row(&year, "employee_name", "Asha Test"), row(&year, "employee_name", "Ben Test"), row(&year, "employee_name", "Chen Test"));
+    let year_taxable: Decimal = hers.iter().map(|s| dec(&s["taxable_earnings"])).sum();
+    assert_eq!((dec(&a["total_taxable"]), dec(&a["total_tax"]), a["slips"].clone()), (year_taxable, year_asha, json!(12)));
+    assert_eq!((dec(&b["opening_taxable"]), dec(&b["opening_tax"]), b["slips"].clone()), (to_december, tax_to_december, json!(3)));
+    assert_eq!((dec(&b["total_taxable"]), dec(&b["total_tax"])), (year_taxable, year_asha), "the same year, to the cent");
+    assert_eq!((dec(&c["previous_employer_income"]), dec(&c["previous_employer_tax"])), (n("600000"), n("25000")));
+    assert_eq!((dec(&c["taxable_earnings"]), dec(&c["income_tax"])), (n("100000"), n("4583.33")));
+    assert_eq!((dec(&c["total_taxable"]), dec(&c["total_tax"])), (n("700000"), n("29583.33")), "both employers");
+    assert_eq!(dec(&year["totals"]["total_tax"]), dec(&a["total_tax"]) + dec(&b["total_tax"]) + dec(&c["total_tax"]));
+
     // Dia leaves on 15 August, paid a bonus of 800,000 with her last pay: her last slip taxes the
     // year she actually had (400,000 to July, 48,387.10 and the bonus in August, less 75,000:
     // 57,338.71) less the 17,500 deducted, instead of spreading it over months she will not work.
