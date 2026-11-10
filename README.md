@@ -70,7 +70,7 @@ Openings, applicants, interviews and offers; onboarding, appraisals, promotions,
 <td width="50%" valign="top">
 
 ### 💸 Payroll
-Components with formulas (CEL), employer contributions, structures, tax slabs with a rebate, cesses and surcharges, declarations and opening year-to-date figures for a company moving here mid-year; slips, a leaver's tax settled on their last, accrual and bank payment; one slip corrected after the run is posted or paid (the difference owed or recovered from the next slip), arrears for a revision backdated into months already paid, off-cycle runs for a bonus or what is still owed, and salaries held and released.
+Components with formulas (CEL), employer contributions, structures, tax slabs with a rebate, cesses and surcharges, declarations and opening year-to-date figures for a company moving here mid-year; slips, a leaver's tax settled on their last, accrual and bank payment; one slip corrected after the run is posted or paid (the difference owed or recovered from the next slip), arrears for a revision backdated into months already paid, off-cycle runs for a bonus, arrears or what is still owed, salaries held and released, and runs paid outside Ferrum recorded as paid.
 
 </td>
 <td width="50%" valign="top">
