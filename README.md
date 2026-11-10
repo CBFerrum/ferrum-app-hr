@@ -25,7 +25,7 @@ entry. Employees get self-service access to what is theirs.
 
 | At a glance | |
 |---|---|
-| 📦 Version | `0.3.4` |
+| 📦 Version | `0.10.0` |
 | 🧱 Platform | Ferrum `>=0.3.2, <0.4` |
 | 🔗 Requires | nothing else |
 | 🖥️ Interface | its own, at `/people/` |
@@ -70,7 +70,7 @@ Openings, applicants, interviews and offers; onboarding, appraisals, promotions,
 <td width="50%" valign="top">
 
 ### 💸 Payroll
-Components with formulas (CEL), employer contributions, structures, tax slabs with a rebate, cesses and surcharges, declarations and opening year-to-date figures for a company moving here mid-year; slips, a leaver's tax settled on their last, accrual and bank payment.
+Components with formulas (CEL), employer contributions, structures, tax slabs with a rebate, cesses and surcharges, declarations and opening year-to-date figures for a company moving here mid-year; slips, a leaver's tax settled on their last, accrual and bank payment; one slip corrected after the run is posted or paid (the difference owed or recovered from the next slip), arrears for a revision backdated into months already paid, off-cycle runs for a bonus or what is still owed, and salaries held and released.
 
 </td>
 <td width="50%" valign="top">
@@ -104,9 +104,12 @@ flowchart LR
     SS --> PE["🗂️ Payroll entry<br/><small>period · branch · department</small>"]
     PE -->|creates| SL["🧾 Salary slips"]
     SL -->|submit| AC["📒 One balanced accrual<br/><small>journal entry</small>"]
-    AC -->|pay| BK["🏦 Bank entry"]
+    AC -->|pay| BK["🏦 Bank entry + bank file<br/><small>each salary in full · held ones left out</small>"]
+    SL -.->|correct one| CS["🧾 Corrected slip<br/><small>own journals · difference owed or recovered</small>"]
+    CS -.->|carried| BK
+    OC["⚡ Off-cycle run<br/><small>bonus · arrears · what is owed</small>"] --> BK
     classDef app fill:#0e7490,color:#fff,stroke:#0e7490
-    class PE,SL app
+    class PE,SL,CS,OC app
 ```
 
 ### Inside Ferrum
@@ -150,7 +153,7 @@ with them under the same rules as people.
 
 ## Data model
 
-The main records and how they connect (58 entities in all; `packages/` has every field).
+The main records and how they connect (59 entities in all; `packages/` has every field).
 
 ```mermaid
 erDiagram
@@ -304,6 +307,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.10.0** | One slip of a posted or paid run corrected; arrears for a backdated revision; off-cycle runs; salaries held and released. |
 | **0.9.0** | Employer contributions; opening year-to-date figures and a previous employer's; notice served before leaving; a full and final statement that gathers the last pay, leave, notice and gratuity. |
 | **0.8.14** | Its reports' names in Arabic and Hindi. |
 | **0.8.13** | Its names in Arabic and Hindi; the last English sentences translated. |

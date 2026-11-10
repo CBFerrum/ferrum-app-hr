@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.10.0
+
+For a company moving its payroll here with nothing to put right by hand.
+
+- **One person's pay corrected after the run is posted.** A slip of a payroll entry whose slips are
+  submitted has Correct: the slip is cancelled with its share of the run's accrual taken back (an
+  entry of its own, today), and a draft for the same period is made in its place, for the person to
+  put right (attendance, leave, additional salary of that period) and submit. Submitted, it posts its
+  own accrual, by the employee's cost centre as the run's, with its employer contributions; the
+  cancelled slip stays, Replaced By the correction, which Replaces it, and the run's row shows the
+  correction. Nobody else's slip or posting is touched. When the run was already paid, nothing sent
+  to the bank is undone: the correction takes over what the bank paid of the slip it replaces, so a
+  higher one leaves the difference owed (paid with the next bank payment that lists the employee, or
+  an off-cycle one) and a lower one leaves an excess, taken back from their next slip of a payroll
+  run as Excess Pay Recovered, never more than that pay; what it cannot take is shown as Still to
+  Recover and taken from later pay. The payroll payable account holds what the slips still owe at
+  every step. Later slips' income tax counts the corrected slip, not the cancelled one. Refused:
+  cancelling such a slip directly (Correct it, or cancel the payroll entry), correcting a slip
+  already corrected.
+- **Arrears.** When a salary assignment takes effect in periods already paid (a revision entered
+  late), the employee's next slip works each such period out again as it was paid (its working and
+  payment days, leave without pay, absences and proration, every component that depends on another),
+  with the assignment in force now, and pays each component's difference as arrears; a lower one is
+  taken back the same way. The breakdown is kept on the slip (Arrears: period, component, as paid,
+  due now) and each component's total is in its row (Arrears). Arrears are worked out from what is
+  submitted every time a slip is saved, so the same revision and period never pay twice, a slip made
+  again carries them once, a period corrected after its arrears were paid counts what was paid, and
+  a revision withdrawn before anything paid it leaves nothing behind. Refused: withdrawing an
+  assignment a submitted slip's arrears were worked out from.
+- **Income tax on what is paid once** (additional salary added to the structure's amount, arrears,
+  an off-cycle slip) is the tax it brings to the year, taken in the period it is paid, not spread
+  over the months left; regular pay is spread as before, and a leaver's last slip settles the year
+  as before. The year's tax is the same as when the same pay is given without a backdate.
+- **Off-cycle pay.** A payroll entry or a salary slip can be Off-Cycle: for one day (its start date)
+  and, for a run, the employees listed. Its slips pay only Additional Salary marked Off-Cycle with
+  that payroll date, and arrears, with the tax they bring; never the period's regular pay, which an
+  off-cycle slip does not count twice and does not stand in the way of. Get Employees lists those
+  with an off-cycle additional salary on the day or something still owed from a corrected or
+  released slip; add others by hand. They post, pay and appear in the bank file and salary register
+  as any slip does, and later slips' tax counts them. Refused: a second off-cycle slip for the same
+  employee and day; an off-cycle additional salary whose day an off-cycle slip already paid.
+- **Held salaries.** A slip of a payroll run can be held (Hold Salary, with a reason) until it is
+  paid: it is computed and accrued as everyone's, shown as held on the slip and the run's row, and
+  left out of the bank entry, the bank file and the bank remittance report. Release Salary pays it
+  with the next bank payment that lists the employee (the next run's, an off-cycle one, or its own
+  run's again), and a full and final statement pays it (and anything else still owed or paid too much
+  on their run slips) on a line of its own (Payroll Salary), held or not. A run is Paid once every
+  slip of it is.
+- **The bank entry and the bank file pay the same**: each salary of the run in full, with what is
+  still owed on the employee's corrected or released slips of other runs, one transfer each. What a
+  bank entry pays each slip is kept (Paid Amount on the slip). Refused: a payroll bank entry for
+  another amount than what is due, and submitting one made before what is due changed (make it again).
+
+Data already there: a payroll entry's bank entries made before are shared out over its slips in
+the order the bank file lists them, once, on upgrade (payroll_erp/sql/001), so their slips are paid
+and a run paid in part has its first slips paid. Slips' arrears tables start empty and their rows'
+Arrears at nothing. Salary slips made by hand outside a payroll entry, and a statement's own slip,
+are paid as before, outside these payments. Additional salary added to a regular slip has its tax
+taken in its month, where it was spread before; later slips settle the year either way. Names of the
+new model, fields, actions and option in Arabic and Hindi (36 each in ui/src/locales/names,
+translated by the model, to be reviewed by native speakers).
+
+An upgrading workspace checks: a payroll entry paid outside Ferrum (no bank entry made from it) is
+unpaid as far as Ferrum knows, so correcting one of its slips would pay the whole corrected slip
+again with the next bank payment; pay such a difference by hand (cancel and make a slip outside the
+run) or record the old payment first.
+
+Not yet: a revision that takes effect within a period counts for the whole of it, as a slip made now
+for that period would (no split by days); arrears for a component additional salary replaced in a
+period are not worked out; an off-cycle run cannot carry arrears for an employee nobody adds to it.
+
 ## 0.9.0
 
 For a company moving its HR and payroll here, and its leavers.

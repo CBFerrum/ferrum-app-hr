@@ -1,7 +1,7 @@
 package: payroll
-version: 0.3.0
+version: 0.4.0
 label: Payroll
-description: Salary components with CEL formulas (earnings, deductions and employer contributions), salary structures and assignments, payroll periods and progressive income tax with exemption declarations and opening year-to-date figures, salary slips prorated by payment days, payroll runs, additional salary and leave encashment.
+description: Salary components with CEL formulas (earnings, deductions and employer contributions), salary structures and assignments, payroll periods and progressive income tax with exemption declarations and opening year-to-date figures, salary slips prorated by payment days with arrears for revisions backdated into periods already paid, payroll runs (regular and off-cycle) whose slips can be corrected one by one and held, additional salary and leave encashment.
 depends: [hr]
 field_prefix: pay_
 
