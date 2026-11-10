@@ -268,26 +268,79 @@ impl DocHook for ChecklistHook {
     }
 }
 
-/// A separation submitted makes its employee one who leaves on its relieving date (their sign-in
-/// ends that day, [`offboard_leavers`]); cancelled, they are back. A sign-in already ended stays
-/// ended: turning it on again is an administrator's.
+/// Reasons a separation needs no notice.
+const NO_NOTICE: &[&str] = &["Death", "Retirement", "Contract End"];
+
+/// A separation: the notice due (the employee's notice period, else the company's; none on a
+/// death, retirement or contract end), what the last working day leaves of it served, and how a
+/// shortfall is settled. Submitted, its last working day becomes the employee's relieving date:
+/// they stay at work (Active: paid, accruing leave, on the calendars and in the directory) until
+/// it has passed, when the upkeep makes them Left and ends their sign-in ([`offboard_leavers`]),
+/// at once when it has passed already. Cancelled (withdrawn), they stay. A sign-in already ended
+/// stays ended: turning it on again is an administrator's.
 struct SeparationHook;
 
 #[async_trait]
 impl DocHook for SeparationHook {
+    async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        if doc.get("docstatus").and_then(Value::as_i64).unwrap_or(0) != 0 {
+            return Ok(());
+        }
+        let Some(emp) = lookup(hc, "Employee", id(doc, "employee")).await? else { return Ok(()) };
+        let reason = s(doc, "reason").unwrap_or_default().to_string();
+        if reason == "Death" {
+            set(doc, "notice_period_days", 0);
+        } else if doc.get("notice_period_days").is_none_or(Value::is_null) {
+            let due = if NO_NOTICE.contains(&reason.as_str()) {
+                Some(0)
+            } else {
+                match emp.get("notice_period_days").and_then(Value::as_i64) {
+                    Some(n) => Some(n),
+                    None => lookup(hc, "Company", id(&emp, "company")).await?.and_then(|c| c.get("hr_notice_period_days").and_then(Value::as_i64)),
+                }
+            };
+            set(doc, "notice_period_days", due.unwrap_or(0));
+        }
+        let due = doc.get("notice_period_days").and_then(Value::as_i64).unwrap_or(0);
+        let served = match (opt_date(doc, "resignation_letter_date"), opt_date(doc, "relieving_date")) {
+            (Some(given), Some(last)) if last >= given => (last - given).num_days(),
+            _ => 0,
+        };
+        let short = (due - served).max(0);
+        set(doc, "notice_served_days", served);
+        set(doc, "notice_shortfall_days", short);
+        if short == 0 {
+            set(doc, "shortfall_settlement", Value::Null);
+        } else if s(doc, "shortfall_settlement").is_none() {
+            set(doc, "shortfall_settlement", if reason == "Resignation" { "Recover from Employee" } else { "Pay in Lieu of Notice" });
+        }
+        Ok(())
+    }
+
+    async fn validate(&self, _hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        if let (Some(given), Some(last)) = (opt_date(doc, "resignation_letter_date"), opt_date(doc, "relieving_date"))
+            && given > last
+        {
+            return Err(Error::field("resignation_letter_date", format!("is after the last working day ({last})")));
+        }
+        Ok(())
+    }
+
     async fn on_submit(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let day = opt_date(doc, "relieving_date").ok_or_else(|| Error::field("relieving_date", "is required to submit a separation"))?;
         let emp = id(doc, "employee").ok_or_else(|| Error::field("employee", "is required"))?;
         let mut v = Doc::new();
-        set(&mut v, "status", "Left");
         set(&mut v, "relieving_date", day.to_string());
+        if day < crate::local_today(hc.tx, hc.ctx.tenant).await? {
+            set(&mut v, "status", "Left");
+        }
         hc.kernel.update_tx(&elevated(hc.ctx), hc.tx, "Employee", emp, v, None).await?;
         Ok(())
     }
 
     async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let Some(e) = lookup(hc, "Employee", id(doc, "employee")).await? else { return Ok(()) };
-        if s(&e, "status") != Some("Left") || s(&e, "relieving_date") != s(doc, "relieving_date") {
+        if !matches!(s(&e, "status"), Some("Left" | "Active")) || s(&e, "relieving_date") != s(doc, "relieving_date") {
             return Ok(());
         }
         let mut v = Doc::new();
@@ -298,14 +351,30 @@ impl DocHook for SeparationHook {
     }
 }
 
-/// Employees who have left, their relieving date come in the workspace's time zone, lose their
-/// sign-in: Ferrum deprovisions the user (sessions, keys and grants end at once; what they were
-/// named on moves to the user of the employee they reported to, when there is one). An inactive
-/// user is not touched again, and a refusal (the workspace's last administrator) is logged and
-/// tried again next time.
+/// Employees whose last working day has passed in the workspace's time zone become Left (those a
+/// submitted separation names; one set Left or Active by hand is left alone). Then those who have
+/// left lose their sign-in: Ferrum deprovisions the user (sessions, keys and grants end at once;
+/// what they were named on moves to the user of the employee they reported to, when there is one).
+/// An inactive user is not touched again, and a refusal (the workspace's last administrator) is
+/// logged and tried again next time.
 pub(crate) async fn offboard_leavers(k: &ferrum_kernel::Kernel, ctx: &ferrum_kernel::Ctx) -> Result<()> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let tz = crate::attendance::timezone(&mut tx, ctx.tenant).await?;
+    let gone: Vec<Uuid> = sqlx::query_scalar(
+        "select e.id from e_employee e where e.tenant_id = $1 and e.status = 'Active' and e.relieving_date < (now() at time zone $2)::date \
+         and exists (select 1 from e_employee_separation s where s.tenant_id = e.tenant_id and s.employee = e.id and s.docstatus = 1 \
+         and s.relieving_date = e.relieving_date) order by e.relieving_date, e.id limit 100",
+    )
+    .bind(ctx.tenant)
+    .bind(&tz)
+    .fetch_all(&mut *tx)
+    .await?;
+    let admin = elevated(ctx);
+    for emp in gone {
+        let mut v = Doc::new();
+        set(&mut v, "status", "Left");
+        k.update_tx(&admin, &mut tx, "Employee", emp, v, None).await?;
+    }
     let leavers: Vec<(String, Uuid, Option<Uuid>, chrono::NaiveDate)> = sqlx::query_as(
         "select e.employee_name, u.id, mu.id, e.relieving_date from e_employee e \
          join app_user u on u.tenant_id = e.tenant_id and u.email = e.\"user\"::citext and u.is_active and u.kind = 'member' \
@@ -318,7 +387,6 @@ pub(crate) async fn offboard_leavers(k: &ferrum_kernel::Kernel, ctx: &ferrum_ker
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
-    let admin = elevated(ctx);
     for (name, user, manager, day) in leavers {
         let reason = format!("{name} left on {day} (HR)");
         if let Err(e) = k.deprovision_user(&admin, user, manager.filter(|m| *m != user), &reason).await {

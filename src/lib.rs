@@ -51,8 +51,9 @@ pub fn reports() -> Vec<Arc<dyn ReportSource>> {
 
 /// Periodic upkeep: every minute, on one replica at a time (advisory lock); must be idempotent and cheap.
 /// Per tenant with HR installed: attendance from check-ins for finished shifts, expiry of ended
-/// leave allocations, the leaves that policies accrue (once a day), and closing job openings past
-/// their closing date.
+/// leave allocations, the leaves that policies accrue (once a day), closing job openings past
+/// their closing date, and leavers: Left once their last working day has passed, then their
+/// sign-in ended.
 pub async fn maintenance(k: &Kernel) -> Result<()> {
     let tenants: Vec<Uuid> = {
         let mut tx = k.db.system_tx().await?;
@@ -97,6 +98,12 @@ pub async fn upkeep(k: &Kernel, tenant: Uuid) -> Result<()> {
 
 pub(crate) fn today() -> NaiveDate {
     chrono::Utc::now().date_naive()
+}
+
+/// Today in the tenant's time zone.
+pub(crate) async fn local_today(tx: &mut ferrum_kernel::Tx, tenant: Uuid) -> Result<NaiveDate> {
+    let tz = attendance::timezone(tx, tenant).await?;
+    Ok(sqlx::query_scalar("select (now() at time zone $1)::date").bind(tz).fetch_one(&mut **tx).await?)
 }
 
 /// Whether `day` is after today in the tenant's time zone. Only days next to today's UTC date

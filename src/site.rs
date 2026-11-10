@@ -464,7 +464,8 @@ async fn calendar(k: &Kernel, user: &Ctx, req: &SiteRequest) -> Result<Value> {
 // ───────────────────────────── people directory ─────────────────────────────
 
 /// Active employees with what a directory and an org chart show: name, role, department, place,
-/// manager and work email. Phone numbers and joining dates only to those who read every employee.
+/// manager and work email. Phone numbers, joining dates and the last working day of those serving
+/// notice only to those who read every employee.
 async fn directory(k: &Kernel, user: &Ctx) -> Result<Value> {
     if !user.is_admin && !user.is_system && user.perms.access("Employee", Action::Read) == Access::None {
         return Err(Error::Forbidden("you cannot see the people directory".into()));
@@ -473,27 +474,40 @@ async fn directory(k: &Kernel, user: &Ctx) -> Result<Value> {
     // A person limited to some companies sees those companies' people.
     let companies: Option<Vec<Uuid>> = user.scopes.get("Company").cloned();
     let mut tx = k.db.tenant_tx(user.tenant).await?;
-    let found: Vec<(Uuid, Option<String>, Option<String>, Option<String>, Option<String>, Option<Uuid>, Option<String>, Option<String>, Option<NaiveDate>)> =
-        sqlx::query_as(
-            "select e.id, e.employee_name, g.designation_name, d.department_name, b.branch_name, e.reports_to, e.company_email, e.cell_number, e.date_of_joining \
+    #[allow(clippy::type_complexity)]
+    let found: Vec<(
+        Uuid,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<Uuid>,
+        Option<String>,
+        Option<String>,
+        Option<NaiveDate>,
+        Option<NaiveDate>,
+    )> = sqlx::query_as(
+        "select e.id, e.employee_name, g.designation_name, d.department_name, b.branch_name, e.reports_to, e.company_email, e.cell_number, e.date_of_joining, \
+             e.relieving_date \
              from e_employee e left join e_designation g on g.tenant_id = e.tenant_id and g.id = e.designation \
              left join e_department d on d.tenant_id = e.tenant_id and d.id = e.department \
              left join e_branch b on b.tenant_id = e.tenant_id and b.id = e.branch \
              where e.tenant_id = $1 and e.status = 'Active' and ($2::uuid[] is null or e.company = any($2)) order by e.employee_name limit $3",
-        )
-        .bind(user.tenant)
-        .bind(companies)
-        .bind(MOST_PEOPLE + 1)
-        .fetch_all(&mut *tx)
-        .await?;
+    )
+    .bind(user.tenant)
+    .bind(companies)
+    .bind(MOST_PEOPLE + 1)
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
     let truncated = found.len() as i64 > MOST_PEOPLE;
     let people: Vec<Value> = found
         .into_iter()
         .take(MOST_PEOPLE as usize)
-        .map(|(person, name, designation, department, branch, manager, email, phone, joined)| {
+        .map(|(person, name, designation, department, branch, manager, email, phone, joined, leaving)| {
             json!({"id": person, "name": name, "designation": designation, "department": department, "branch": branch, "manager": manager, "email": email,
-                   "phone": phone.filter(|_| detail), "joined": joined.filter(|_| detail).map(|j| j.to_string())})
+                   "phone": phone.filter(|_| detail), "joined": joined.filter(|_| detail).map(|j| j.to_string()),
+                   "leaving": leaving.filter(|_| detail).map(|l| l.to_string())})
         })
         .collect();
     Ok(json!({"people": people, "truncated": truncated, "detail": detail}))
