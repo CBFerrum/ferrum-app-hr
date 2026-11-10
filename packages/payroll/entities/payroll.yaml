@@ -211,6 +211,8 @@
     - {name: payroll_date, type: date, required: true, in_list: true, in_filter: true}
     - {name: overwrite_salary_structure_amount, type: check, description: Replace the structure's amount for this component instead of adding to it}
     - {name: off_cycle, type: check, label: Off-Cycle, in_filter: true, description: "Paid by an off-cycle payroll entry on its payroll date, not with the period's regular salary slip"}
+    - {name: deduct_full_tax, type: check, label: "Deduct its full tax in the period it is paid",
+       description: "Off: the tax it brings to the year is spread over the periods left, as regular pay's is. An off-cycle one always has its full tax deducted"}
     - {name: reason, type: text}
     - {name: ref_doctype, type: data, read_only: true, label: Source Type}
     - {name: ref_docname, type: data, read_only: true, label: Source}
