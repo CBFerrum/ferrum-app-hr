@@ -1,9 +1,11 @@
 //! Payroll: salary components with formulas, salary structures and their assignment, payroll
 //! periods with progressive income tax, additional salary and leave encashment. Salary slips are
-//! in `slip`, payroll runs and their postings in `run`, the file a bank pays a run from in `bank_file`.
+//! in `slip`, payroll runs and their postings in `run`, what is paid of each slip and what a bank
+//! payment pays in `payments`, the file a bank pays a run from in `bank_file`.
 
 pub(crate) mod bank_file;
 pub(crate) mod formula;
+pub(crate) mod payments;
 pub(crate) mod run;
 pub(crate) mod slip;
 
@@ -258,9 +260,12 @@ impl DocHook for AssignmentHook {
         Ok(())
     }
 
+    /// Withdrawn before any slip paid by it (arrears included), it leaves nothing behind: the slips
+    /// work out their arrears again from what is in force.
     async fn before_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let paid: Option<String> = sqlx::query_scalar(
-            "select coalesce(number, id::text) from e_salary_slip where tenant_id = $1 and salary_structure_assignment = $2 and docstatus = 1 limit 1",
+            "select coalesce(number, id::text) from e_salary_slip s where tenant_id = $1 and docstatus = 1 and (salary_structure_assignment = $2 \
+             or exists (select 1 from e_salary_slip__arrears r where r.tenant_id = s.tenant_id and r.parent_id = s.id and r.salary_structure_assignment = $2)) limit 1",
         )
         .bind(hc.ctx.tenant)
         .bind(id(doc, "id"))
@@ -334,15 +339,17 @@ impl DocHook for DeclarationHook {
     }
 }
 
-/// A submitted salary slip of the employee covering `day`, if any.
-async fn submitted_slip_on(hc: &mut HookCtx<'_>, employee: Option<Uuid>, day: Option<NaiveDate>) -> Result<Option<String>> {
+/// A submitted salary slip of the employee covering `day` that would pay an additional salary of
+/// that day (an off-cycle one for an off-cycle additional salary), if any.
+async fn submitted_slip_on(hc: &mut HookCtx<'_>, extra: &Doc) -> Result<Option<String>> {
     Ok(sqlx::query_scalar(
         "select coalesce(number, id::text) from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus = 1 \
-         and start_date <= $3 and end_date >= $3 limit 1",
+         and start_date <= $3 and end_date >= $3 and coalesce(off_cycle, false) = $4 limit 1",
     )
     .bind(hc.ctx.tenant)
-    .bind(employee)
-    .bind(day)
+    .bind(id(extra, "employee"))
+    .bind(opt_date(extra, "payroll_date"))
+    .bind(b(extra, "off_cycle"))
     .fetch_optional(&mut **hc.tx)
     .await?)
 }
@@ -422,15 +429,15 @@ impl DocHook for AdditionalSalaryHook {
     }
 
     async fn before_submit(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
-        if let Some(n) = submitted_slip_on(hc, id(doc, "employee"), opt_date(doc, "payroll_date")).await? {
+        if let Some(n) = submitted_slip_on(hc, doc).await? {
             return Err(Error::field("payroll_date", format!("salary slip {n} for this date is already submitted; use a date in the next period")));
         }
         Ok(())
     }
 
     async fn before_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
-        if let Some(n) = submitted_slip_on(hc, id(doc, "employee"), opt_date(doc, "payroll_date")).await? {
-            return Err(Error::invalid(format!("salary slip {n} already paid this; cancel the slip first")));
+        if let Some(n) = submitted_slip_on(hc, doc).await? {
+            return Err(Error::invalid(format!("salary slip {n} already paid this; cancel or correct the slip first")));
         }
         Ok(())
     }

@@ -1,7 +1,7 @@
 package: payroll_erp
-version: 0.2.0
+version: 0.3.0
 label: Payroll and ERP
-description: Salary components' accounts, payroll runs posting one balanced accrual journal (earnings, deductions and employer contributions) and a bank entry, and the cost centers salaries post to.
+description: Salary components' accounts, payroll runs posting one balanced accrual journal (earnings, deductions and employer contributions) and a bank entry that pays each salary in full (held ones left out, what is still owed from a correction or a release carried), a corrected slip's own journals, and the cost centers salaries post to.
 depends: [payroll, accounting]
 field_prefix: pay_
 
@@ -27,7 +27,23 @@ overlays:
       - {op: add_field, column: true, after: designation, field: {name: payment_account, type: link, to: Account, link_filters: {is_group: false}, description: Bank or cash account the salaries are paid from}}
       - {op: add_field, column: true, after: payment_account, field: {name: cost_center, type: link, to: CostCenter, link_filters: {is_group: false}, description: For employees without a payroll cost center of their own or their department's}}
       - {op: add_field, column: true, after: cost_center, field: {name: payroll_payable_account, type: link, to: Account, link_filters: {is_group: false}}}
-      - {op: add_action, action: {name: make_bank_entry, label: Make Bank Entry, docstatus: [1], permission: read, condition: "doc.salary_slips_submitted && doc.paid_amount < doc.total_net_pay"}}
+      - {op: add_action, action: {name: make_bank_entry, label: Make Bank Entry, docstatus: [1], permission: read, condition: "doc.salary_slips_submitted"}}
+      # Salaries paid by the company's own entry or bank statement: recorded as paid, nothing posted.
+      - {op: add_field, column: true, after: payroll_payable_account, field: {name: paid_elsewhere_on, type: date, read_only: true, no_copy: true, label: Paid Elsewhere On}}
+      - {op: add_field, column: true, after: paid_elsewhere_on, field: {name: paid_elsewhere_reference, type: data, read_only: true, no_copy: true, label: Paid Elsewhere By,
+         description: "The reference of the payment made outside Ferrum (its own journal entry, a bank statement line); its salaries count as paid"}}
+      - {op: add_field, column: true, after: paid_elsewhere_reference, field: {name: paid_elsewhere_amount, type: currency, currency: currency, read_only: true, no_copy: true}}
+      - op: add_action
+        action:
+          name: record_payment_elsewhere
+          label: Record Payment Made Elsewhere
+          docstatus: [1]
+          permission: submit
+          condition: "doc.salary_slips_submitted && doc.status != 'Paid'"
+          params:
+            - {name: posting_date, type: date, label: Paid On, required: true}
+            - {name: reference, type: data, label: Reference, required: true, description: "The company's own journal entry or the bank statement line that paid them"}
+      - {op: add_action, action: {name: undo_payment_elsewhere, label: Undo Payment Made Elsewhere, docstatus: [1], permission: submit, condition: "doc.paid_elsewhere_reference != null"}}
       # The file the bank pays the run from; it needs the rights to read employees' bank details.
       - op: add_action
         action:

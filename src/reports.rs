@@ -861,7 +861,8 @@ async fn bank_remittance(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>, 
     }
     let mut qb = QueryBuilder::new(
         "select e.number, ss.employee_name, e.salary_mode, e.bank_name, e.bank_account_no, e.ifsc_code, e.iban, ss.net_pay, ss.number \
-         from e_salary_slip ss join e_employee e on e.tenant_id = ss.tenant_id and e.id = ss.employee where ss.docstatus = 1 and ss.tenant_id = ",
+         from e_salary_slip ss join e_employee e on e.tenant_id = ss.tenant_id and e.id = ss.employee where ss.docstatus = 1 \
+         and not coalesce(ss.held, false) and ss.tenant_id = ",
     );
     qb.push_bind(ctx.tenant).push(" and ss.company = ").push_bind(company);
     match p.uuid("payroll_entry")? {

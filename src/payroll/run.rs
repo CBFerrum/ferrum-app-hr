@@ -2,8 +2,10 @@
 //! accrual journal for the whole run (earnings debit their expense accounts, deductions credit
 //! their liability accounts, employer contributions debit their cost and credit what is owed on
 //! them, each slip's net pay credits payroll payable) and pay it through a
-//! bank journal entry. Cancelling reverses the journal and then cancels the slips; it is refused
-//! while a payment stands.
+//! bank journal entry (what is due, `payments`). A slip corrected later posts its own journals.
+//! Cancelling reverses the journals and then cancels the slips; it is refused while a payment
+//! stands. An off-cycle run is for one day and the employees listed, and its slips pay only what is
+//! named for it.
 
 use crate::expense::{amount_param, bank_param, payment_entry};
 use crate::people::company_account;
@@ -63,7 +65,9 @@ async fn component_account(hc: &mut HookCtx<'_>, cache: &mut HashMap<Uuid, (Uuid
     Ok((account, expense))
 }
 
-/// Posts the salary accrual of `slips` as one balanced journal entry of `source`.
+/// Posts the salary accrual of `slips` as one balanced journal entry of `source` (`sign` −1: takes
+/// it back). An excess recovered from a slip's pay settles payroll payable, as its net pay does.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn post_accrual(
     hc: &mut HookCtx<'_>,
     company_id: Uuid,
@@ -72,32 +76,37 @@ pub(crate) async fn post_accrual(
     slips: &[Doc],
     payable: Uuid,
     default_cc: Option<Uuid>,
+    sign: Decimal,
 ) -> Result<()> {
     let co = company(hc.kernel, hc.ctx, hc.tx, company_id).await?;
     let default_cc = default_cc.or(co.account("default_cost_center"));
     let mut entry = Entry::new(company_id, on, source.0, source.1, source.2.clone());
-    entry.memo = Some(format!("Salary accrual of {} employee{}", slips.len(), if slips.len() == 1 { "" } else { "s" }));
+    let what = if sign < Decimal::ZERO { "Salary accrual taken back" } else { "Salary accrual" };
+    entry.memo = Some(format!("{what} of {} employee{}", slips.len(), if slips.len() == 1 { "" } else { "s" }));
     let mut accounts = HashMap::new();
     for slip in slips {
         let emp = get(hc.kernel, hc.ctx, hc.tx, "Employee", id(slip, "employee").unwrap_or_default()).await?;
         let name = s(&emp, "employee_name").unwrap_or_default().to_string();
         let cc = cost_center(hc, &emp, default_cc).await?;
-        for (table, sign) in [("earnings", Decimal::ONE), ("deductions", -Decimal::ONE), ("employer_contributions", -Decimal::ONE)] {
+        for (table, side) in [("earnings", Decimal::ONE), ("deductions", -Decimal::ONE), ("employer_contributions", -Decimal::ONE)] {
             for r in rows(slip, table) {
                 if b(&r, "statistical_component") || d(&r, "amount").is_zero() {
                     continue;
                 }
                 let (account, expense) = component_account(hc, &mut accounts, id(&r, "salary_component").unwrap_or_default(), company_id).await?;
-                entry.lines.push(Line::new(account, sign * d(&r, "amount"), &co.currency_code).cost_center(cc));
+                entry.lines.push(Line::new(account, sign * side * d(&r, "amount"), &co.currency_code).cost_center(cc));
                 if table == "employer_contributions" {
-                    entry.lines.push(Line::new(expense, d(&r, "amount"), &co.currency_code).cost_center(cc).remarks(format!("Employer's share for {name}")));
+                    entry
+                        .lines
+                        .push(Line::new(expense, sign * d(&r, "amount"), &co.currency_code).cost_center(cc).remarks(format!("Employer's share for {name}")));
                 }
             }
         }
-        let net = d(slip, "net_pay");
-        if !net.is_zero() {
-            let slip_id = id(slip, "id").unwrap_or_default();
-            entry.lines.push(Line::new(payable, -net, &co.currency_code).against("SalarySlip", slip_id).remarks(format!("Net pay of {name}")));
+        let slip_id = id(slip, "id").unwrap_or_default();
+        for (amount, what) in [(d(slip, "net_pay"), "Net pay"), (d(slip, "recovery_amount"), "Excess pay recovered from")] {
+            if !amount.is_zero() {
+                entry.lines.push(Line::new(payable, -sign * amount, &co.currency_code).against("SalarySlip", slip_id).remarks(format!("{what} {name}")));
+            }
         }
     }
     ledger::post(hc.tx, hc.ctx, entry, co.precision).await?;
@@ -116,32 +125,34 @@ async fn slips_of(hc: &mut HookCtx<'_>, run: Uuid, docstatus: i64) -> Result<Vec
     Ok(out)
 }
 
-/// Copies the slips' totals onto the run and each employee row.
-async fn refresh_totals(hc: &mut HookCtx<'_>, run: &Doc, docstatus: i64, extra: Doc) -> Result<Doc> {
+/// Copies the slips' totals onto the run (those in state `docstatus`) and each employee row (its
+/// slip, a correction's draft included, whether it is held).
+pub(crate) async fn refresh_totals(hc: &mut HookCtx<'_>, run: &Doc, docstatus: i64, extra: Doc) -> Result<Doc> {
     let me = id(run, "id").unwrap_or_default();
     let sctx = sys(hc.ctx);
-    let slips: Vec<(Uuid, Uuid, Decimal, Decimal, Decimal)> = sqlx::query_as(
-        "select id, employee, coalesce(gross_pay, 0), coalesce(total_deduction, 0), coalesce(net_pay, 0) from e_salary_slip \
-         where tenant_id = $1 and payroll_entry = $2 and docstatus = $3",
+    let slips: Vec<(Uuid, Uuid, Decimal, Decimal, Decimal, bool, i16)> = sqlx::query_as(
+        "select id, employee, coalesce(gross_pay, 0), coalesce(total_deduction, 0), coalesce(net_pay, 0), coalesce(held, false), docstatus \
+         from e_salary_slip where tenant_id = $1 and payroll_entry = $2 and docstatus < 2 order by docstatus",
     )
     .bind(hc.ctx.tenant)
     .bind(me)
-    .bind(docstatus as i16)
     .fetch_all(&mut **hc.tx)
     .await?;
-    let by_employee: HashMap<Uuid, (Uuid, Decimal)> = slips.iter().map(|s| (s.1, (s.0, s.4))).collect();
+    let by_employee: HashMap<Uuid, (Uuid, Decimal, bool)> = slips.iter().map(|s| (s.1, (s.0, s.4, s.5))).collect();
     for row in rows(run, "employees") {
         let (Some(row_id), Some(emp)) = (id(&row, "id"), id(&row, "employee")) else { continue };
-        let (slip, net) = by_employee.get(&emp).map_or((Value::Null, Value::Null), |(sl, n)| (json!(sl.to_string()), money(*n)));
+        let (slip, net, held) = by_employee.get(&emp).map_or((Value::Null, Value::Null, false), |(sl, n, h)| (json!(sl.to_string()), money(*n), *h));
         let mut v = Doc::new();
         v.insert("salary_slip".into(), slip);
         v.insert("net_pay".into(), net);
+        v.insert("held".into(), json!(held));
         hc.kernel.set_child_values_tx(&sctx, hc.tx, "PayrollEntry", "employees", row_id, v).await?;
     }
+    let counted: Vec<_> = slips.iter().filter(|s| i64::from(s.6) == docstatus).collect();
     let mut v = extra;
-    v.insert("total_gross_pay".into(), money(slips.iter().map(|s| s.2).sum()));
-    v.insert("total_deductions".into(), money(slips.iter().map(|s| s.3).sum()));
-    v.insert("total_net_pay".into(), money(slips.iter().map(|s| s.4).sum()));
+    v.insert("total_gross_pay".into(), money(counted.iter().map(|s| s.2).sum()));
+    v.insert("total_deductions".into(), money(counted.iter().map(|s| s.3).sum()));
+    v.insert("total_net_pay".into(), money(counted.iter().map(|s| s.4).sum()));
     hc.kernel.set_values_tx(&sctx, hc.tx, "PayrollEntry", me, v).await?;
     hc.kernel.get_tx(&sctx, hc.tx, "PayrollEntry", me, false).await
 }
@@ -157,12 +168,147 @@ fn for_employee(e: Error, name: &str) -> Error {
     }
 }
 
+/// Why a run's bank payment has nothing to pay: its salaries held, or paid.
+pub(crate) async fn nothing_due(hc: &mut HookCtx<'_>, run: Uuid) -> Result<String> {
+    let held: Vec<String> = sqlx::query_scalar(
+        "select coalesce(employee_name, number) from e_salary_slip where tenant_id = $1 and payroll_entry = $2 and docstatus = 1 and coalesce(held, false) \
+         order by employee_name",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(run)
+    .fetch_all(&mut **hc.tx)
+    .await?;
+    let elsewhere: Option<(Option<String>, Option<NaiveDate>)> = sqlx::query_as(
+        "select paid_elsewhere_reference, paid_elsewhere_on from e_payroll_entry where tenant_id = $1 and id = $2 and paid_elsewhere_reference is not null",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(run)
+    .fetch_optional(&mut **hc.tx)
+    .await?;
+    let mut why = Vec::new();
+    if let Some((reference, on)) = elsewhere {
+        why.push(format!(
+            "its salaries were recorded as paid elsewhere ({}, {})",
+            reference.unwrap_or_default(),
+            on.map(|d| d.to_string()).unwrap_or_default()
+        ));
+    }
+    match held.len() {
+        0 => {}
+        1 => why.push(format!("{}'s salary is held", held[0])),
+        _ => why.push(format!("the salaries of {} are held", super::payments::names(&held))),
+    }
+    Ok(if why.is_empty() { "nothing is left to pay".to_string() } else { format!("nothing is left to pay: {}", why.join("; ")) })
+}
+
+/// Salaries paid outside Ferrum (the company's own journal entry, a bank statement): each unpaid
+/// slip of the run that is not held counts as paid by the reference, as a bank entry's would, so a
+/// correction pays or recovers only the difference. Nothing is posted: the payment's own entry is.
+async fn paid_elsewhere(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -> Result<Value> {
+    let me = id(doc, "id").unwrap_or_default();
+    let on = params.get("posting_date").and_then(Value::as_str).ok_or_else(|| Error::field("posting_date", "is required"))?;
+    let on = ferrum_kernel::value::parse_date(on).map_err(|m| Error::field("posting_date", m))?;
+    let reference = params.get("reference").and_then(Value::as_str).map(str::trim).filter(|r| !r.is_empty());
+    let reference = reference.ok_or_else(|| Error::field("reference", "name the entry or bank statement line that paid them"))?;
+    let open: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "select id, coalesce(net_pay, 0) - coalesce(paid_amount, 0) from e_salary_slip where tenant_id = $1 and payroll_entry = $2 and docstatus = 1 \
+         and not coalesce(held, false) and coalesce(net_pay, 0) > coalesce(paid_amount, 0)",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(me)
+    .fetch_all(&mut **hc.tx)
+    .await?;
+    if open.is_empty() {
+        return Err(Error::invalid(nothing_due(hc, me).await?));
+    }
+    let total: Decimal = open.iter().map(|o| o.1).sum();
+    super::payments::allocate(hc, me, &open).await?;
+    let mut v = Doc::new();
+    set(&mut v, "paid_elsewhere_on", on.to_string());
+    set(&mut v, "paid_elsewhere_reference", reference);
+    v.insert("paid_elsewhere_amount".into(), money(d(doc, "paid_elsewhere_amount") + total));
+    hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "PayrollEntry", me, v).await?;
+    super::payments::run_status(hc, me).await?;
+    Ok(json!({"message": format!("{} salar{} of {} in all recorded as paid by {reference} on {on}; nothing is posted",
+        open.len(), if open.len() == 1 { "y" } else { "ies" }, total.normalize())}))
+}
+
+/// Undoes a payment recorded as made elsewhere, unless a correction took over what it paid.
+async fn undo_paid_elsewhere(hc: &mut HookCtx<'_>, doc: &Doc) -> Result<Value> {
+    let me = id(doc, "id").unwrap_or_default();
+    let corrected: Option<String> = sqlx::query_scalar(
+        "select coalesce(s.number, s.id::text) from pay_salary_payment p join e_salary_slip s on s.tenant_id = p.tenant_id and s.id = p.salary_slip \
+         where p.tenant_id = $1 and p.source = $2 and s.replaces is not null limit 1",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(me)
+    .fetch_optional(&mut **hc.tx)
+    .await?;
+    if let Some(n) = corrected {
+        return Err(Error::invalid(format!(
+            "salary slip {n} corrects a slip and counts what was recorded as paid elsewhere; the payment can no longer be undone"
+        )));
+    }
+    super::payments::unallocate(hc, me).await?;
+    let mut v = Doc::new();
+    for f in ["paid_elsewhere_on", "paid_elsewhere_reference", "paid_elsewhere_amount"] {
+        v.insert(f.into(), Value::Null);
+    }
+    hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "PayrollEntry", me, v).await?;
+    super::payments::run_status(hc, me).await?;
+    Ok(json!({"message": "The payment made elsewhere is undone: its salaries are unpaid again"}))
+}
+
 impl RunHook {
     async fn get_employees(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<Value> {
         let me = id(doc, "id").unwrap_or_default();
         let (Some(start), Some(end)) = (opt_date(doc, "start_date"), opt_date(doc, "end_date")) else { return Err(Error::invalid("set the period first")) };
-        let found: Vec<Uuid> = sqlx::query_scalar(
-            "select e.id from e_employee e where e.tenant_id = $1 and e.company = $2 and e.date_of_joining <= $4 \
+        // Off-cycle: those with off-cycle additional salary on the day, something still owed from a
+        // corrected or released slip, or arrears due for periods paid (worked out for those whose
+        // paid periods a later assignment reaches). Others can be added by hand.
+        let mut off_cycle = Vec::new();
+        if b(doc, "off_cycle") {
+            let candidates: Vec<(Uuid, bool)> = sqlx::query_as(
+                "select e.id, (exists (select 1 from e_additional_salary a where a.tenant_id = e.tenant_id and a.employee = e.id and a.docstatus = 1 \
+                        and coalesce(a.off_cycle, false) and a.payroll_date = $3) \
+                      or exists (select 1 from e_salary_slip s where s.tenant_id = e.tenant_id and s.employee = e.id and s.docstatus = 1 \
+                        and s.payroll_entry is not null and not coalesce(s.held, false) and (s.replaces is not null or s.released_on is not null) \
+                        and coalesce(s.net_pay, 0) > coalesce(s.paid_amount, 0))) \
+                 from e_employee e where e.tenant_id = $1 and e.company = $2 and e.date_of_joining <= $3 and e.status in ('Active', 'Left') \
+                 and ($4::uuid is null or e.department = $4) and ($5::uuid is null or e.branch = $5) and ($6::uuid is null or e.designation = $6) \
+                 and (exists (select 1 from e_additional_salary a where a.tenant_id = e.tenant_id and a.employee = e.id and a.docstatus = 1 \
+                        and coalesce(a.off_cycle, false) and a.payroll_date = $3) \
+                      or exists (select 1 from e_salary_slip s where s.tenant_id = e.tenant_id and s.employee = e.id and s.docstatus = 1 \
+                        and s.payroll_entry is not null and not coalesce(s.held, false) and (s.replaces is not null or s.released_on is not null) \
+                        and coalesce(s.net_pay, 0) > coalesce(s.paid_amount, 0)) \
+                      or exists (select 1 from e_salary_slip s where s.tenant_id = e.tenant_id and s.employee = e.id and s.docstatus = 1 \
+                        and not coalesce(s.off_cycle, false) and s.start_date <= $3 \
+                        and s.salary_structure_assignment is distinct from (select a.id from e_salary_structure_assignment a where a.tenant_id = s.tenant_id \
+                          and a.employee = s.employee and a.docstatus = 1 and a.from_date <= s.end_date order by a.from_date desc limit 1))) \
+                 and not exists (select 1 from e_salary_slip ss where ss.tenant_id = e.tenant_id and ss.employee = e.id and ss.docstatus < 2 \
+                      and coalesce(ss.off_cycle, false) and ss.start_date = $3 and ss.payroll_entry is distinct from $7) \
+                 order by e.employee_name, e.id",
+            )
+            .bind(hc.ctx.tenant)
+            .bind(id(doc, "company"))
+            .bind(start)
+            .bind(id(doc, "department"))
+            .bind(id(doc, "branch"))
+            .bind(id(doc, "designation"))
+            .bind(me)
+            .fetch_all(&mut **hc.tx)
+            .await?;
+            for (e, direct) in candidates {
+                if direct || super::slip::arrears_due(hc, e, start).await? {
+                    off_cycle.push(e);
+                }
+            }
+        }
+        let found: Vec<Uuid> = if b(doc, "off_cycle") {
+            off_cycle
+        } else {
+            sqlx::query_scalar(
+                "select e.id from e_employee e where e.tenant_id = $1 and e.company = $2 and e.date_of_joining <= $4 \
              and (e.relieving_date is null or e.relieving_date >= $3) and e.status in ('Active', 'Left') \
              and ($5::uuid is null or e.department = $5) and ($6::uuid is null or e.branch = $6) and ($7::uuid is null or e.designation = $7) \
              and (select st.payroll_frequency from e_salary_structure_assignment a \
@@ -170,20 +316,21 @@ impl RunHook {
                   where a.tenant_id = e.tenant_id and a.employee = e.id and a.docstatus = 1 and a.from_date <= $4 \
                   order by a.from_date desc limit 1) = $8 \
              and not exists (select 1 from e_salary_slip ss where ss.tenant_id = e.tenant_id and ss.employee = e.id and ss.docstatus < 2 \
-                  and ss.start_date <= $4 and ss.end_date >= $3 and ss.payroll_entry is distinct from $9) \
+                  and not coalesce(ss.off_cycle, false) and ss.start_date <= $4 and ss.end_date >= $3 and ss.payroll_entry is distinct from $9) \
              order by e.employee_name, e.id",
-        )
-        .bind(hc.ctx.tenant)
-        .bind(id(doc, "company"))
-        .bind(start)
-        .bind(end)
-        .bind(id(doc, "department"))
-        .bind(id(doc, "branch"))
-        .bind(id(doc, "designation"))
-        .bind(s(doc, "payroll_frequency").unwrap_or("Monthly"))
-        .bind(me)
-        .fetch_all(&mut **hc.tx)
-        .await?;
+            )
+            .bind(hc.ctx.tenant)
+            .bind(id(doc, "company"))
+            .bind(start)
+            .bind(end)
+            .bind(id(doc, "department"))
+            .bind(id(doc, "branch"))
+            .bind(id(doc, "designation"))
+            .bind(s(doc, "payroll_frequency").unwrap_or("Monthly"))
+            .bind(me)
+            .fetch_all(&mut **hc.tx)
+            .await?
+        };
         let list: Vec<Value> = found.iter().map(|e| json!({"employee": e.to_string()})).collect();
         let mut patch = Doc::new();
         patch.insert("employees".into(), Value::Array(list));
@@ -214,6 +361,7 @@ impl RunHook {
             set(&mut slip, "end_date", doc.get("end_date").cloned().unwrap_or_default());
             set(&mut slip, "posting_date", doc.get("posting_date").cloned().unwrap_or_default());
             set(&mut slip, "payroll_entry", me.to_string());
+            set(&mut slip, "off_cycle", b(doc, "off_cycle"));
             let name = s(&row, "employee_name").unwrap_or_default().to_string();
             hc.kernel.insert_tx(&user, hc.tx, "SalarySlip", slip).await.map_err(|e| for_employee(e, &name))?;
         }
@@ -240,7 +388,8 @@ impl RunHook {
             let cid = id(doc, "company").unwrap_or_default();
             let payable = id(doc, "payroll_payable_account").ok_or_else(|| Error::field("payroll_payable_account", "is required"))?;
             let on = opt_date(doc, "posting_date").unwrap_or_else(today);
-            post_accrual(hc, cid, ("PayrollEntry", me, s(doc, "number").map(str::to_string)), on, &slips, payable, id(doc, "cost_center")).await?;
+            post_accrual(hc, cid, ("PayrollEntry", me, s(doc, "number").map(str::to_string)), on, &slips, payable, id(doc, "cost_center"), Decimal::ONE)
+                .await?;
         }
         let mut flags = Doc::new();
         flags.insert("salary_slips_submitted".into(), json!(true));
@@ -254,6 +403,12 @@ impl DocHook for RunHook {
     async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
         if doc.get("docstatus").and_then(Value::as_i64).unwrap_or(0) == 0 {
             set(doc, "status", "Draft");
+        }
+        // An off-cycle run is for one day.
+        if b(doc, "off_cycle")
+            && let Some(day) = doc.get("start_date").cloned()
+        {
+            set(doc, "end_date", day);
         }
         if let Some(cid) = id(doc, "company")
             && super::posts(hc)
@@ -282,10 +437,11 @@ impl DocHook for RunHook {
     }
 
     async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        // Off-cycle runs of a day may be several; their slips are one per employee and day.
         let dup: Option<String> = sqlx::query_scalar(
             "select coalesce(number, id::text) from e_payroll_entry where tenant_id = $1 and company = $2 and start_date = $3 and end_date = $4 \
              and payroll_frequency = $5 and department is not distinct from $6 and branch is not distinct from $7 \
-             and designation is not distinct from $8 and docstatus < 2 and id <> $9 limit 1",
+             and designation is not distinct from $8 and docstatus < 2 and id <> $9 and not coalesce(off_cycle, false) and not $10 limit 1",
         )
         .bind(hc.ctx.tenant)
         .bind(id(doc, "company"))
@@ -296,6 +452,7 @@ impl DocHook for RunHook {
         .bind(id(doc, "branch"))
         .bind(id(doc, "designation"))
         .bind(id(doc, "id"))
+        .bind(b(doc, "off_cycle"))
         .fetch_optional(&mut **hc.tx)
         .await?;
         if let Some(n) = dup {
@@ -321,8 +478,20 @@ impl DocHook for RunHook {
         hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "PayrollEntry", id(doc, "id").unwrap_or_default(), v).await
     }
 
-    async fn before_cancel(&self, _hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
-        if d(doc, "paid_amount") > Decimal::ZERO {
+    async fn before_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        // What paid its slips (another run's bank entry, a statement's, a later slip's recovery) stands.
+        let paid: bool = sqlx::query_scalar(
+            "select exists (select 1 from pay_salary_payment p join e_salary_slip s on s.tenant_id = p.tenant_id and s.id = p.salary_slip \
+             where p.tenant_id = $1 and s.payroll_entry = $2)",
+        )
+        .bind(hc.ctx.tenant)
+        .bind(id(doc, "id"))
+        .fetch_one(&mut **hc.tx)
+        .await?;
+        if s(doc, "paid_elsewhere_reference").is_some() {
+            return Err(Error::invalid("its salaries are recorded as paid elsewhere; undo that first"));
+        }
+        if d(doc, "paid_amount") > Decimal::ZERO || paid {
             return Err(Error::invalid("salaries of this payroll entry have been paid; cancel the bank entry first"));
         }
         Ok(())
@@ -349,6 +518,18 @@ impl DocHook for RunHook {
                 }
             }
         }
+        // A corrected slip's own journals: its share taken back, its correction's accrual.
+        if super::posts(hc) {
+            let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
+            let corrected: Vec<Uuid> = sqlx::query_scalar("select id from e_salary_slip where tenant_id = $1 and payroll_entry = $2 and docstatus = 2")
+                .bind(hc.ctx.tenant)
+                .bind(me)
+                .fetch_all(&mut **hc.tx)
+                .await?;
+            for slip in corrected {
+                ledger::reverse(hc.tx, hc.ctx, "SalarySlip", slip, today(), co.precision).await?;
+            }
+        }
         let mut v = Doc::new();
         set(&mut v, "status", "Cancelled");
         hc.kernel.set_values_tx(&sctx, hc.tx, "PayrollEntry", me, v).await
@@ -360,8 +541,19 @@ impl DocHook for RunHook {
             "create_salary_slips" => self.create_slips(hc, doc).await.map(Some),
             "submit_salary_slips" => self.submit_slips(hc, doc).await.map(Some),
             "bank_file" => super::bank_file::bank_file(hc, doc, params).await.map(Some),
+            "record_payment_elsewhere" => paid_elsewhere(hc, doc, params).await.map(Some),
+            "undo_payment_elsewhere" => undo_paid_elsewhere(hc, doc).await.map(Some),
             "make_bank_entry" => {
-                let amount = amount_param(params, d(doc, "total_net_pay") - d(doc, "paid_amount"))?;
+                let me = id(doc, "id").unwrap_or_default();
+                let due = super::payments::due(hc, me).await?;
+                let total: Decimal = due.iter().map(|x| x.amount).sum();
+                if total <= Decimal::ZERO {
+                    return Err(Error::invalid(nothing_due(hc, me).await?));
+                }
+                let amount = amount_param(params, total)?;
+                if amount != total {
+                    return Err(Error::field("amount", format!("a payroll bank entry pays what is due, {}: each salary in full", total.normalize())));
+                }
                 let payable = id(doc, "payroll_payable_account").ok_or_else(|| Error::field("payroll_payable_account", "is required"))?;
                 let bank = bank_param(hc, params, id(doc, "company").unwrap_or_default(), id(doc, "payment_account")).await?;
                 let remark = format!("Salaries of {} to {}", s(doc, "start_date").unwrap_or_default(), s(doc, "end_date").unwrap_or_default());
