@@ -178,40 +178,132 @@ pub(crate) async fn nothing_due(hc: &mut HookCtx<'_>, run: Uuid) -> Result<Strin
     .bind(run)
     .fetch_all(&mut **hc.tx)
     .await?;
-    Ok(match held.len() {
-        0 => "nothing is left to pay".to_string(),
-        1 => format!("nothing is left to pay: {}'s salary is held", held[0]),
-        _ => format!("nothing is left to pay: the salaries of {} are held", super::payments::names(&held)),
-    })
+    let elsewhere: Option<(Option<String>, Option<NaiveDate>)> = sqlx::query_as(
+        "select paid_elsewhere_reference, paid_elsewhere_on from e_payroll_entry where tenant_id = $1 and id = $2 and paid_elsewhere_reference is not null",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(run)
+    .fetch_optional(&mut **hc.tx)
+    .await?;
+    let mut why = Vec::new();
+    if let Some((reference, on)) = elsewhere {
+        why.push(format!(
+            "its salaries were recorded as paid elsewhere ({}, {})",
+            reference.unwrap_or_default(),
+            on.map(|d| d.to_string()).unwrap_or_default()
+        ));
+    }
+    match held.len() {
+        0 => {}
+        1 => why.push(format!("{}'s salary is held", held[0])),
+        _ => why.push(format!("the salaries of {} are held", super::payments::names(&held))),
+    }
+    Ok(if why.is_empty() { "nothing is left to pay".to_string() } else { format!("nothing is left to pay: {}", why.join("; ")) })
+}
+
+/// Salaries paid outside Ferrum (the company's own journal entry, a bank statement): each unpaid
+/// slip of the run that is not held counts as paid by the reference, as a bank entry's would, so a
+/// correction pays or recovers only the difference. Nothing is posted: the payment's own entry is.
+async fn paid_elsewhere(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -> Result<Value> {
+    let me = id(doc, "id").unwrap_or_default();
+    let on = params.get("posting_date").and_then(Value::as_str).ok_or_else(|| Error::field("posting_date", "is required"))?;
+    let on = ferrum_kernel::value::parse_date(on).map_err(|m| Error::field("posting_date", m))?;
+    let reference = params.get("reference").and_then(Value::as_str).map(str::trim).filter(|r| !r.is_empty());
+    let reference = reference.ok_or_else(|| Error::field("reference", "name the entry or bank statement line that paid them"))?;
+    let open: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "select id, coalesce(net_pay, 0) - coalesce(paid_amount, 0) from e_salary_slip where tenant_id = $1 and payroll_entry = $2 and docstatus = 1 \
+         and not coalesce(held, false) and coalesce(net_pay, 0) > coalesce(paid_amount, 0)",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(me)
+    .fetch_all(&mut **hc.tx)
+    .await?;
+    if open.is_empty() {
+        return Err(Error::invalid(nothing_due(hc, me).await?));
+    }
+    let total: Decimal = open.iter().map(|o| o.1).sum();
+    super::payments::allocate(hc, me, &open).await?;
+    let mut v = Doc::new();
+    set(&mut v, "paid_elsewhere_on", on.to_string());
+    set(&mut v, "paid_elsewhere_reference", reference);
+    v.insert("paid_elsewhere_amount".into(), money(d(doc, "paid_elsewhere_amount") + total));
+    hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "PayrollEntry", me, v).await?;
+    super::payments::run_status(hc, me).await?;
+    Ok(json!({"message": format!("{} salar{} of {} in all recorded as paid by {reference} on {on}; nothing is posted",
+        open.len(), if open.len() == 1 { "y" } else { "ies" }, total.normalize())}))
+}
+
+/// Undoes a payment recorded as made elsewhere, unless a correction took over what it paid.
+async fn undo_paid_elsewhere(hc: &mut HookCtx<'_>, doc: &Doc) -> Result<Value> {
+    let me = id(doc, "id").unwrap_or_default();
+    let corrected: Option<String> = sqlx::query_scalar(
+        "select coalesce(s.number, s.id::text) from pay_salary_payment p join e_salary_slip s on s.tenant_id = p.tenant_id and s.id = p.salary_slip \
+         where p.tenant_id = $1 and p.source = $2 and s.replaces is not null limit 1",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(me)
+    .fetch_optional(&mut **hc.tx)
+    .await?;
+    if let Some(n) = corrected {
+        return Err(Error::invalid(format!(
+            "salary slip {n} corrects a slip and counts what was recorded as paid elsewhere; the payment can no longer be undone"
+        )));
+    }
+    super::payments::unallocate(hc, me).await?;
+    let mut v = Doc::new();
+    for f in ["paid_elsewhere_on", "paid_elsewhere_reference", "paid_elsewhere_amount"] {
+        v.insert(f.into(), Value::Null);
+    }
+    hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "PayrollEntry", me, v).await?;
+    super::payments::run_status(hc, me).await?;
+    Ok(json!({"message": "The payment made elsewhere is undone: its salaries are unpaid again"}))
 }
 
 impl RunHook {
     async fn get_employees(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<Value> {
         let me = id(doc, "id").unwrap_or_default();
         let (Some(start), Some(end)) = (opt_date(doc, "start_date"), opt_date(doc, "end_date")) else { return Err(Error::invalid("set the period first")) };
-        // Off-cycle: those with off-cycle additional salary on the day, or something still owed from
-        // a corrected or released slip. Others (arrears alone) are added by hand.
-        let off_cycle: Vec<Uuid> = sqlx::query_scalar(
-            "select e.id from e_employee e where e.tenant_id = $1 and e.company = $2 and e.date_of_joining <= $3 and e.status in ('Active', 'Left') \
-             and ($4::uuid is null or e.department = $4) and ($5::uuid is null or e.branch = $5) and ($6::uuid is null or e.designation = $6) \
-             and (exists (select 1 from e_additional_salary a where a.tenant_id = e.tenant_id and a.employee = e.id and a.docstatus = 1 \
-                    and coalesce(a.off_cycle, false) and a.payroll_date = $3) \
-                  or exists (select 1 from e_salary_slip s where s.tenant_id = e.tenant_id and s.employee = e.id and s.docstatus = 1 \
-                    and s.payroll_entry is not null and not coalesce(s.held, false) and (s.replaces is not null or s.released_on is not null) \
-                    and coalesce(s.net_pay, 0) > coalesce(s.paid_amount, 0))) \
-             and not exists (select 1 from e_salary_slip ss where ss.tenant_id = e.tenant_id and ss.employee = e.id and ss.docstatus < 2 \
-                  and coalesce(ss.off_cycle, false) and ss.start_date = $3 and ss.payroll_entry is distinct from $7) \
-             order by e.employee_name, e.id",
-        )
-        .bind(hc.ctx.tenant)
-        .bind(id(doc, "company"))
-        .bind(start)
-        .bind(id(doc, "department"))
-        .bind(id(doc, "branch"))
-        .bind(id(doc, "designation"))
-        .bind(me)
-        .fetch_all(&mut **hc.tx)
-        .await?;
+        // Off-cycle: those with off-cycle additional salary on the day, something still owed from a
+        // corrected or released slip, or arrears due for periods paid (worked out for those whose
+        // paid periods a later assignment reaches). Others can be added by hand.
+        let mut off_cycle = Vec::new();
+        if b(doc, "off_cycle") {
+            let candidates: Vec<(Uuid, bool)> = sqlx::query_as(
+                "select e.id, (exists (select 1 from e_additional_salary a where a.tenant_id = e.tenant_id and a.employee = e.id and a.docstatus = 1 \
+                        and coalesce(a.off_cycle, false) and a.payroll_date = $3) \
+                      or exists (select 1 from e_salary_slip s where s.tenant_id = e.tenant_id and s.employee = e.id and s.docstatus = 1 \
+                        and s.payroll_entry is not null and not coalesce(s.held, false) and (s.replaces is not null or s.released_on is not null) \
+                        and coalesce(s.net_pay, 0) > coalesce(s.paid_amount, 0))) \
+                 from e_employee e where e.tenant_id = $1 and e.company = $2 and e.date_of_joining <= $3 and e.status in ('Active', 'Left') \
+                 and ($4::uuid is null or e.department = $4) and ($5::uuid is null or e.branch = $5) and ($6::uuid is null or e.designation = $6) \
+                 and (exists (select 1 from e_additional_salary a where a.tenant_id = e.tenant_id and a.employee = e.id and a.docstatus = 1 \
+                        and coalesce(a.off_cycle, false) and a.payroll_date = $3) \
+                      or exists (select 1 from e_salary_slip s where s.tenant_id = e.tenant_id and s.employee = e.id and s.docstatus = 1 \
+                        and s.payroll_entry is not null and not coalesce(s.held, false) and (s.replaces is not null or s.released_on is not null) \
+                        and coalesce(s.net_pay, 0) > coalesce(s.paid_amount, 0)) \
+                      or exists (select 1 from e_salary_slip s where s.tenant_id = e.tenant_id and s.employee = e.id and s.docstatus = 1 \
+                        and not coalesce(s.off_cycle, false) and s.start_date <= $3 \
+                        and s.salary_structure_assignment is distinct from (select a.id from e_salary_structure_assignment a where a.tenant_id = s.tenant_id \
+                          and a.employee = s.employee and a.docstatus = 1 and a.from_date <= s.end_date order by a.from_date desc limit 1))) \
+                 and not exists (select 1 from e_salary_slip ss where ss.tenant_id = e.tenant_id and ss.employee = e.id and ss.docstatus < 2 \
+                      and coalesce(ss.off_cycle, false) and ss.start_date = $3 and ss.payroll_entry is distinct from $7) \
+                 order by e.employee_name, e.id",
+            )
+            .bind(hc.ctx.tenant)
+            .bind(id(doc, "company"))
+            .bind(start)
+            .bind(id(doc, "department"))
+            .bind(id(doc, "branch"))
+            .bind(id(doc, "designation"))
+            .bind(me)
+            .fetch_all(&mut **hc.tx)
+            .await?;
+            for (e, direct) in candidates {
+                if direct || super::slip::arrears_due(hc, e, start).await? {
+                    off_cycle.push(e);
+                }
+            }
+        }
         let found: Vec<Uuid> = if b(doc, "off_cycle") {
             off_cycle
         } else {
@@ -396,6 +488,9 @@ impl DocHook for RunHook {
         .bind(id(doc, "id"))
         .fetch_one(&mut **hc.tx)
         .await?;
+        if s(doc, "paid_elsewhere_reference").is_some() {
+            return Err(Error::invalid("its salaries are recorded as paid elsewhere; undo that first"));
+        }
         if d(doc, "paid_amount") > Decimal::ZERO || paid {
             return Err(Error::invalid("salaries of this payroll entry have been paid; cancel the bank entry first"));
         }
@@ -446,6 +541,8 @@ impl DocHook for RunHook {
             "create_salary_slips" => self.create_slips(hc, doc).await.map(Some),
             "submit_salary_slips" => self.submit_slips(hc, doc).await.map(Some),
             "bank_file" => super::bank_file::bank_file(hc, doc, params).await.map(Some),
+            "record_payment_elsewhere" => paid_elsewhere(hc, doc, params).await.map(Some),
+            "undo_payment_elsewhere" => undo_paid_elsewhere(hc, doc).await.map(Some),
             "make_bank_entry" => {
                 let me = id(doc, "id").unwrap_or_default();
                 let due = super::payments::due(hc, me).await?;

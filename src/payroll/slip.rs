@@ -11,8 +11,8 @@
 //!   periods already paid when a salary assignment took effect in them;
 //! * income tax is the year's tax on projected taxable salary (with the opening figures of the year:
 //!   what the system moved from and a previous employer paid), less tax already deducted, spread
-//!   over the periods left in the payroll period, plus the tax that what is paid once (additional
-//!   salary, arrears) brings, taken in the period it is paid. In the period an employee leaves it is
+//!   over the periods left in the payroll period (additional salary marked Deduct Full Tax adds the
+//!   tax it brings, taken in the period it is paid). In the period an employee leaves it is
 //!   the year's actual tax less what was deducted: nothing is spread over months they will not work;
 //! * an off-cycle slip is for one day and pays only off-cycle additional salary of that day and
 //!   arrears, with the tax they bring;
@@ -74,8 +74,8 @@ struct Row {
     amount: Decimal,
     default_amount: Decimal,
     additional: Decimal,
-    /// Additional salary that replaced the structure's amount.
-    overwrite: bool,
+    /// The part of the additional salary whose full tax is taken in the period it is paid.
+    full_tax: Decimal,
     arrears: Decimal,
 }
 
@@ -85,15 +85,13 @@ impl Row {
     }
 
     fn new(component: Doc, amount: Decimal) -> Row {
-        Row { component, amount, default_amount: Decimal::ZERO, additional: Decimal::ZERO, overwrite: false, arrears: Decimal::ZERO }
-    }
-
-    /// What is paid once rather than every period: additional salary added to the structure's
-    /// amount, and arrears. Income tax on it is taken in the period it is paid.
-    fn one_off(&self) -> Decimal {
-        self.arrears + if self.overwrite { Decimal::ZERO } else { self.additional }
+        Row { component, amount, default_amount: Decimal::ZERO, additional: Decimal::ZERO, full_tax: Decimal::ZERO, arrears: Decimal::ZERO }
     }
 }
+
+/// Additional salary of a period by component: (amount, whether it replaces the structure's amount,
+/// the part of it whose full tax is taken in the period).
+type Extra = BTreeMap<Uuid, (Decimal, bool, Decimal)>;
 
 /// Each table's rows, in order.
 type Tables = HashMap<&'static str, Vec<Row>>;
@@ -158,15 +156,7 @@ impl Proration<'_> {
 
 /// The structure's rows for a period of `days`, with the period's additional salary for the
 /// components it has (taken out of `extra`), and the income tax components apart.
-async fn evaluate(
-    hc: &mut HookCtx<'_>,
-    emp: &Doc,
-    ssa: &Doc,
-    structure: &Doc,
-    co: &Company,
-    days: Days,
-    extra: &mut BTreeMap<Uuid, (Decimal, bool)>,
-) -> Result<(Tables, Vec<Doc>)> {
+async fn evaluate(hc: &mut HookCtx<'_>, emp: &Doc, ssa: &Doc, structure: &Doc, co: &Company, days: Days, extra: &mut Extra) -> Result<(Tables, Vec<Doc>)> {
     let mut vars = Vars::default();
     vars.set("base", d(ssa, "base"));
     vars.set("variable", d(ssa, "variable"));
@@ -228,9 +218,9 @@ async fn evaluate(
             let full = round_amount(full, b(&comp, "round_to_the_nearest_integer"), co.precision);
             vars.set(&abbr, full);
             let mut row = Row { default_amount: full, ..Row::new(comp.clone(), cx.prorate(full, &comp)) };
-            if let Some((a, overwrite)) = extra.remove(&id(&row.component, "id").unwrap_or_default()) {
+            if let Some((a, overwrite, full_tax)) = extra.remove(&id(&row.component, "id").unwrap_or_default()) {
                 row.additional = a;
-                row.overwrite = overwrite;
+                row.full_tax = full_tax;
                 row.amount = if overwrite { a } else { row.amount + a };
             }
             if table == "earnings" && !row.flag("statistical_component") {
@@ -352,6 +342,13 @@ async fn arrears(hc: &mut HookCtx<'_>, emp: &Doc, co: &Company, me: Option<Uuid>
     Ok(out)
 }
 
+/// Whether arrears are due to (or from) the employee for the periods paid up to `day`.
+pub(crate) async fn arrears_due(hc: &mut HookCtx<'_>, employee: Uuid, day: NaiveDate) -> Result<bool> {
+    let emp = get(hc.kernel, hc.ctx, hc.tx, "Employee", employee).await?;
+    let co = company(hc.kernel, hc.ctx, hc.tx, id(&emp, "company").unwrap_or_default()).await?;
+    Ok(!arrears(hc, &emp, &co, None, day + chrono::Duration::days(1)).await?.is_empty())
+}
+
 pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     let Some(emp) = stamp_company(hc, doc).await? else { return Ok(()) };
     // An off-cycle slip is for one day.
@@ -415,8 +412,9 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
 
     // ── components ──
     // Additional salary of the period, or for an off-cycle slip of its day and named for one.
-    let mut extra: BTreeMap<Uuid, (Decimal, bool)> = sqlx::query_as::<_, (Uuid, Decimal, bool)>(
-        "select salary_component, sum(amount), bool_or(coalesce(overwrite_salary_structure_amount, false)) from e_additional_salary \
+    let mut extra: Extra = sqlx::query_as::<_, (Uuid, Decimal, bool, Decimal)>(
+        "select salary_component, sum(amount), bool_or(coalesce(overwrite_salary_structure_amount, false)), \
+         coalesce(sum(amount) filter (where coalesce(deduct_full_tax, false)), 0) from e_additional_salary \
          where tenant_id = $1 and employee = $2 and docstatus = 1 and payroll_date between $3 and $4 and coalesce(off_cycle, false) = $5 \
          group by salary_component",
     )
@@ -428,7 +426,7 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     .fetch_all(&mut **hc.tx)
     .await?
     .into_iter()
-    .map(|(c, a, o)| (c, (a, o && !off_cycle)))
+    .map(|(c, a, o, f)| (c, (a, o && !off_cycle, f)))
     .collect();
     // An off-cycle slip pays none of the structure: its full period is worked out only to project the
     // year's income for tax.
@@ -448,9 +446,9 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
         out.clear();
     }
     // Additional salary for components outside the structure.
-    for (comp_id, (a, _)) in extra {
+    for (comp_id, (a, _, full_tax)) in extra {
         let comp = get(hc.kernel, hc.ctx, hc.tx, "SalaryComponent", comp_id).await?;
-        out.entry(table_of(&comp)).or_default().push(Row { additional: a, ..Row::new(comp, a) });
+        out.entry(table_of(&comp)).or_default().push(Row { additional: a, full_tax, ..Row::new(comp, a) });
     }
 
     // ── arrears ──
@@ -481,7 +479,10 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     let mut ded = out.remove("deductions").unwrap_or_default();
     let con = out.remove("employer_contributions").unwrap_or_default();
     let taxable_now = sum(Some(&earn), &|r| r.amount, &taxable_earning) - sum(Some(&ded), &|r| r.amount, &exempt_deduction);
-    let one_off = sum(Some(&earn), &Row::one_off, &taxable_earning) - sum(Some(&ded), &Row::one_off, &exempt_deduction);
+    // Its full tax now: all an off-cycle slip pays (no later period counts on it), and additional
+    // salary marked so; the rest is spread over the periods left with regular pay.
+    let one_off =
+        if off_cycle { taxable_now } else { sum(Some(&earn), &|r| r.full_tax, &taxable_earning) - sum(Some(&ded), &|r| r.full_tax, &exempt_deduction) };
     let mut tax_total = Decimal::ZERO;
     let leaving = !off_cycle && opt_date(&emp, "relieving_date").is_some_and(|r| r <= end);
     for comp in tax {
@@ -550,11 +551,12 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     Ok(())
 }
 
-/// This period's income tax. Regular pay's share is the year's tax on projected taxable salary
-/// (with the year's opening figures and what earlier slips paid, off-cycle ones included), less tax
-/// already deducted, spread over the periods left; what is paid once (additional salary, arrears, an
-/// off-cycle slip) adds the tax it brings to the year, taken now. A leaver's last slip settles the
-/// year: the tax on what it actually paid less what was deducted.
+/// This period's income tax: the year's tax on projected taxable salary (with the year's opening
+/// figures and what earlier slips paid, off-cycle ones included), less tax already deducted, spread
+/// over the periods left; additional salary and arrears raise the year's projection like regular
+/// pay. What is taken in full (an off-cycle slip's pay, additional salary marked Deduct Full Tax)
+/// adds the tax it brings to the year, now. A leaver's last slip settles the year: the tax on what
+/// it actually paid less what was deducted.
 #[allow(clippy::too_many_arguments)]
 async fn income_tax(
     hc: &mut HookCtx<'_>,
