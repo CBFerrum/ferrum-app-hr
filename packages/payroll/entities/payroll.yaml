@@ -34,9 +34,10 @@
     - {name: amount_based_on_formula, type: check}
     - {name: formula, type: code, description: Empty = the component's formula or amount}
     - {name: condition, type: code, description: "CEL; the row applies only when it is true"}
-    - {name: amount, type: currency, currency: parent.currency, min: "0", in_list: true}
+    - {name: amount, type: currency, currency: parent.currency, in_list: true}
     - {name: default_amount, type: currency, currency: parent.currency, read_only: true, description: Full-period amount before proration}
     - {name: additional_amount, type: currency, currency: parent.currency, read_only: true, description: From additional salary}
+    - {name: arrears_amount, type: currency, currency: parent.currency, read_only: true, label: Arrears, description: "For periods already paid, after a salary assignment that took effect in them (a recovery when negative)"}
     - {name: depends_on_payment_days, type: check, read_only: true}
     - {name: statistical_component, type: check, read_only: true}
     - {name: is_tax_applicable, type: check, read_only: true}
@@ -209,6 +210,7 @@
     - {name: amount, type: currency, required: true, min: "0", in_list: true}
     - {name: payroll_date, type: date, required: true, in_list: true, in_filter: true}
     - {name: overwrite_salary_structure_amount, type: check, description: Replace the structure's amount for this component instead of adding to it}
+    - {name: off_cycle, type: check, label: Off-Cycle, in_filter: true, description: "Paid by an off-cycle payroll entry on its payroll date, not with the period's regular salary slip"}
     - {name: reason, type: text}
     - {name: ref_doctype, type: data, read_only: true, label: Source Type}
     - {name: ref_docname, type: data, read_only: true, label: Source}
@@ -254,6 +256,7 @@
     - {name: designation, type: link, to: Designation, read_only: true}
     - {name: salary_slip, type: link, to: SalarySlip, read_only: true, on_delete: set_null}
     - {name: net_pay, type: currency, currency: parent.currency, read_only: true, in_list: true}
+    - {name: held, type: check, read_only: true, in_list: true, description: "Salary held: left out of the bank payment until released"}
 
 - name: PayrollEntry
   label: Payroll Entry
@@ -269,8 +272,10 @@
     - {name: posting_date, type: date, required: true, default_expr: today, in_list: true}
     - {name: currency, type: link, to: Currency, fetch_from: company.default_currency, read_only: true}
     - {name: payroll_frequency, type: select, options: [Monthly, Fortnightly, Weekly], default: Monthly, required: true, in_list: true}
+    - {name: off_cycle, type: check, label: Off-Cycle, in_list: true, in_filter: true,
+       description: "For one day, the start date, and the employees listed: pays only what is named for it (off-cycle additional salary, arrears, and what is still owed from earlier slips), never the period's regular pay"}
     - {name: start_date, type: date, required: true, in_list: true}
-    - {name: end_date, type: date, required: true, in_list: true}
+    - {name: end_date, type: date, required: true, in_list: true, description: "The start date again for an off-cycle run"}
     - {name: department, type: link, to: Department, in_filter: true}
     - {name: branch, type: link, to: Branch, in_filter: true}
     - {name: designation, type: link, to: Designation, in_filter: true}
@@ -291,6 +296,21 @@
     - {name: create_salary_slips, label: Create Salary Slips, docstatus: [1], permission: submit, condition: "!doc.salary_slips_submitted"}
     - {name: submit_salary_slips, label: Submit Salary Slips, docstatus: [1], permission: submit, condition: "doc.salary_slips_created && !doc.salary_slips_submitted"}
   list: {columns: [number, start_date, end_date, number_of_employees, total_net_pay, status], sort: start_date desc}
+
+- name: SalaryArrear
+  label: Salary Arrear
+  kind: child
+  description: "The difference, for one period already paid and one component, between what the salary assignment in force now gives for that period (its payment days and proration as it was paid) and what was paid for it."
+  fields:
+    - {name: period_start, type: date, read_only: true, in_list: true}
+    - {name: period_end, type: date, read_only: true, in_list: true}
+    - {name: salary_component, type: link, to: SalaryComponent, read_only: true, in_list: true}
+    - {name: abbr, type: data, read_only: true}
+    - {name: paid_amount, type: currency, currency: parent.currency, read_only: true, in_list: true, label: As Paid}
+    - {name: due_amount, type: currency, currency: parent.currency, read_only: true, in_list: true, label: Due Now}
+    - {name: amount, type: currency, currency: parent.currency, read_only: true, in_list: true, label: Arrears}
+    - {name: salary_slip, type: link, to: SalarySlip, read_only: true, on_delete: set_null, label: Paid By}
+    - {name: salary_structure_assignment, type: link, to: SalaryStructureAssignment, read_only: true, on_delete: set_null}
 
 - name: SalarySlip
   label: Salary Slip
@@ -320,6 +340,10 @@
     - {name: salary_structure, type: link, to: SalaryStructure, read_only: true}
     - {name: salary_structure_assignment, type: link, to: SalaryStructureAssignment, read_only: true}
     - {name: payroll_entry, type: link, to: PayrollEntry, read_only: true, in_filter: true}
+    - {name: off_cycle, type: check, label: Off-Cycle, in_list: true, in_filter: true,
+       description: "For one day: pays only off-cycle additional salary of that day and arrears, never the period's regular pay"}
+    - {name: replaces, type: link, to: SalarySlip, read_only: true, no_copy: true, on_delete: set_null, description: "The cancelled slip of the same period this one corrects"}
+    - {name: replaced_by, type: link, to: SalarySlip, read_only: true, no_copy: true, on_delete: set_null, description: "The slip that corrected this one"}
     - {name: total_working_days, type: decimal, read_only: true}
     - {name: leave_without_pay, type: decimal, read_only: true}
     - {name: absent_days, type: decimal, read_only: true}
@@ -327,7 +351,11 @@
     - {name: earnings, type: table, of: SalaryDetail}
     - {name: deductions, type: table, of: SalaryDetail}
     - {name: employer_contributions, type: table, of: SalaryDetail}
+    - {name: arrears, type: table, of: SalaryArrear, read_only: true, description: "By period and component; their totals are in the rows above"}
     - {name: gross_pay, type: currency, currency: currency, read_only: true, in_list: true}
+    - {name: recovery_amount, type: currency, currency: currency, read_only: true, label: Excess Pay Recovered,
+       description: "Taken back from this pay: an earlier slip, corrected, paid less than the bank had already paid"}
+    - {name: recovery_left, type: currency, currency: currency, read_only: true, label: Still to Recover, description: "More than this pay could take; recovered from later pay"}
     - {name: total_deduction, type: currency, currency: currency, read_only: true}
     - {name: net_pay, type: currency, currency: currency, read_only: true, in_list: true}
     - {name: rounded_total, type: currency, currency: currency, read_only: true}
@@ -335,9 +363,19 @@
     - {name: taxable_earnings, type: currency, currency: currency, read_only: true, description: Taxable earnings less tax-exempt deductions}
     - {name: final_settlement, type: check, read_only: true, description: "The employee leaves in this period: income tax is settled to the year's actual liability"}
     - {name: income_tax_deducted, type: currency, currency: currency, read_only: true}
+    - {name: paid_amount, type: currency, currency: currency, read_only: true, no_copy: true, description: "Paid by bank entries (and settled by later pay)"}
+    - {name: held, type: check, read_only: true, no_copy: true, in_list: true, in_filter: true, label: Salary Held, description: "Accrued, but left out of bank payments until released"}
+    - {name: hold_reason, type: text, read_only: true, no_copy: true}
+    - {name: released_on, type: date, read_only: true, no_copy: true, description: "Released from hold: paid with the next bank payment"}
     - {name: status, type: select, options: [Draft, Submitted, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
   rules:
     - {name: ordered_dates, check: "doc.start_date == null || doc.end_date == null || doc.end_date >= doc.start_date", message: "End date must not be before start date"}
+  actions:
+    - {name: make_correction, label: Correct, docstatus: [1], permission: submit, condition: "doc.payroll_entry != null && doc.replaced_by == null",
+       params: [{name: posting_date, type: date, label: Posting Date, description: "The day the correction is booked (today when empty)"}]}
+    - {name: hold_salary, label: Hold Salary, docstatus: [1], permission: submit, condition: "doc.payroll_entry != null && !doc.held",
+       params: [{name: reason, type: text, label: Reason, required: true}]}
+    - {name: release_salary, label: Release Salary, docstatus: [1], permission: submit, condition: "doc.held"}
   list: {columns: [number, employee_name, start_date, end_date, net_pay, status], sort: start_date desc}
 
 - name: PayrollOpening
