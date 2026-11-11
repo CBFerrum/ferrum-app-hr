@@ -25,7 +25,7 @@ entry. Employees get self-service access to what is theirs.
 
 | At a glance | |
 |---|---|
-| 📦 Version | `0.11.0` |
+| 📦 Version | `0.11.1` |
 | 🧱 Platform | Ferrum `>=0.3.2, <0.4` |
 | 🔗 Requires | nothing else |
 | 🖥️ Interface | its own, at `/people/` |
@@ -307,6 +307,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.11.1** | A salary slip prints as a payslip. |
 | **0.11.0** | Additional salary that repeats; late leave and attendance carried to the next pay; employee loans repaid through salary. |
 | **0.10.0** | One slip of a posted or paid run corrected; arrears for a backdated revision; off-cycle runs; salaries held and released. |
 | **0.9.0** | Employer contributions; opening year-to-date figures and a previous employer's; notice served before leaving; a full and final statement that gathers the last pay, leave, notice and gratuity. |
