@@ -357,6 +357,34 @@ pub(crate) async fn arrears_due(hc: &mut HookCtx<'_>, employee: Uuid, day: Naive
     Ok(!arrears(hc, &emp, &co, None, day + chrono::Duration::days(1)).await?.is_empty())
 }
 
+/// A regular period's days as a slip pays them, from leave and attendance as they are now: working
+/// days are the period's (less holidays when the company excludes them), payment days those the
+/// employee was employed, less approved leave without pay and absences.
+async fn days_of(hc: &mut HookCtx<'_>, emp: &Doc, co: &Company, start: NaiveDate, end: NaiveDate) -> Result<Days> {
+    let emp_id = id(emp, "id").unwrap_or_default();
+    let exclude = b(&co.doc, "pay_exclude_holidays_from_working_days");
+    let holidays = employee_holidays(hc.tx, hc.ctx.tenant, emp_id, start, end).await?;
+    let count = |a: NaiveDate, b_: NaiveDate| -> i64 {
+        if b_ < a {
+            0
+        } else if exclude {
+            working_days(a, b_, &holidays)
+        } else {
+            (b_ - a).num_days() + 1
+        }
+    };
+    let working = count(start, end);
+    let from = opt_date(emp, "date_of_joining").map_or(start, |j| j.max(start));
+    let to = opt_date(emp, "relieving_date").map_or(end, |r| r.min(end));
+    let employed = count(from, to);
+    let (lwp, absent) = if employed > 0 {
+        (crate::leave::lwp_days(hc, emp_id, from, to, &holidays, !exclude).await?, absent_days(hc, emp_id, from, to).await?)
+    } else {
+        (Decimal::ZERO, Decimal::ZERO)
+    };
+    Ok(Days { working: Decimal::from(working), payment: (Decimal::from(employed) - lwp - absent).max(Decimal::ZERO), lwp, absent })
+}
+
 pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     let Some(emp) = stamp_company(hc, doc).await? else { return Ok(()) };
     // An off-cycle slip is for one day.
@@ -391,27 +419,7 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     let days = if off_cycle {
         Days { working: Decimal::ZERO, payment: Decimal::ZERO, lwp: Decimal::ZERO, absent: Decimal::ZERO }
     } else {
-        let exclude = b(&co.doc, "pay_exclude_holidays_from_working_days");
-        let holidays = employee_holidays(hc.tx, hc.ctx.tenant, emp_id, start, end).await?;
-        let count = |a: NaiveDate, b_: NaiveDate| -> i64 {
-            if b_ < a {
-                0
-            } else if exclude {
-                working_days(a, b_, &holidays)
-            } else {
-                (b_ - a).num_days() + 1
-            }
-        };
-        let working = count(start, end);
-        let from = opt_date(&emp, "date_of_joining").map_or(start, |j| j.max(start));
-        let to = opt_date(&emp, "relieving_date").map_or(end, |r| r.min(end));
-        let employed = count(from, to);
-        let (lwp, absent) = if employed > 0 {
-            (crate::leave::lwp_days(hc, emp_id, from, to, &holidays, !exclude).await?, absent_days(hc, emp_id, from, to).await?)
-        } else {
-            (Decimal::ZERO, Decimal::ZERO)
-        };
-        Days { working: Decimal::from(working), payment: (Decimal::from(employed) - lwp - absent).max(Decimal::ZERO), lwp, absent }
+        days_of(hc, &emp, &co, start, end).await?
     };
     set(doc, "total_working_days", money(days.working));
     set(doc, "leave_without_pay", money(days.lwp));
