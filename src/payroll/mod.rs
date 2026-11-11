@@ -5,6 +5,7 @@
 
 pub(crate) mod bank_file;
 pub(crate) mod formula;
+pub(crate) mod loans;
 pub(crate) mod payments;
 pub(crate) mod run;
 pub(crate) mod slip;
@@ -38,7 +39,8 @@ pub(crate) fn register(h: &mut HookRegistry) {
         .register("LeaveEncashment", Arc::new(EncashmentHook))
         .register("SalarySlip", Arc::new(slip::SlipHook))
         .register("PayrollOpening", Arc::new(OpeningHook))
-        .register("PayrollEntry", Arc::new(run::RunHook));
+        .register("PayrollEntry", Arc::new(run::RunHook))
+        .register("EmployeeLoan", Arc::new(loans::LoanHook));
 }
 
 /// The submitted salary structure assignment in force on `day`: the latest starting on or before it.

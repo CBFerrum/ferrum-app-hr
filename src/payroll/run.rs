@@ -102,6 +102,8 @@ pub(crate) async fn post_accrual(
                 }
             }
         }
+        let loan_lines = super::loans::accrual_lines(hc, slip, &co.currency_code, sign, &name).await?;
+        entry.lines.extend(loan_lines.into_iter().map(|l| l.cost_center(cc)));
         let slip_id = id(slip, "id").unwrap_or_default();
         for (amount, what) in [(d(slip, "net_pay"), "Net pay"), (d(slip, "recovery_amount"), "Excess pay recovered from")] {
             if !amount.is_zero() {
