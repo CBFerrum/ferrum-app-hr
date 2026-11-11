@@ -161,7 +161,10 @@ export interface Request {
   title: string;
   /** The day it is about, to put the latest first. */
   date: string;
+  /** What the person is told. */
   status: string;
+  /** The stored state id the colour comes from. */
+  state: string;
 }
 
 const ASKS: Record<string, string> = { get "Missed Check-in"() { return t("Missed check-in"); }, get "Work From Home"() { return t("Working from home"); }, get "On Duty"() { return t("On duty"); } };
@@ -177,7 +180,7 @@ export function requests(
   locale?: string,
 ): Request[] {
   const all: Request[] = [
-    ...leave.map((l) => ({ key: `l-${l.id}`, entity: "LeaveApplication" as const, id: l.id, kind: "Leave" as const, title: `${l.leave_type ?? "Leave"}, ${span(l.from_date, l.to_date, locale)}`, date: l.from_date, status: l.status === "Open" ? "Waiting for approval" : l.status })),
+    ...leave.map((l) => ({ key: `l-${l.id}`, entity: "LeaveApplication" as const, id: l.id, kind: "Leave" as const, title: `${l.leave_type ?? "Leave"}, ${span(l.from_date, l.to_date, locale)}`, date: l.from_date, status: l.status === "Open" ? "Waiting for approval" : l.status, state: l.status })),
     ...attendance.map((a) => ({
       key: `a-${a.id}`,
       entity: "AttendanceRequest" as const,
@@ -186,6 +189,7 @@ export function requests(
       title: `${ASKS[a.reason ?? ""] ?? "Attendance"}, ${span(a.from_date, a.to_date, locale)}`,
       date: a.from_date,
       status: a.status === "Open" ? "Waiting for approval" : a.status,
+      state: a.status,
     })),
     ...claims.map((c) => ({
       key: `x-${c.id}`,
@@ -195,6 +199,7 @@ export function requests(
       title: t("Expense claim{value}", { value: c.total_claimed_amount ? `, ${c.currency ? `${c.currency} ` : ""}${c.total_claimed_amount}` : "" }),
       date: c.posting_date,
       status: claimStatus(c.status),
+      state: c.status,
     })),
   ];
   return all.sort((a, b) => b.date.localeCompare(a.date)).slice(0, limit);

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.2
+
+The interface follows the upgraded design system, rebuilt with Ferrum-Frontend 0a47157. Text uses the kit's type roles (nothing under 12px) and controls its height tokens; loading shows skeletons shaped like what is coming; empty, no matches, denied, offline and failed are told apart; status colours come from stored state ids. The interface check now runs the UI lint against an empty baseline. A request's colour comes from its stored state, not from the wording shown.
+
 ## 0.11.1
 
 A salary slip prints as a payslip: the company, the period, the employee, the days, earnings and deductions side by side with arrears, adjustments and loan instalments, employer contributions apart, net pay.

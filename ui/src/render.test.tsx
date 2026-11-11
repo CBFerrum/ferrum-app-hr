@@ -113,8 +113,8 @@ describe("Approvals", () => {
     expect(html).toContain("You are up to date");
   });
 
-  it("shows a spinner while it loads", () => {
-    expect(draw(<Inbox />, "/approvals")).toContain("Loading what is waiting for you");
+  it("shows a skeleton while it loads", () => {
+    expect(draw(<Inbox />, "/approvals")).toContain(`aria-label="Loading…"`);
   });
 });
 
