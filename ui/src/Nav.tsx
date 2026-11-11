@@ -5,8 +5,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { NavLink } from "react-router";
-import { api, t } from "@ferrum/client";
-import { useLiveEntity } from "@ferrum/kit";
+import { ApiError, api, t } from "@ferrum/client";
+import { StatePanel, useLiveEntity } from "@ferrum/kit";
 import { useMe } from "@ferrum/records";
 import type { Item } from "./inbox";
 
@@ -48,4 +48,11 @@ export function Nav() {
       <NavLink to="/directory">{t("People")}</NavLink>
     </nav>
   );
+}
+
+/** A read that failed, told apart by what the server said: no right to it, no connection, or something else. */
+export function Failed({ error, onRetry, title }: { error: unknown; onRetry: () => void; title?: string }) {
+  if (error instanceof ApiError && error.status === 403) return <StatePanel kind="denied" />;
+  if (error instanceof ApiError && error.status === 0) return <StatePanel kind="offline" onRetry={onRetry} />;
+  return <StatePanel kind="failed" title={title} error={error} onRetry={onRetry} />;
 }

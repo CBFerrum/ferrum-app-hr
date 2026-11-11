@@ -7,10 +7,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useSearchParams } from "react-router";
 import { api, todayIso, t, isolate } from "@ferrum/client";
-import { Button, Dialog, ErrorState, Icon, Spinner } from "@ferrum/kit";
+import { Button, Dialog, Icon, TableSkeleton } from "@ferrum/kit";
 import { useMe } from "@ferrum/records";
 import type { Holiday } from "./calendar";
 import { f, rows } from "./data";
+import { Failed } from "./Nav";
 import { addDays, addMonths, endOfMonth, monthName, startOfMonth, startOfWeek, weekdayName } from "./dates";
 import type { Employee } from "./people";
 import { type Attended, attendanceMonth, type Mark, MARKS, type MonthDay, monthCounts } from "./space";
@@ -137,9 +138,9 @@ export function Month({ employee, onFix }: { employee: Employee; onFix: (day: st
       </div>
       <div className="card-body ppl-month-body">
         {q.error ? (
-          <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+          <Failed error={q.error} onRetry={() => void q.refetch()} />
         ) : !q.data ? (
-          <Spinner label={t("Loading the month")} />
+          <TableSkeleton columns={7} rows={5} />
         ) : (
           <>
             <table className="ppl-month">
