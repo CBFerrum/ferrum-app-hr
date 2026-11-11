@@ -30,6 +30,8 @@ const ENTITY: &str = "FullAndFinalStatement";
 const CLAIM: &str = "Expense Claim";
 const ADVANCE: &str = "Employee Advance";
 const SLIP: &str = "Salary Slip";
+/// What is still owed of an employee loan (with the connector's payroll).
+const LOAN: &str = "Employee Loan";
 const ENCASHMENT: &str = "Leave Encashment";
 /// A payroll run's slip still owed (or paid too much) on the last day.
 const RUN_SLIP: &str = "Payroll Salary";
@@ -67,6 +69,29 @@ async fn referenced(hc: &mut HookCtx<'_>, st: &Doc, line: &Doc, write: bool) -> 
 /// paid its line's amount, an advance has it returned. Checks only, unless `write`.
 async fn settle_lines(hc: &mut HookCtx<'_>, st: &Doc, sign: Decimal, write: bool) -> Result<()> {
     for line in rows(st, "payables").iter().chain(rows(st, "receivables").iter()) {
+        // A loan's balance is closed by the statement's entry: an event of the loan naming the statement.
+        if s(line, "reference_type") == Some(LOAN) {
+            let Some(loan) = lookup(hc, "EmployeeLoan", id(line, "reference")).await? else { continue };
+            let lid = id(&loan, "id").unwrap_or_default();
+            let st_id = s(st, "id").unwrap_or_default().to_string();
+            if sign > Decimal::ZERO {
+                if d(line, "amount") > d(&loan, "balance") {
+                    return Err(Error::invalid(format!(
+                        "employee loan {} has {} left, less than the statement recovers; get the outstanding amounts again",
+                        s(&loan, "number").unwrap_or_default(),
+                        d(&loan, "balance").normalize()
+                    )));
+                }
+                if write {
+                    let e = json!({"event_date": crate::today().to_string(), "event_type": "Settled by Statement", "amount": money(d(line, "amount")),
+                                   "account": line.get("account"), "reference": st_id, "reason": format!("Full and final statement {}", s(st, "number").unwrap_or_default())});
+                    crate::payroll::loans::event(hc, lid, Some(e), None).await?;
+                }
+            } else if write {
+                crate::payroll::loans::event(hc, lid, None, Some(&st_id)).await?;
+            }
+            continue;
+        }
         let Some((doc, label)) = referenced(hc, st, line, write).await? else { continue };
         let delta = sign * d(line, "amount");
         if s(line, "reference_type") == Some(CLAIM) {
@@ -177,6 +202,29 @@ async fn outstanding(hc: &mut HookCtx<'_>, st: &Doc) -> Result<(Vec<Value>, Vec<
             json!({"component": "Expense claim", "reference_type": CLAIM, "reference": claim.to_string(), "reference_number": number,
                    "account": account.map(|a| a.to_string()), "amount": money(amount), "gathered_amount": money(amount), "remark": format!("Approved, posted {posted}")})
         }));
+    // Loans: what is owed after the last pay's own slip takes its instalment.
+    if hc.ctx.schema.entity("EmployeeLoan").is_some() {
+        let own = match payables.iter().find(|l| l.get("reference_type").and_then(Value::as_str) == Some(SLIP)) {
+            Some(l) => lookup(hc, "SalarySlip", l.get("reference").and_then(Value::as_str).and_then(|v| v.parse().ok())).await?,
+            None => None,
+        };
+        for (loan, number, account, balance) in crate::payroll::loans::open_for(hc, employee).await? {
+            let by_last_pay: Decimal = own.iter().flat_map(|sl| rows(sl, "loans")).filter(|r| id(r, "loan") == Some(loan)).map(|r| d(&r, "principal")).sum();
+            let amount = balance - by_last_pay;
+            if amount > Decimal::ZERO {
+                receivables.push(line(
+                    "Employee loan".into(),
+                    LOAN,
+                    loan,
+                    number,
+                    account.unwrap_or_default(),
+                    amount,
+                    None,
+                    "Still owed on the last working day".into(),
+                ));
+            }
+        }
+    }
     receivables.extend(advances.into_iter().map(|(advance, number, account, amount, purpose)| {
         json!({"component": "Employee advance", "reference_type": ADVANCE, "reference": advance.to_string(), "reference_number": number,
                    "account": account.map(|a| a.to_string()), "amount": money(amount), "gathered_amount": money(amount), "remark": purpose})

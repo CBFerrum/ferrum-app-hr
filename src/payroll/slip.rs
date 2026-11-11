@@ -527,7 +527,13 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     let excess: Decimal =
         if id(doc, "payroll_entry").is_some() { super::payments::excess(hc, emp_id, me).await?.iter().map(|e| e.1).sum() } else { Decimal::ZERO };
     let recovery = excess.min((gross - deductions).max(Decimal::ZERO));
-    let net = gross - deductions - recovery;
+    // Loan instalments of the month (with the connector to ERP), never more than the pay left.
+    let (loans, loan_total) = if !off_cycle && hc.entity.field("loans").is_some() {
+        super::loans::slip_rows(hc, emp_id, me, end, co.precision, gross - deductions - recovery).await?
+    } else {
+        (Vec::new(), Decimal::ZERO)
+    };
+    let net = gross - deductions - recovery - loan_total;
     if net < Decimal::ZERO {
         return Err(Error::invalid(format!("deductions ({}) exceed earnings ({}) for {name}", deductions.normalize(), gross.normalize())));
     }
@@ -567,7 +573,11 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     set(doc, "gross_pay", money(gross));
     set(doc, "recovery_amount", money(recovery));
     set(doc, "recovery_left", money(excess - recovery));
-    set(doc, "total_deduction", money(deductions + recovery));
+    if hc.entity.field("loans").is_some() {
+        set(doc, "loans", Value::Array(loans));
+        set(doc, "total_loan_repayment", money(loan_total));
+    }
+    set(doc, "total_deduction", money(deductions + recovery + loan_total));
     set(doc, "net_pay", money(net));
     set(doc, "rounded_total", money(round_amount(net, true, co.precision)));
     set(doc, "total_employer_contribution", money(contributions));
@@ -873,6 +883,7 @@ impl DocHook for SlipHook {
         }
         super::payments::allocate(hc, me, &settled).await?;
         super::payments::refresh(hc, &[me]).await?;
+        super::loans::slip_changed(hc, doc).await?;
         if let Some(pe) = late {
             run::refresh_totals(hc, &pe, 1, Doc::new()).await?;
         }
@@ -909,6 +920,7 @@ impl DocHook for SlipHook {
             }
         }
         super::payments::unallocate(hc, me).await?;
+        super::loans::slip_changed(hc, doc).await?;
         let mut v = Doc::new();
         set(&mut v, "status", "Cancelled");
         hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "SalarySlip", me, v).await

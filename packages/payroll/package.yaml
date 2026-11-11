@@ -16,7 +16,7 @@ modules:
     icon: banknote
     order: 75
     # The full and final statement comes with the connector to ERP (hr_erp); without it the item drops out.
-    items: [PayrollEntry, SalarySlip, FullAndFinalStatement, SalaryStructure, SalaryStructureAssignment, SalaryComponent, AdditionalSalary, PayrollPeriod,
+    items: [PayrollEntry, SalarySlip, FullAndFinalStatement, EmployeeLoan, SalaryStructure, SalaryStructureAssignment, SalaryComponent, AdditionalSalary, PayrollPeriod,
             PayrollOpening, IncomeTaxSlab, EmployeeTaxExemptionDeclaration, EmployeeTaxExemptionCategory, report:salary_register, report:payroll_summary,
             report:bank_remittance, report:income_tax_deductions]
 

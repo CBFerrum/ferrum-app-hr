@@ -136,6 +136,11 @@ fn pay_that_repeats() {
 }
 
 #[test]
+fn employee_loans() {
+    run(loans_scenario());
+}
+
+#[test]
 fn hr_and_payroll_without_erp() {
     run(alone_scenario());
 }
@@ -3275,4 +3280,141 @@ async fn repeats_scenario() {
         total += amount_of(&t.get("SalarySlip", uid(&s)).await, "earnings", "SHA");
     }
     assert_eq!(total, n("6000"));
+}
+
+fn loan_row(s: &Doc) -> Option<(Decimal, Decimal, String)> {
+    s["loans"].as_array().unwrap().first().map(|r| (dec(&r["principal"]), dec(&r["interest"]), r["note"].as_str().unwrap_or("").to_string()))
+}
+
+/// Loans: one over six months at 12% a year with a month deferred, its slip corrected and its run
+/// cancelled, a lump sum and an early payoff; one whose instalment is more than a low month's pay,
+/// written off; and a leaver's, closed by the full and final statement. The loan account holds
+/// what the loans say is owed at every step.
+async fn loans_scenario() {
+    let p = P::new("hrloan").await;
+    let t = &p.t;
+    let (asha, ben, chen) = (p.hire("Asha", "100000").await, p.hire("Ben", "10000").await, p.hire("Chen", "50000").await);
+    let lend = |e: &Doc, amount: &str, terms: Value| {
+        let mut v =
+            obj(json!({"employee": e["id"], "loan_amount": amount, "posting_date": "2026-08-25", "repayment_start_date": "2026-09-01", "purpose": "Housing"}));
+        v.extend(obj(terms));
+        let p = &p;
+        async move { p.t.ins_submit(&p.pm, "EmployeeLoan", Value::Object(v)).await }
+    };
+    let agree = || async {
+        let loans = t.list(&t.admin, "EmployeeLoan", json!({"docstatus": 1})).await;
+        let owed: Decimal = loans.iter().map(|l| dec(&l["balance"])).sum();
+        assert_eq!(t.gl("Employee Loans").await, owed, "the loan account holds what the loans say is owed");
+        owed
+    };
+    let loan = |l: &Doc| t.get("EmployeeLoan", uid(l));
+    let bank = t.gl("Primary Bank").await;
+    let a_loan = lend(&asha, "60000", json!({"interest_rate": "12", "repayment_method": "Number of Periods", "repayment_periods": 6})).await;
+    let b_loan = lend(&ben, "30000", json!({"repayment_method": "Amount per Period", "repayment_amount": "15000"})).await;
+    let c_loan = lend(&chen, "20000", json!({"repayment_periods": 6})).await;
+    assert_eq!((agree().await, t.gl("Primary Bank").await - bank), (n("110000"), n("-110000")), "paid from the bank");
+    let a = loan(&a_loan).await;
+    assert_eq!((a["status"].clone(), a["schedule"].as_array().unwrap().len()), (json!("Repaying"), 6), "{a:?}");
+    refused(
+        t.try_ins(
+            &p.pm,
+            "EmployeeLoan",
+            json!({"employee": ben["id"], "loan_amount": "50000", "posting_date": "2026-08-25", "repayment_start_date": "2026-09-01", "interest_rate": "24",
+            "repayment_method": "Amount per Period", "repayment_amount": "500"}),
+        )
+        .await,
+        "does not cover the first month's interest (1000)",
+    );
+
+    // ───────────── September: equal instalments, interest first; Ben's pay too low ─────────────
+    p.run("2026-09-01", "2026-09-30", true).await;
+    let s_asha = p.slip(&asha, "2026-09-01").await;
+    assert_eq!(loan_row(&s_asha).map(|r| (r.0, r.1)), Some((n("9752.90"), n("600"))), "10,352.90: a month's interest on 60,000 and the rest");
+    assert_eq!(dec(&s_asha["total_loan_repayment"]), n("10352.90"));
+    assert_eq!(dec(&s_asha["gross_pay"]) - dec(&s_asha["total_deduction"]), dec(&s_asha["net_pay"]));
+    assert_eq!(t.gl("Interest on Employee Loans").await, n("-600"));
+    let s_ben = p.slip(&ben, "2026-09-01").await;
+    let (taken, _, note) = loan_row(&s_ben).unwrap();
+    assert_eq!((taken, dec(&s_ben["net_pay"])), (n("10000"), Decimal::ZERO), "never more than the pay allows");
+    assert!(note.contains("10000 of the 15000 due"), "{note}");
+    agree().await;
+
+    // ───────────── October deferred for Asha; Ben's shortfall comes with his next instalment ─────────────
+    refused(t.k.run_action(&p.pm, "EmployeeLoan", uid(&a_loan), "defer_instalment", json!({"period": "2026-10-10"})).await, "say why");
+    refused(
+        t.k.run_action(&p.pm, "EmployeeLoan", uid(&a_loan), "defer_instalment", json!({"period": "2026-09-10", "reason": "Wedding"})).await,
+        "already deducted the instalment of 2026-09-01",
+    );
+    t.act(&p.pm, "EmployeeLoan", uid(&a_loan), "defer_instalment", json!({"period": "2026-10-10", "reason": "Wedding in the family"})).await;
+    p.run("2026-10-01", "2026-10-31", true).await;
+    assert!(loan_row(&p.slip(&asha, "2026-10-01").await).is_none(), "deferred");
+    let o_ben = p.slip(&ben, "2026-10-01").await;
+    assert_eq!(loan_row(&o_ben).map(|r| r.0), Some(n("10000")), "20,000 due, as much as the pay allows");
+    agree().await;
+    // What is left of Ben's is written off.
+    refused(t.k.run_action(&p.pm, "EmployeeLoan", uid(&b_loan), "write_off", json!({"reason": "Hardship"})).await, "account");
+    let bad = t.ins(&t.admin, "Account", json!({"account_name": "Loans Written Off", "company": t.c(), "root_type": "Expense"})).await;
+    t.act(&p.pm, "EmployeeLoan", uid(&b_loan), "write_off", json!({"account": bad["id"], "reason": "Hardship"})).await;
+    let b = loan(&b_loan).await;
+    assert_eq!((b["status"].clone(), dec(&b["balance"]), t.gl("Loans Written Off").await), (json!("Written Off"), Decimal::ZERO, n("10000")));
+    refused(t.k.cancel(&p.pm, "EmployeeLoan", uid(&b_loan), None).await, "repaid in part");
+    agree().await;
+
+    // ───────────── November: corrected, then its run cancelled and made again ─────────────
+    let nov = p.run("2026-11-01", "2026-11-30", true).await;
+    let n_asha = p.slip(&asha, "2026-11-01").await;
+    let (principal, interest, _) = loan_row(&n_asha).unwrap();
+    assert_eq!(interest, n("502.47"), "on the 50,247.10 left");
+    let after_nov = agree().await;
+    let fixed = p.correct(&n_asha).await;
+    assert_eq!(loan_row(&fixed).map(|r| (r.0, r.1)), Some((principal, interest)), "given back and taken again, once");
+    assert_eq!(agree().await, after_nov);
+    t.k.cancel(&p.pm, "PayrollEntry", nov, None).await.expect("cancel November");
+    assert_eq!(dec(&loan(&a_loan).await["balance"]), n("50247.10"), "November's instalment given back");
+    agree().await;
+    p.run("2026-11-01", "2026-11-30", true).await;
+    assert_eq!(loan_row(&p.slip(&asha, "2026-11-01").await).map(|r| r.0), Some(principal));
+    agree().await;
+
+    // ───────────── a lump sum, then paid off early ─────────────
+    let before = dec(&loan(&a_loan).await["balance"]);
+    refused(t.k.run_action(&p.pm, "EmployeeLoan", uid(&a_loan), "repay", json!({"amount": "99999999"})).await, "left to repay");
+    t.act(&p.pm, "EmployeeLoan", uid(&a_loan), "repay", json!({"amount": "20000", "posting_date": "2026-12-05"})).await;
+    assert_eq!(dec(&loan(&a_loan).await["balance"]), before - n("20000"));
+    agree().await;
+    // Chen leaves on 15 December: his statement's own slip takes December's instalment, the statement the rest.
+    let sep = t
+        .ins_submit(
+            &p.hr,
+            "EmployeeSeparation",
+            json!({"employee": chen["id"], "reason": "Resignation", "resignation_letter_date": "2026-11-15",
+            "relieving_date": "2026-12-15", "shortfall_settlement": "Waive"}),
+        )
+        .await;
+    let fnf = t.act(&p.hr, "EmployeeSeparation", uid(&sep), "make_full_and_final", json!({})).await;
+    let fnf = t.get("FullAndFinalStatement", vid(&fnf)).await;
+    let last_pay = fnf["payables"].as_array().unwrap().iter().find(|r| r["reference_type"] == json!("Salary Slip")).unwrap().clone();
+    let own = t.get("SalarySlip", last_pay["reference"].as_str().unwrap().parse().unwrap()).await;
+    let in_last_pay = loan_row(&own).unwrap().0;
+    let owed = fnf["receivables"].as_array().unwrap().iter().find(|r| r["reference_type"] == json!("Employee Loan")).unwrap().clone();
+    assert_eq!(dec(&owed["amount"]) + in_last_pay, dec(&loan(&c_loan).await["balance"]), "{fnf:?}");
+    t.submit(&p.hr, "FullAndFinalStatement", uid(&fnf)).await;
+    let je = t.act(&p.hr, "FullAndFinalStatement", uid(&fnf), "make_payment_entry", json!({})).await;
+    t.submit(&p.acct, "JournalEntry", vid(&je)).await;
+    let c = loan(&c_loan).await;
+    assert_eq!((c["status"].clone(), dec(&c["balance"])), (json!("Repaid"), Decimal::ZERO), "closed by the statement");
+    agree().await;
+
+    p.run("2026-12-01", "2026-12-31", true).await;
+    let d_asha = p.slip(&asha, "2026-12-01").await;
+    assert!(loan_row(&d_asha).unwrap().0 < principal, "the rest spread over the months left");
+    agree().await;
+    let payoff = t.act(&p.pm, "EmployeeLoan", uid(&a_loan), "repay", json!({"posting_date": "2027-01-05"})).await;
+    assert!(payoff["message"].as_str().unwrap().contains("paid off"));
+    let a = loan(&a_loan).await;
+    assert_eq!((a["status"].clone(), dec(&a["balance"])), (json!("Repaid"), Decimal::ZERO));
+    assert_eq!(agree().await, Decimal::ZERO);
+    p.run("2027-01-01", "2027-01-31", true).await;
+    assert!(loan_row(&p.slip(&asha, "2027-01-01").await).is_none());
+    refused(t.k.run_action(&p.pm, "EmployeeLoan", uid(&a_loan), "repay", json!({})).await, "not available");
 }
