@@ -141,6 +141,11 @@ fn employee_loans() {
 }
 
 #[test]
+fn changes_after_payroll() {
+    run(late_changes_scenario());
+}
+
+#[test]
 fn hr_and_payroll_without_erp() {
     run(alone_scenario());
 }
@@ -2547,6 +2552,8 @@ async fn corrections_scenario() {
     assert_eq!((row_ben["salary_slip"].clone(), run["status"].clone()), (fixed["id"].clone(), json!("Slips Submitted")));
 
     // ───────────── Chen's corrected downward: a day absent ─────────────
+    // His September is paid: the day waits for its correction (0.11.0).
+    t.act(&pm, "SalarySlip", uid(&s_chen), "choose_late_changes", json!({"handling": "Correct the Slip"})).await;
     t.ins_submit(&hr, "Attendance", json!({"employee": chen["id"], "attendance_date": "2026-09-15", "status": "Absent"})).await;
     let fix = t.act(&pm, "SalarySlip", uid(&s_chen), "make_correction", json!({})).await;
     let fixed_c = t.submit(&pm, "SalarySlip", vid(&fix)).await;
@@ -3417,4 +3424,109 @@ async fn loans_scenario() {
     p.run("2027-01-01", "2027-01-31", true).await;
     assert!(loan_row(&p.slip(&asha, "2027-01-01").await).is_none());
     refused(t.k.run_action(&p.pm, "EmployeeLoan", uid(&a_loan), "repay", json!({})).await, "not available");
+}
+
+/// Leave and attendance changed after the payroll ran: leave without pay approved late, refused until
+/// the slip says how, then carried to the next pay at September's day's pay; the same left for a
+/// correction instead; the period carried from corrected afterwards, with nothing carried twice; an
+/// absence removed (a refund); paid leave swapped for paid leave going through.
+async fn late_changes_scenario() {
+    let p = P::new("hrlate").await;
+    let t = &p.t;
+    let approver = t.user("la@hrlate.test", &["Leave Approver"]).await;
+    let (asha, ben) = (p.hire("Asha", "30000").await, p.hire("Ben", "30000").await);
+    let lt = |name: &'static str| async move { t.one("LeaveType", json!({"leave_type_name": name})).await["id"].as_str().unwrap().to_string() };
+    let (casual, sick, lwp) = (lt("Casual Leave").await, lt("Sick Leave").await, lt("Leave Without Pay").await);
+    for e in [&asha, &ben] {
+        for kind in [&casual, &sick] {
+            t.ins_submit(
+                &p.hr,
+                "LeaveAllocation",
+                json!({"employee": e["id"], "leave_type": kind, "from_date": "2026-01-01", "to_date": "2026-12-31", "new_leaves_allocated": "5"}),
+            )
+            .await;
+        }
+    }
+    let leave = |e: &Doc, kind: &str, day: &str| {
+        let v = json!({"employee": e["id"], "leave_type": kind, "from_date": day, "to_date": day, "reason": "family"});
+        let hr = &p.hr;
+        async move { t.ins(hr, "LeaveApplication", v).await }
+    };
+    let approve = |a: &Doc| t.trans(&p.hr, "LeaveApplication", uid(a), "Approve");
+    let choose = |s: &Doc, how: &str| t.k.run_action(&p.pm, "SalarySlip", uid(s), "choose_late_changes", json!({"handling": how}));
+    let ledger_of = |a: &Doc| {
+        let a = a["id"].as_str().unwrap().to_string();
+        async move { t.list(&t.admin, "LeaveLedgerEntry", json!({"transaction_id": a})).await.len() }
+    };
+
+    p.run("2026-09-01", "2026-09-30", true).await;
+    let s_asha = p.slip(&asha, "2026-09-01").await;
+    assert_eq!(dec(&s_asha["payment_days"]), n("30"));
+
+    // ───────────── leave without pay approved for a September day: refused until the slip says how ─────────────
+    let a_lwp = leave(&asha, &lwp, "2026-09-14").await;
+    refused(approve(&a_lwp).await, "is already submitted (salary slip");
+    assert_eq!((t.get("LeaveApplication", uid(&a_lwp)).await["docstatus"].clone(), ledger_of(&a_lwp).await), (json!(0), 0), "nothing went through");
+    forbidden(t.k.run_action(&approver, "SalarySlip", uid(&s_asha), "choose_late_changes", json!({"handling": "Carry to Next Pay"})).await);
+    choose(&s_asha, "Carry to Next Pay").await.expect("carry");
+    approve(&a_lwp).await.expect("approved once the slip says how");
+    assert_eq!(ledger_of(&a_lwp).await, 1, "the leave ledger has it");
+    let s_asha = t.get("SalarySlip", uid(&s_asha)).await;
+    assert_eq!(
+        (s_asha["changed_after_payroll"].clone(), dec(&s_asha["pending_adjustment_days"]), dec(&s_asha["pending_adjustment"])),
+        (json!(true), n("-1"), n("-1000"))
+    );
+    // Ben's for a correction instead; his paid leave swapped for another paid leave goes through as it is.
+    let s_ben = p.slip(&ben, "2026-09-01").await;
+    let cas = leave(&ben, &casual, "2026-09-16").await;
+    approve(&cas).await.expect("paid leave on a paid day changes nothing paid");
+    t.trans(&p.hr, "LeaveApplication", uid(&cas), "Cancel").await.expect("cancel the casual leave");
+    approve(&leave(&ben, &sick, "2026-09-16").await).await.expect("sick leave in its place");
+    assert_eq!(t.get("SalarySlip", uid(&s_ben)).await["changed_after_payroll"], json!(false));
+    choose(&s_ben, "Correct the Slip").await.expect("correct");
+    approve(&leave(&ben, &lwp, "2026-09-21").await).await.expect("left for a correction");
+
+    // ───────────── October carries Asha's day, at September's day's pay; Ben's waits ─────────────
+    // An absence of Asha's in October, marked before its run.
+    let absent = t.ins_submit(&p.hr, "Attendance", json!({"employee": asha["id"], "attendance_date": "2026-10-20", "status": "Absent"})).await;
+    let salaries = t.gl("Salaries").await;
+    p.run("2026-10-01", "2026-10-31", true).await;
+    let o_asha = p.slip(&asha, "2026-10-01").await;
+    let rows = o_asha["adjustments"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0]["period_start"].clone(), dec(&rows[0]["days"]), dec(&rows[0]["daily_rate"]), dec(&rows[0]["amount"]), rows[0]["salary_slip"].clone()),
+        (json!("2026-09-01"), n("-1"), n("1000"), n("-1000"), s_asha["id"].clone())
+    );
+    assert!(rows[0]["reason"].as_str().unwrap().contains("0 unpaid days when salary slip"), "{}", rows[0]["reason"]);
+    let o_flat = amount_of(&o_asha, "earnings", "FLAT");
+    assert_eq!((dec(&o_asha["payment_days"]), dec(&o_asha["gross_pay"])), (n("30"), o_flat - n("1000")));
+    assert!(p.slip(&ben, "2026-10-01").await["adjustments"].as_array().unwrap().is_empty(), "left for a correction");
+    assert_eq!(t.gl("Salaries").await - salaries, dec(&o_asha["gross_pay"]) + dec(&p.slip(&ben, "2026-10-01").await["gross_pay"]), "posted with the run");
+    assert_eq!(t.get("SalarySlip", uid(&s_asha)).await["changed_after_payroll"], json!(false), "carried once");
+    assert_eq!(dec(&t.get("SalarySlip", uid(&s_ben)).await["pending_adjustment_days"]), n("-1"));
+
+    // ───────────── corrections: Ben's as chosen; Asha's after its day was carried ─────────────
+    let fixed_ben = p.correct(&s_ben).await;
+    assert_eq!((dec(&fixed_ben["payment_days"]), dec(&fixed_ben["adjustment_amount"])), (n("29"), Decimal::ZERO));
+    let fixed_asha = p.correct(&s_asha).await;
+    assert_eq!(
+        (dec(&fixed_asha["payment_days"]), dec(&fixed_asha["adjustment_amount"]), dec(&fixed_asha["gross_pay"])),
+        (n("29"), n("1000"), dec(&s_asha["gross_pay"])),
+        "it pays the day as it is now and takes back what October carried"
+    );
+
+    // ───────────── the October absence removed after its run: a refund at October's day's pay ─────────────
+    refused(t.k.cancel(&p.hr, "Attendance", uid(&absent), None).await, "Changes After Payroll");
+    choose(&o_asha, "Carry to Next Pay").await.expect("carry");
+    t.k.cancel(&p.hr, "Attendance", uid(&absent), None).await.expect("absence removed");
+    p.run("2026-11-01", "2026-11-30", true).await;
+    let n_asha = p.slip(&asha, "2026-11-01").await;
+    let rows = n_asha["adjustments"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "October's refund only: September is not carried twice");
+    assert_eq!((rows[0]["period_start"].clone(), dec(&rows[0]["days"]), dec(&rows[0]["amount"])), (json!("2026-10-01"), n("1"), n("967.74")));
+    assert!(p.slip(&ben, "2026-11-01").await["adjustments"].as_array().unwrap().is_empty());
+    for s in t.list(&t.admin, "SalarySlip", json!({"docstatus": 1})).await {
+        assert_eq!(s["changed_after_payroll"], json!(false), "nothing waits: {}", s["number"]);
+    }
 }
