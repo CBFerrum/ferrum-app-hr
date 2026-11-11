@@ -58,6 +58,14 @@ pub fn periods_left(frequency: &str, from: NaiveDate, period_end: NaiveDate) -> 
     n.max(1)
 }
 
+/// Pay periods from the one holding `first` to the one holding `day` (0: the same one).
+pub(crate) fn periods_between(frequency: &str, first: NaiveDate, day: NaiveDate) -> i64 {
+    match frequency {
+        "Weekly" | "Fortnightly" => (day - first).num_days().div_euclid(if frequency == "Weekly" { 7 } else { 14 }),
+        _ => (day.year() * 12 + day.month() as i32 - first.year() * 12 - first.month() as i32) as i64,
+    }
+}
+
 fn round_amount(v: Decimal, whole: bool, precision: u32) -> Decimal {
     if whole {
         let mut r = v.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
@@ -349,6 +357,212 @@ pub(crate) async fn arrears_due(hc: &mut HookCtx<'_>, employee: Uuid, day: Naive
     Ok(!arrears(hc, &emp, &co, None, day + chrono::Duration::days(1)).await?.is_empty())
 }
 
+/// A regular period's days as a slip pays them, from leave and attendance as they are now: working
+/// days are the period's (less holidays when the company excludes them), payment days those the
+/// employee was employed, less approved leave without pay and absences.
+async fn days_of(hc: &mut HookCtx<'_>, emp: &Doc, co: &Company, start: NaiveDate, end: NaiveDate) -> Result<Days> {
+    let emp_id = id(emp, "id").unwrap_or_default();
+    let exclude = b(&co.doc, "pay_exclude_holidays_from_working_days");
+    let holidays = employee_holidays(hc.tx, hc.ctx.tenant, emp_id, start, end).await?;
+    let count = |a: NaiveDate, b_: NaiveDate| -> i64 {
+        if b_ < a {
+            0
+        } else if exclude {
+            working_days(a, b_, &holidays)
+        } else {
+            (b_ - a).num_days() + 1
+        }
+    };
+    let working = count(start, end);
+    let from = opt_date(emp, "date_of_joining").map_or(start, |j| j.max(start));
+    let to = opt_date(emp, "relieving_date").map_or(end, |r| r.min(end));
+    let employed = count(from, to);
+    let (lwp, absent) = if employed > 0 {
+        (crate::leave::lwp_days(hc, emp_id, from, to, &holidays, !exclude).await?, absent_days(hc, emp_id, from, to).await?)
+    } else {
+        (Decimal::ZERO, Decimal::ZERO)
+    };
+    Ok(Days { working: Decimal::from(working), payment: (Decimal::from(employed) - lwp - absent).max(Decimal::ZERO), lwp, absent })
+}
+
+/// Days of a paid period carried to another slip: refunded (+) or taken off (−), at a day's pay.
+struct Adjustment {
+    start: NaiveDate,
+    end: NaiveDate,
+    /// The slip that paid the period.
+    slip: Option<Uuid>,
+    days: Decimal,
+    rate: Decimal,
+    amount: Decimal,
+    reason: String,
+}
+
+/// The days and amount carried for a period by the employee's submitted slips other than `me`.
+async fn carried(hc: &mut HookCtx<'_>, employee: Uuid, me: Option<Uuid>, start: NaiveDate, end: NaiveDate) -> Result<(Decimal, Decimal)> {
+    Ok(sqlx::query_as(
+        "select coalesce(sum(r.days), 0), coalesce(sum(r.amount), 0) from e_salary_slip__adjustments r join e_salary_slip p \
+         on p.tenant_id = r.tenant_id and p.id = r.parent_id where r.tenant_id = $1 and p.employee = $2 and p.docstatus = 1 \
+         and p.id is distinct from $3 and r.period_start = $4 and r.period_end = $5",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(employee)
+    .bind(me)
+    .bind(start)
+    .bind(end)
+    .fetch_one(&mut **hc.tx)
+    .await?)
+}
+
+/// What a submitted regular slip leaves to pay (or recover) now that its period's leave or
+/// attendance changed: its unpaid days then and now, a day's pay as it paid it (its prorated
+/// earnings over its working days), and the days and amount not yet carried by other slips.
+struct Pending {
+    counted: Decimal,
+    now: Decimal,
+    rate: Decimal,
+    days: Decimal,
+    amount: Decimal,
+}
+
+async fn pending(hc: &mut HookCtx<'_>, emp: &Doc, co: &Company, paid: &Doc, me: Option<Uuid>) -> Result<Pending> {
+    let (Some(start), Some(end)) = (opt_date(paid, "start_date"), opt_date(paid, "end_date")) else {
+        return Ok(Pending { counted: Decimal::ZERO, now: Decimal::ZERO, rate: Decimal::ZERO, days: Decimal::ZERO, amount: Decimal::ZERO });
+    };
+    let days = days_of(hc, emp, co, start, end).await?;
+    let now = days.lwp + days.absent;
+    let counted = d(paid, "leave_without_pay") + d(paid, "absent_days");
+    let working = d(paid, "total_working_days");
+    let full: Decimal =
+        rows(paid, "earnings").iter().filter(|r| b(r, "depends_on_payment_days") && !b(r, "statistical_component")).map(|r| d(r, "default_amount")).sum();
+    let rate = if working.is_zero() { Decimal::ZERO } else { round(full / working, co.precision) };
+    let (carried_days, carried_amount) = carried(hc, id(emp, "id").unwrap_or_default(), me, start, end).await?;
+    let target = counted - now;
+    Ok(Pending { counted, now, rate, days: target - carried_days, amount: round(target * rate, co.precision) - carried_amount })
+}
+
+/// The pay adjustments a slip carries: for each earlier period paid whose slip says changes after
+/// payroll are carried (every one, on a leaver's last slip), what its leave and attendance now leave
+/// unpaid against what it paid, less what other slips carried; and on a slip paying a period again
+/// (a correction), what other slips carried for it, taken back, as the slip pays the days as they are.
+async fn adjustments(
+    hc: &mut HookCtx<'_>,
+    emp: &Doc,
+    co: &Company,
+    me: Option<Uuid>,
+    (start, end): (NaiveDate, NaiveDate),
+    off_cycle: bool,
+    leaving: bool,
+) -> Result<Vec<Adjustment>> {
+    let emp_id = id(emp, "id").unwrap_or_default();
+    let before = if off_cycle { start + chrono::Duration::days(1) } else { start };
+    let paid: Vec<Uuid> = sqlx::query_scalar(
+        "select id from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus = 1 and not coalesce(off_cycle, false) \
+         and id is distinct from $3 and start_date < $4 and (late_changes = 'Carry to Next Pay' or $5) order by start_date",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(emp_id)
+    .bind(me)
+    .bind(before)
+    .bind(leaving)
+    .fetch_all(&mut **hc.tx)
+    .await?;
+    let mut out = Vec::new();
+    for slip in paid {
+        let paid = get(hc.kernel, hc.ctx, hc.tx, "SalarySlip", slip).await?;
+        let p = pending(hc, emp, co, &paid, me).await?;
+        if p.days.is_zero() && p.amount.is_zero() {
+            continue;
+        }
+        let (Some(from), Some(to)) = (opt_date(&paid, "start_date"), opt_date(&paid, "end_date")) else { continue };
+        let reason =
+            format!("{} unpaid days when salary slip {} paid it, {} now", p.counted.normalize(), s(&paid, "number").unwrap_or_default(), p.now.normalize());
+        out.push(Adjustment { start: from, end: to, slip: Some(slip), days: p.days, rate: p.rate, amount: p.amount, reason });
+    }
+    if !off_cycle {
+        let (days, amount) = carried(hc, emp_id, me, start, end).await?;
+        if !days.is_zero() || !amount.is_zero() {
+            let reason = "Carried to a later slip before this one paid the period again: taken back, as this slip pays its days as they are".to_string();
+            out.push(Adjustment { start, end, slip: None, days: -days, rate: Decimal::ZERO, amount: -amount, reason });
+        }
+    }
+    Ok(out)
+}
+
+/// Brings a submitted regular slip's waiting adjustment up to date. Returns it with the slip.
+async fn refresh_pending(hc: &mut HookCtx<'_>, slip: Uuid) -> Result<Option<(Pending, Doc)>> {
+    let paid = get(hc.kernel, hc.ctx, hc.tx, "SalarySlip", slip).await?;
+    if d(&paid, "docstatus") != Decimal::ONE || b(&paid, "off_cycle") {
+        return Ok(None);
+    }
+    let emp = get(hc.kernel, hc.ctx, hc.tx, "Employee", id(&paid, "employee").unwrap_or_default()).await?;
+    let co = company(hc.kernel, hc.ctx, hc.tx, id(&paid, "company").unwrap_or_default()).await?;
+    let p = pending(hc, &emp, &co, &paid, None).await?;
+    let mut v = Doc::new();
+    set(&mut v, "changed_after_payroll", !p.days.is_zero() || !p.amount.is_zero());
+    set(&mut v, "pending_adjustment_days", money(p.days));
+    set(&mut v, "pending_adjustment", money(p.amount));
+    hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "SalarySlip", slip, v).await?;
+    Ok(Some((p, paid)))
+}
+
+/// After leave or attendance of `[from, to]` changed: each submitted regular slip of those days
+/// shows what now waits. A change by a person that alters what a slip paid is refused until someone
+/// with the right to submit slips chose, on the slip, how such changes are handled.
+pub(crate) async fn late_change(hc: &mut HookCtx<'_>, employee: Option<Uuid>, from: Option<NaiveDate>, to: Option<NaiveDate>) -> Result<()> {
+    let (Some(employee), Some(from), Some(to)) = (employee, from, to) else { return Ok(()) };
+    if hc.ctx.schema.entity("SalarySlip").is_none() {
+        return Ok(());
+    }
+    let paid: Vec<Uuid> = sqlx::query_scalar(
+        "select id from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus = 1 and not coalesce(off_cycle, false) \
+         and start_date <= $4 and end_date >= $3 order by start_date",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(employee)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&mut **hc.tx)
+    .await?;
+    for slip in paid {
+        let Some((p, doc)) = refresh_pending(hc, slip).await? else { continue };
+        if !hc.ctx.is_system && !p.days.is_zero() && s(&doc, "late_changes").is_none() {
+            return Err(Error::invalid(format!(
+                "{}'s pay for {} to {} is already submitted (salary slip {}), and this leaves {} days of it unpaid where the slip counted {}; \
+                 someone who submits salary slips first chooses on that slip whether such changes are carried to the next pay or left for its correction \
+                 (Changes After Payroll)",
+                s(&doc, "employee_name").unwrap_or("the employee"),
+                s(&doc, "start_date").unwrap_or_default(),
+                s(&doc, "end_date").unwrap_or_default(),
+                s(&doc, "number").unwrap_or_default(),
+                p.now.normalize(),
+                p.counted.normalize()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Chooses how leave or attendance changed after the slip is submitted is handled.
+async fn choose_late_changes(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -> Result<Value> {
+    let me = id(doc, "id").ok_or_else(|| Error::internal("slip without id"))?;
+    let handling = params.get("handling").and_then(Value::as_str).filter(|h| ["Carry to Next Pay", "Correct the Slip"].contains(h));
+    let handling = handling.ok_or_else(|| Error::field("handling", "choose Carry to Next Pay or Correct the Slip"))?;
+    let label = format!("salary slip {}", s(doc, "number").unwrap_or_default());
+    if b(doc, "off_cycle") || id(doc, "replaced_by").is_some() {
+        return Err(Error::invalid(format!("{label} is off-cycle or already corrected; nothing of its period is carried from it")));
+    }
+    let mut v = Doc::new();
+    set(&mut v, "late_changes", handling);
+    hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "SalarySlip", me, v).await?;
+    refresh_pending(hc, me).await?;
+    let message = if handling == "Carry to Next Pay" {
+        format!("Changes to the leave and attendance of {label}'s period are carried to the next salary slip")
+    } else {
+        format!("Changes to the leave and attendance of {label}'s period wait for its correction (Correct)")
+    };
+    Ok(json!({"message": message}))
+}
+
 pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     let Some(emp) = stamp_company(hc, doc).await? else { return Ok(()) };
     // An off-cycle slip is for one day.
@@ -383,27 +597,7 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     let days = if off_cycle {
         Days { working: Decimal::ZERO, payment: Decimal::ZERO, lwp: Decimal::ZERO, absent: Decimal::ZERO }
     } else {
-        let exclude = b(&co.doc, "pay_exclude_holidays_from_working_days");
-        let holidays = employee_holidays(hc.tx, hc.ctx.tenant, emp_id, start, end).await?;
-        let count = |a: NaiveDate, b_: NaiveDate| -> i64 {
-            if b_ < a {
-                0
-            } else if exclude {
-                working_days(a, b_, &holidays)
-            } else {
-                (b_ - a).num_days() + 1
-            }
-        };
-        let working = count(start, end);
-        let from = opt_date(&emp, "date_of_joining").map_or(start, |j| j.max(start));
-        let to = opt_date(&emp, "relieving_date").map_or(end, |r| r.min(end));
-        let employed = count(from, to);
-        let (lwp, absent) = if employed > 0 {
-            (crate::leave::lwp_days(hc, emp_id, from, to, &holidays, !exclude).await?, absent_days(hc, emp_id, from, to).await?)
-        } else {
-            (Decimal::ZERO, Decimal::ZERO)
-        };
-        Days { working: Decimal::from(working), payment: (Decimal::from(employed) - lwp - absent).max(Decimal::ZERO), lwp, absent }
+        days_of(hc, &emp, &co, start, end).await?
     };
     set(doc, "total_working_days", money(days.working));
     set(doc, "leave_without_pay", money(days.lwp));
@@ -411,12 +605,14 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     set(doc, "payment_days", money(days.payment));
 
     // ── components ──
-    // Additional salary of the period, or for an off-cycle slip of its day and named for one.
-    let mut extra: Extra = sqlx::query_as::<_, (Uuid, Decimal, bool, Decimal)>(
-        "select salary_component, sum(amount), bool_or(coalesce(overwrite_salary_structure_amount, false)), \
-         coalesce(sum(amount) filter (where coalesce(deduct_full_tax, false)), 0) from e_additional_salary \
-         where tenant_id = $1 and employee = $2 and docstatus = 1 and payroll_date between $3 and $4 and coalesce(off_cycle, false) = $5 \
-         group by salary_component",
+    // Additional salary of the period, or for an off-cycle slip of its day and named for one; one
+    // that repeats, when this period is one of its occurrences.
+    let mut extra: Extra = BTreeMap::new();
+    for (c, a, o, f, first, every) in sqlx::query_as::<_, (Uuid, Decimal, bool, bool, NaiveDate, Option<i64>)>(
+        "select salary_component, amount, coalesce(overwrite_salary_structure_amount, false), coalesce(deduct_full_tax, false), payroll_date, \
+         case when coalesce(recurring, false) then greatest(coalesce(every, 1), 1) end from e_additional_salary \
+         where tenant_id = $1 and employee = $2 and docstatus = 1 and coalesce(off_cycle, false) = $5 \
+         and (payroll_date between $3 and $4 or (coalesce(recurring, false) and not $5 and payroll_date <= $4 and (to_date is null or to_date >= $3)))",
     )
     .bind(hc.ctx.tenant)
     .bind(emp_id)
@@ -425,9 +621,17 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     .bind(off_cycle)
     .fetch_all(&mut **hc.tx)
     .await?
-    .into_iter()
-    .map(|(c, a, o, f)| (c, (a, o && !off_cycle, f)))
-    .collect();
+    {
+        if every.is_some_and(|n| periods_between(&frequency, first, end) % n != 0) {
+            continue;
+        }
+        let e = extra.entry(c).or_default();
+        e.0 += a;
+        e.1 |= o && !off_cycle;
+        if f {
+            e.2 += a;
+        }
+    }
     // An off-cycle slip pays none of the structure: its full period is worked out only to project the
     // year's income for tax.
     let (mut out, tax) = if off_cycle {
@@ -474,17 +678,21 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
         }
     }
 
+    // ── pay adjustments: periods paid whose leave or attendance changed since ──
+    let leaving = !off_cycle && opt_date(&emp, "relieving_date").is_some_and(|r| r <= end);
+    let adjusted = adjustments(hc, &emp, &co, me, (start, end), off_cycle, leaving).await?;
+    let adjustment: Decimal = adjusted.iter().map(|a| a.amount).sum();
+
     // ── income tax ──
     let earn = out.remove("earnings").unwrap_or_default();
     let mut ded = out.remove("deductions").unwrap_or_default();
     let con = out.remove("employer_contributions").unwrap_or_default();
-    let taxable_now = sum(Some(&earn), &|r| r.amount, &taxable_earning) - sum(Some(&ded), &|r| r.amount, &exempt_deduction);
+    let taxable_now = sum(Some(&earn), &|r| r.amount, &taxable_earning) - sum(Some(&ded), &|r| r.amount, &exempt_deduction) + adjustment;
     // Its full tax now: all an off-cycle slip pays (no later period counts on it), and additional
     // salary marked so; the rest is spread over the periods left with regular pay.
     let one_off =
         if off_cycle { taxable_now } else { sum(Some(&earn), &|r| r.full_tax, &taxable_earning) - sum(Some(&ded), &|r| r.full_tax, &exempt_deduction) };
     let mut tax_total = Decimal::ZERO;
-    let leaving = !off_cycle && opt_date(&emp, "relieving_date").is_some_and(|r| r <= end);
     for comp in tax {
         let t = income_tax(hc, doc, &ssa, &co, &frequency, (start, end, leaving, off_cycle), (taxable_now - one_off, one_off), taxable_full).await?;
         let t = round_amount(t, b(&comp, "round_to_the_nearest_integer"), co.precision);
@@ -494,14 +702,20 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
 
     // ── totals and rows ──
     let counted = |r: &Row| !r.flag("statistical_component");
-    let gross = sum(Some(&earn), &|r| r.amount, &counted);
+    let gross = sum(Some(&earn), &|r| r.amount, &counted) + adjustment;
     let deductions = sum(Some(&ded), &|r| r.amount, &counted);
     // What an earlier slip of a payroll run paid too much (corrected after the bank paid it) is taken
     // back from this pay, as far as it goes.
     let excess: Decimal =
         if id(doc, "payroll_entry").is_some() { super::payments::excess(hc, emp_id, me).await?.iter().map(|e| e.1).sum() } else { Decimal::ZERO };
     let recovery = excess.min((gross - deductions).max(Decimal::ZERO));
-    let net = gross - deductions - recovery;
+    // Loan instalments of the month (with the connector to ERP), never more than the pay left.
+    let (loans, loan_total) = if !off_cycle && hc.entity.field("loans").is_some() {
+        super::loans::slip_rows(hc, emp_id, me, end, co.precision, gross - deductions - recovery).await?
+    } else {
+        (Vec::new(), Decimal::ZERO)
+    };
+    let net = gross - deductions - recovery - loan_total;
     if net < Decimal::ZERO {
         return Err(Error::invalid(format!("deductions ({}) exceed earnings ({}) for {name}", deductions.normalize(), gross.normalize())));
     }
@@ -538,10 +752,24 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
         })
         .collect();
     set(doc, "arrears", Value::Array(arrears));
+    let adjusted: Vec<Value> = adjusted
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            json!({"id": Uuid::now_v7().to_string(), "idx": i, "period_start": a.start.to_string(), "period_end": a.end.to_string(), "days": money(a.days),
+                   "daily_rate": money(a.rate), "amount": money(a.amount), "salary_slip": a.slip.map(|u| u.to_string()), "reason": a.reason})
+        })
+        .collect();
+    set(doc, "adjustments", Value::Array(adjusted));
+    set(doc, "adjustment_amount", money(adjustment));
     set(doc, "gross_pay", money(gross));
     set(doc, "recovery_amount", money(recovery));
     set(doc, "recovery_left", money(excess - recovery));
-    set(doc, "total_deduction", money(deductions + recovery));
+    if hc.entity.field("loans").is_some() {
+        set(doc, "loans", Value::Array(loans));
+        set(doc, "total_loan_repayment", money(loan_total));
+    }
+    set(doc, "total_deduction", money(deductions + recovery + loan_total));
     set(doc, "net_pay", money(net));
     set(doc, "rounded_total", money(round_amount(net, true, co.precision)));
     set(doc, "total_employer_contribution", money(contributions));
@@ -847,6 +1075,11 @@ impl DocHook for SlipHook {
         }
         super::payments::allocate(hc, me, &settled).await?;
         super::payments::refresh(hc, &[me]).await?;
+        super::loans::slip_changed(hc, doc).await?;
+        // The periods it carried, and its own, show what still waits.
+        for slip in std::iter::once(me).chain(rows(doc, "adjustments").iter().filter_map(|r| id(r, "salary_slip"))) {
+            refresh_pending(hc, slip).await?;
+        }
         if let Some(pe) = late {
             run::refresh_totals(hc, &pe, 1, Doc::new()).await?;
         }
@@ -883,6 +1116,10 @@ impl DocHook for SlipHook {
             }
         }
         super::payments::unallocate(hc, me).await?;
+        super::loans::slip_changed(hc, doc).await?;
+        for slip in rows(doc, "adjustments").iter().filter_map(|r| id(r, "salary_slip")) {
+            refresh_pending(hc, slip).await?;
+        }
         let mut v = Doc::new();
         set(&mut v, "status", "Cancelled");
         hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "SalarySlip", me, v).await
@@ -893,6 +1130,7 @@ impl DocHook for SlipHook {
             "make_correction" => correct(hc, doc).await.map(Some),
             "hold_salary" => hold(hc, doc, params, true).await.map(Some),
             "release_salary" => hold(hc, doc, params, false).await.map(Some),
+            "choose_late_changes" => choose_late_changes(hc, doc, params).await.map(Some),
             _ => Ok(None),
         }
     }
@@ -912,5 +1150,15 @@ mod tests {
         assert_eq!(periods_left("Fortnightly", d("2027-03-01"), d("2027-03-31")), 3);
         assert_eq!(periods_left("Monthly", d("2027-05-01"), d("2027-03-31")), 1);
         assert_eq!(round_amount(Decimal::new(15750, 2), true, 2), Decimal::new(15800, 2));
+    }
+
+    #[test]
+    fn periods_of_pay_that_repeats() {
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        assert_eq!(periods_between("Monthly", d("2026-09-15"), d("2026-09-30")), 0);
+        assert_eq!(periods_between("Monthly", d("2026-09-15"), d("2027-01-31")), 4);
+        assert_eq!(periods_between("Weekly", d("2026-10-05"), d("2026-10-11")), 0);
+        assert_eq!(periods_between("Weekly", d("2026-10-05"), d("2026-10-18")), 1);
+        assert_eq!(periods_between("Fortnightly", d("2026-10-05"), d("2026-11-01")), 1);
     }
 }

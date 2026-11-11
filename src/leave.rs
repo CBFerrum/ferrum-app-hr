@@ -809,7 +809,7 @@ impl DocHook for ApplicationHook {
         if let Some(a) = allocation {
             sync_expiry(hc, a, me).await?;
         }
-        Ok(())
+        crate::payroll::slip::late_change(hc, Some(emp), Some(from), Some(to)).await
     }
 
     async fn before_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
@@ -827,6 +827,7 @@ impl DocHook for ApplicationHook {
         if let Some(a) = id(doc, "allocation") {
             sync_expiry(hc, a, me).await?;
         }
+        crate::payroll::slip::late_change(hc, id(doc, "employee"), opt_date(doc, "from_date"), opt_date(doc, "to_date")).await?;
         let mut v = Doc::new();
         set(&mut v, "status", "Cancelled");
         hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "LeaveApplication", me, v).await
