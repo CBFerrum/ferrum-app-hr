@@ -307,6 +307,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.11.2** | The redesigned interface: the upgraded design system, shaped loading, told-apart states. |
 | **0.11.1** | A salary slip prints as a payslip. |
 | **0.11.0** | Additional salary that repeats; late leave and attendance carried to the next pay; employee loans repaid through salary. |
 | **0.10.0** | One slip of a posted or paid run corrected; arrears for a backdated revision; off-cycle runs; salaries held and released. |

@@ -7,7 +7,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { Link, useParams } from "react-router";
 import { api, ApiError, bootstrap, errorMessage, formatDate, t as tr, isolate } from "@ferrum/client";
-import { Alert, Button, EmptyState, ErrorState, Field, Markdown, Spinner, useShellTitle } from "@ferrum/kit";
+import { Alert, Button, Field, ListSkeleton, Markdown, ReaderSkeleton, StatePanel, useShellTitle } from "@ferrum/kit";
 import { type Application, EMPTY, LIMITS, meta, payload, problems } from "./careers";
 
 interface Opening {
@@ -91,15 +91,14 @@ function Detail({ slug, id }: { slug: string; id: string }) {
   if (q.error) {
     const gone = q.error instanceof ApiError && q.error.status === 404;
     return gone ? (
-      <EmptyState title={tr("This opening is closed")} icon="file">
-        <p className="muted">{tr("It may have been filled, or taken down.")}</p>
-        <Link to={`/careers/${slug}`}>{tr("See the other openings")}</Link>
-      </EmptyState>
+      <StatePanel kind="empty" title={tr("This opening is closed")} action={<Link to={`/careers/${slug}`}>{tr("See the other openings")}</Link>}>
+        {tr("It may have been filled, or taken down.")}
+      </StatePanel>
     ) : (
-      <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+      <StatePanel kind="failed" error={q.error} onRetry={() => void q.refetch()} />
     );
   }
-  if (!q.data) return <Spinner label={tr("Loading the opening")} />;
+  if (!q.data) return <ReaderSkeleton />;
   const o = q.data;
   return (
     <article className="stack">
@@ -129,13 +128,13 @@ function Detail({ slug, id }: { slug: string; id: string }) {
 
 function List({ slug }: { slug: string }) {
   const q = useQuery({ queryKey: ["careers", slug], queryFn: ({ signal }) => api.get<{ openings: Opening[] }>(base(slug), undefined, signal) });
-  if (q.error) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
-  if (!q.data) return <Spinner label={tr("Loading the openings")} />;
+  if (q.error) return <StatePanel kind="failed" error={q.error} onRetry={() => void q.refetch()} />;
+  if (!q.data) return <ListSkeleton rows={4} />;
   if (!q.data.openings.length) {
     return (
-      <EmptyState title={tr("No openings right now")} icon="user">
-        <p className="muted">{tr("There is nothing to apply for today. Please look again later.")}</p>
-      </EmptyState>
+      <StatePanel kind="empty" title={tr("No openings right now")}>
+        {tr("There is nothing to apply for today. Please look again later.")}
+      </StatePanel>
     );
   }
   return (

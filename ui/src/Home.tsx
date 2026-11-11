@@ -8,12 +8,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useState } from "react";
 import { Link } from "react-router";
 import { api, errorMessage, formatDateTime, todayIso, t, isolate } from "@ferrum/client";
-import { Badge, Button, EmptyState, ErrorState, Spinner, statusTone, toast, useLiveEntity, useShellTitle } from "@ferrum/kit";
+import { Button, FormSkeleton, ListSkeleton, Spinner, StatePanel, StatusBadge, toast, useLiveEntity, useShellTitle } from "@ferrum/kit";
 import { useMe } from "@ferrum/records";
 import type { Holiday } from "./calendar";
 import { f, rows, title, useCanRead } from "./data";
 import { addDays, span } from "./dates";
-import { Nav, useInbox } from "./Nav";
+import { Failed, Nav, useInbox } from "./Nav";
 import { days, nextLogType, type Checkin, type Employee } from "./people";
 import { type BalanceRow, comingUp, meter, requests, type Time, when } from "./space";
 
@@ -72,8 +72,8 @@ function Balances({ employee }: { employee: Employee }) {
     queryKey: ["people", "balance", employee.id],
     queryFn: ({ signal }) => api.get<{ rows: BalanceRow[] }>("/api/reports/leave_balance", { employee: employee.id }, signal).then((r) => r.rows),
   });
-  if (q.error) return <ErrorState error={q.error} title={t("Your leave cannot be shown")} onRetry={() => void q.refetch()} />;
-  if (!q.data) return <Spinner label={t("Loading your leave")} />;
+  if (q.error) return <Failed error={q.error} title={t("Your leave cannot be shown")} onRetry={() => void q.refetch()} />;
+  if (!q.data) return <ListSkeleton rows={2} />;
   if (!q.data.length) return <p className="muted">{t("No leave is allocated to you for this period yet.")}</p>;
   return (
     <ul className="ppl-balances" data-ferrum-nocard>
@@ -118,8 +118,8 @@ function Coming({ employee }: { employee: Employee }) {
       );
     },
   });
-  if (q.error) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
-  if (!q.data) return <Spinner label={t("Loading what is coming up")} />;
+  if (q.error) return <Failed error={q.error} onRetry={() => void q.refetch()} />;
+  if (!q.data) return <ListSkeleton rows={3} />;
   if (!q.data.length) return <p className="muted">{t("No time off or holidays in the next two months.")}</p>;
   return (
     <ul className="ppl-coming" data-ferrum-nocard>
@@ -180,9 +180,9 @@ function Requests({ employee, onFix }: { employee: Employee; onFix: () => void }
         )}
       </div>
       {q.error ? (
-        <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+        <Failed error={q.error} onRetry={() => void q.refetch()} />
       ) : !q.data ? (
-        <Spinner label={t("Loading your requests")} />
+        <ListSkeleton rows={3} />
       ) : !q.data.length ? (
         <p className="muted">{t("You have not asked for anything yet.")}</p>
       ) : (
@@ -191,7 +191,7 @@ function Requests({ employee, onFix }: { employee: Employee; onFix: () => void }
             <li key={r.key}>
               <span className="faint ppl-kind">{isolate(r.kind)}</span>
               <Link to={`/e/${r.entity}/${r.id}`}>{isolate(r.title)}</Link>
-              <Badge tone={statusTone(r.status)}>{isolate(r.status)}</Badge>
+              <StatusBadge value={r.state} tones={STATE_TONES} label={isolate(r.status)} />
             </li>
           ))}
         </ul>
@@ -211,7 +211,8 @@ function Section({ id, heading, children }: { id: string; heading: string; child
   );
 }
 
-const Loading = ({ label }: { label: string }) => <Spinner label={label} />;
+/** Tone by the stored state id (leave and attendance requests: Open, Approved, Rejected, Cancelled; claims: Draft, Unpaid, Paid, Rejected, Cancelled). */
+const STATE_TONES = { Open: "amber", Draft: "amber", Unpaid: "blue", Approved: "green", Paid: "green", Rejected: "red", Cancelled: "neutral" } as const;
 
 export function PeopleHome() {
   useShellTitle(t("My space"));
@@ -243,14 +244,13 @@ export function PeopleHome() {
         </Link>
       )}
       {mine.error ? (
-        <ErrorState error={mine.error} onRetry={() => void mine.refetch()} />
+        <Failed error={mine.error} onRetry={() => void mine.refetch()} />
       ) : mine.isLoading || !me ? (
-        <Spinner label={t("Loading your space")} />
+        <ListSkeleton rows={6} />
       ) : !person ? (
-        <EmptyState title={t("Your sign-in is not linked to an employee record")} icon="user">
-          <p className="muted">{t("HR can link it. Then your leave, attendance and payslips are here.")}</p>
-          <Link to="/calendar">{t("See who is away")}</Link>
-        </EmptyState>
+        <StatePanel kind="empty" title={t("Your sign-in is not linked to an employee record")} action={<Link to="/calendar">{t("See who is away")}</Link>}>
+          {t("HR can link it. Then your leave, attendance and payslips are here.")}
+        </StatePanel>
       ) : (
         <div className="ppl-space">
           <div className="ppl-col">
@@ -268,7 +268,7 @@ export function PeopleHome() {
             </Section>
           </div>
           <div className="ppl-col">
-            <Suspense fallback={<Loading label={t("Loading your attendance")} />}>
+            <Suspense fallback={<ListSkeleton rows={5} />}>
               <Month employee={person} onFix={(day) => setFixing(day)} />
               <Pay employee={person} />
             </Suspense>
@@ -276,7 +276,7 @@ export function PeopleHome() {
         </div>
       )}
       {fixing !== false && person && (
-        <Suspense fallback={null}>
+        <Suspense fallback={<FormSkeleton fields={3} />}>
           <Fix employee={person.id} day={fixing} onClose={() => setFixing(false)} />
         </Suspense>
       )}

@@ -9,10 +9,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { api, bootstrap, formatDate, routeBase, todayIso, t, isolate } from "@ferrum/client";
-import { Badge, Button, EmptyState, ErrorState, Spinner, toast, useDebounced, useShellTitle } from "@ferrum/kit";
+import { Badge, Button, ListSkeleton, StatePanel, toast, useDebounced, useShellTitle } from "@ferrum/kit";
 import { useMetaIndex } from "@ferrum/records";
 import { addDays } from "./dates";
-import { Nav } from "./Nav";
+import { Failed, Nav } from "./Nav";
 import { anniversaries, inDaysLabel } from "./people";
 import { above, everyone, find, forest, marks, type Node, type Person, showing, size } from "./orgchart";
 
@@ -43,9 +43,9 @@ function Card({ p, detail }: { p: Person; detail: boolean }) {
   );
 }
 
-function List({ data, q, department }: { data: Directory; q: string; department: string }) {
+function List({ data, q, department, onClear }: { data: Directory; q: string; department: string; onClear: () => void }) {
   const found = useMemo(() => find(data.people, q).filter((p) => !department || p.department === department), [data.people, q, department]);
-  if (!found.length) return <EmptyState title={q || department ? t("Nobody matches") : t("No one here yet")} icon="user" />;
+  if (!found.length) return q || department ? <StatePanel kind="no-matches" title={t("Nobody matches")} onClear={onClear} /> : <StatePanel kind="empty" title={t("No one here yet")} />;
   return (
     <>
       <ul className="ppl-directory" data-ferrum-nocard>
@@ -190,7 +190,7 @@ function Chart({ data, q }: { data: Directory; q: string }) {
     setJump(null);
   }, [jump, rows.length]);
 
-  if (!data.people.length) return <EmptyState title={t("No one here yet")} icon="user" />;
+  if (!data.people.length) return <StatePanel kind="empty" title={t("No one here yet")} />;
   return (
     <div className="stack ppl-tight">
       <div className="row">
@@ -387,12 +387,12 @@ export function People() {
         )}
       </div>
       {dir.error ? (
-        <ErrorState error={dir.error} onRetry={() => void dir.refetch()} />
+        <Failed error={dir.error} onRetry={() => void dir.refetch()} />
       ) : !dir.data ? (
-        <Spinner label={t("Loading people")} />
+        <ListSkeleton rows={8} />
       ) : (
         <div className={aside ? "ppl-people-grid" : undefined}>
-          <div className="stack ppl-tight">{view === "chart" ? <Chart data={dir.data} q={q} /> : <List data={dir.data} q={q} department={department} />}</div>
+          <div className="stack ppl-tight">{view === "chart" ? <Chart data={dir.data} q={q} /> : <List data={dir.data} q={q} department={department} onClear={() => { setText(""); set({ department: null }); }} />}</div>
           {aside && (
             <div className="stack ppl-aside">
               {dir.data.detail && <Milestones people={dir.data.people} />}

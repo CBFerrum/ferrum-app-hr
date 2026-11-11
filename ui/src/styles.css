@@ -82,7 +82,7 @@
   padding-bottom: 0.15rem;
   border-bottom: 2px solid transparent;
   color: var(--muted-foreground);
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: 650;
   text-decoration: none;
 }
@@ -102,7 +102,7 @@
   border-radius: 999px;
   background: var(--primary);
   color: var(--primary-text);
-  font-size: 11.5px;
+  font-size: var(--text-xs);
   font-weight: 650;
   line-height: 1.25rem;
   text-align: center;
@@ -130,7 +130,7 @@
 
 .ppl-sub {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-lg);
   font-weight: 650;
 }
 
@@ -203,7 +203,7 @@
 }
 
 .ppl-balance-days {
-  font-size: 1.2rem;
+  font-size: var(--text-lg);
 }
 
 /* Spent, asked for and left of an allocation: the words say it too, for those who cannot tell the colours apart. */
@@ -338,7 +338,7 @@
 
 .ppl-month th {
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: var(--text-xs);
   font-weight: 600;
 }
 
@@ -360,7 +360,7 @@
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--text-xs);
   line-height: 1.2;
 }
 
@@ -377,7 +377,7 @@ button.ppl-day:hover {
 }
 
 .ppl-day-mark {
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 650;
 }
 
@@ -429,7 +429,7 @@ button.ppl-day:hover {
   padding: 0;
   list-style: none;
   color: var(--muted-foreground);
-  font-size: 12.5px;
+  font-size: var(--text-xs);
 }
 
 .ppl-legend li {
@@ -446,7 +446,7 @@ button.ppl-day:hover {
   height: 1.1rem;
   border-radius: 4px;
   background: var(--surface-2);
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 650;
 }
 
@@ -558,14 +558,14 @@ button.ppl-day:hover {
   margin: 0;
   padding: 0;
   color: var(--muted-foreground);
-  font-size: 13px;
+  font-size: var(--text-sm);
   list-style: none;
 }
 
 .ppl-lines {
   display: grid;
   gap: 0.25rem;
-  font-size: 13.5px;
+  font-size: var(--text-sm);
 }
 
 .ppl-line {
@@ -578,7 +578,7 @@ button.ppl-day:hover {
 
 .ppl-line-head {
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -597,7 +597,7 @@ button.ppl-day:hover {
 
 .ppl-sanction {
   width: 100%;
-  height: 34px;
+  height: var(--control-h);
   text-align: end;
 }
 
@@ -610,7 +610,7 @@ button.ppl-day:hover {
 
 .ppl-open {
   margin-inline-start: auto;
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
 
 .ppl-bulk {
@@ -630,7 +630,7 @@ button.ppl-day:hover {
 
 .ppl-keys {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--text-xs);
 }
 
 .ppl-dialog-actions {
@@ -648,7 +648,7 @@ button.ppl-day:hover {
 .ppl-cal-title {
   min-width: 8.5rem;
   margin: 0 0.25rem;
-  font-size: 15px;
+  font-size: var(--text-lg);
   font-weight: 650;
   text-align: center;
 }
@@ -665,7 +665,7 @@ button.ppl-day:hover {
   padding: 0.375rem 0.25rem;
   border-bottom: 1px solid var(--border);
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 600;
 }
 
@@ -701,7 +701,7 @@ button.ppl-day:hover {
   background: none;
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-xs);
   text-align: start;
   cursor: pointer;
 }
@@ -730,7 +730,7 @@ button.ppl-day:hover {
   max-width: 100%;
   overflow: hidden;
   color: var(--warning);
-  font-size: 11px;
+  font-size: var(--text-xs);
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -751,7 +751,7 @@ button.ppl-day:hover {
   border-radius: 50%;
   background: var(--primary-soft);
   color: var(--primary);
-  font-size: 9.5px;
+  font-size: var(--text-xs);
   font-weight: 650;
 }
 
@@ -771,7 +771,7 @@ button.ppl-day:hover {
   border-radius: 999px;
   background: var(--primary-soft);
   color: var(--primary);
-  font-size: 11.5px;
+  font-size: var(--text-xs);
   font-weight: 650;
   line-height: 1.25rem;
   text-align: center;
@@ -800,7 +800,7 @@ button.ppl-day:hover {
 
 .ppl-week thead th {
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 
 .ppl-week thead th span {
@@ -828,14 +828,14 @@ button.ppl-day:hover {
   height: 1.75rem;
   margin-inline-end: 0.4rem;
   vertical-align: middle;
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 
 .ppl-week-holiday {
   max-width: 5rem;
   overflow: hidden;
   color: var(--warning);
-  font-size: 11px;
+  font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -996,7 +996,7 @@ button.ppl-day:hover {
 }
 
 .ppl-opening-title {
-  font-size: 1.05rem;
+  font-size: var(--text-lg);
   font-weight: 600;
 }
 
@@ -1005,7 +1005,7 @@ button.ppl-day:hover {
 }
 
 .ppl-back {
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
 
 .ppl-apply {
@@ -1032,7 +1032,7 @@ button.ppl-day:hover {
 
 @media (max-width: 720px) {
   .ppl-tabs a {
-    font-size: 16px;
+    font-size: var(--text-lg);
   }
 
   .ppl-month-body {

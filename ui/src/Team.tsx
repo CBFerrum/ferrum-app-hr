@@ -6,7 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
 import { api, todayIso, t, isolate } from "@ferrum/client";
-import { Badge, Button, EmptyState, ErrorState, Icon, Spinner, useShellTitle } from "@ferrum/kit";
+import { Badge, Button, Icon, StatePanel, TableSkeleton, useShellTitle } from "@ferrum/kit";
 import {
   type Away,
   awayOn,
@@ -23,7 +23,7 @@ import {
   weeks,
 } from "./calendar";
 import { addDays, isDay, span, weekdayName } from "./dates";
-import { Nav } from "./Nav";
+import { Failed, Nav } from "./Nav";
 import { marks } from "./orgchart";
 
 interface Cal {
@@ -220,14 +220,13 @@ export function TeamCalendar() {
   const day = anchor;
 
   const body = q.error ? (
-    <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+    <Failed error={q.error} onRetry={() => void q.refetch()} />
   ) : !cal || !filtered ? (
-    <Spinner label={t("Loading the calendar")} />
+    <TableSkeleton columns={7} rows={5} />
   ) : !cal.has_record && cal.scope === "team" ? (
-    <EmptyState title={t("There is no team to show yet")} icon="user">
-      <p className="muted">{(cal.everyone_allowed ? t("Your sign-in is not linked to an employee record, so there is no team around you. You can look at everyone instead.") : t("Your sign-in is not linked to an employee record, so there is no team around you. HR can link it."))}</p>
-      {cal.everyone_allowed && <Button onClick={() => set({ scope: "all" })}>{t("Show everyone")}</Button>}
-    </EmptyState>
+    <StatePanel kind="empty" title={t("There is no team to show yet")} action={cal.everyone_allowed ? <Button onClick={() => set({ scope: "all" })}>{t("Show everyone")}</Button> : undefined}>
+      {(cal.everyone_allowed ? t("Your sign-in is not linked to an employee record, so there is no team around you. You can look at everyone instead.") : t("Your sign-in is not linked to an employee record, so there is no team around you. HR can link it."))}
+    </StatePanel>
   ) : (
     <>
       {view === "month" ? <Month cal={filtered} anchor={anchor} today={today} day={day} onDay={(d) => set({ date: d })} /> : <Week cal={filtered} anchor={anchor} today={today} />}

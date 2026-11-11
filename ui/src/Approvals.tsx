@@ -9,7 +9,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { api, docPath, errorMessage, t as tr, isolate } from "@ferrum/client";
-import { Badge, Button, Dialog, EmptyState, ErrorState, Field, Spinner, toast, useShellTitle } from "@ferrum/kit";
+import { Badge, Button, Dialog, Field, ListSkeleton, StatePanel, toast, useShellTitle } from "@ferrum/kit";
 import {
   badSanctions,
   balanceLine,
@@ -30,7 +30,7 @@ import {
   what,
   withSanctions,
 } from "./inbox";
-import { INBOX, Nav, useInbox } from "./Nav";
+import { Failed, INBOX, Nav, useInbox } from "./Nav";
 import { marks } from "./orgchart";
 
 const keyOf = (i: Item) => `${i.entity}/${i.id}`;
@@ -294,14 +294,13 @@ export function Inbox() {
   });
 
   const body = q.error ? (
-    <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+    <Failed error={q.error} onRetry={() => void q.refetch()} />
   ) : !q.data ? (
-    <Spinner label={tr("Loading what is waiting for you")} />
+    <ListSkeleton rows={4} />
   ) : !all.length ? (
-    <EmptyState title={tr("Nothing is waiting for you")} icon="check">
-      <p className="muted">{tr("Leave, attendance and expense requests routed to you appear here as they come in.")}</p>
-      <Link to="/calendar">{tr("See who is away")}</Link>
-    </EmptyState>
+    <StatePanel kind="empty" title={tr("Nothing is waiting for you")} action={<Link to="/calendar">{tr("See who is away")}</Link>}>
+      {tr("Leave, attendance and expense requests routed to you appear here as they come in.")}
+    </StatePanel>
   ) : (
     <>
       {kinds.length > 1 && (
@@ -327,7 +326,7 @@ export function Inbox() {
           </Button>
         </div>
       )}
-      {!shown.length && <p className="muted">{tr("Nothing of this kind is waiting for you.")}</p>}
+      {!shown.length && <StatePanel kind="no-matches" title={tr("Nothing of this kind is waiting for you.")} onClear={() => setSp({}, { replace: true })} />}
       <ul className="ppl-cards" aria-label={tr("Requests waiting for you")}>
         {shown.map((i) => (
           <Card
