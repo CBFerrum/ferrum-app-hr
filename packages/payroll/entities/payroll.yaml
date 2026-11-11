@@ -328,6 +328,19 @@
     - {name: salary_slip, type: link, to: SalarySlip, read_only: true, on_delete: set_null, label: Paid By}
     - {name: salary_structure_assignment, type: link, to: SalaryStructureAssignment, read_only: true, on_delete: set_null}
 
+- name: SalaryAdjustment
+  label: Pay Adjustment
+  kind: child
+  description: "Days of a period already paid whose leave or attendance changed after its slip was submitted: a refund for days now paid, a deduction for days now unpaid, at that period's day's pay as it was paid."
+  fields:
+    - {name: period_start, type: date, read_only: true, in_list: true}
+    - {name: period_end, type: date, read_only: true, in_list: true}
+    - {name: days, type: decimal, read_only: true, in_list: true, description: "Paid days given back (taken off when negative)"}
+    - {name: daily_rate, type: currency, currency: parent.currency, read_only: true, in_list: true, label: Day's Pay}
+    - {name: amount, type: currency, currency: parent.currency, read_only: true, in_list: true}
+    - {name: salary_slip, type: link, to: SalarySlip, read_only: true, on_delete: set_null, label: Paid By}
+    - {name: reason, type: data, max_length: 500, read_only: true, in_list: true}
+
 - name: SalarySlip
   label: Salary Slip
   kind: document
@@ -368,6 +381,9 @@
     - {name: deductions, type: table, of: SalaryDetail}
     - {name: employer_contributions, type: table, of: SalaryDetail}
     - {name: arrears, type: table, of: SalaryArrear, read_only: true, description: "By period and component; their totals are in the rows above"}
+    - {name: adjustments, type: table, of: SalaryAdjustment, read_only: true, label: Pay Adjustments,
+       description: "Days of periods already paid whose leave or attendance changed since, carried here; part of gross pay"}
+    - {name: adjustment_amount, type: currency, currency: currency, read_only: true, label: Pay Adjustments Total}
     - {name: gross_pay, type: currency, currency: currency, read_only: true, in_list: true}
     - {name: recovery_amount, type: currency, currency: currency, read_only: true, label: Excess Pay Recovered,
        description: "Taken back from this pay: an earlier slip, corrected, paid less than the bank had already paid"}
@@ -383,10 +399,25 @@
     - {name: held, type: check, read_only: true, no_copy: true, in_list: true, in_filter: true, label: Salary Held, description: "Accrued, but left out of bank payments until released"}
     - {name: hold_reason, type: text, read_only: true, no_copy: true}
     - {name: released_on, type: date, read_only: true, no_copy: true, description: "Released from hold: paid with the next bank payment"}
+    - {name: late_changes, type: select, options: [Carry to Next Pay, Correct the Slip], read_only: true, no_copy: true, in_filter: true, label: Changes After Payroll,
+       description: "What happens when leave or attendance of this period changes after the slip is submitted: carried to the next pay as an adjustment, or left for a correction of this slip. Until it is chosen, such a change is refused"}
+    - {name: changed_after_payroll, type: check, read_only: true, no_copy: true, in_list: true, in_filter: true, label: Changed Since Submitted,
+       description: "Leave or attendance of the period changed since, and the difference is not yet paid or recovered"}
+    - {name: pending_adjustment_days, type: decimal, read_only: true, no_copy: true, label: Days Waiting, description: "Paid days to give back (to take off when negative)"}
+    - {name: pending_adjustment, type: currency, currency: currency, read_only: true, no_copy: true, label: Adjustment Waiting}
     - {name: status, type: select, options: [Draft, Submitted, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
   rules:
     - {name: ordered_dates, check: "doc.start_date == null || doc.end_date == null || doc.end_date >= doc.start_date", message: "End date must not be before start date"}
   actions:
+    # How leave or attendance changed after the slip is submitted is handled; the right to submit slips chooses.
+    - name: choose_late_changes
+      label: Changes After Payroll
+      docstatus: [1]
+      permission: submit
+      condition: "doc.replaced_by == null && !doc.off_cycle"
+      params:
+        - {name: handling, type: select, label: Handling, required: true, options: [Carry to Next Pay, Correct the Slip],
+           description: "Carried: the next salary slip pays or recovers the days at this period's day's pay. Correct: nothing is carried; correct this slip (Correct) to pay the period as it is now"}
     # Takes the slip back (its share of the run's accrual reversed, today) and makes a draft for the same period in its place.
     - {name: make_correction, label: Correct, docstatus: [1], permission: submit, condition: "doc.payroll_entry != null && doc.replaced_by == null"}
     - {name: hold_salary, label: Hold Salary, docstatus: [1], permission: submit, condition: "doc.payroll_entry != null && !doc.held",

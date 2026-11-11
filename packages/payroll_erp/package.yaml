@@ -26,7 +26,7 @@ overlays:
       - {op: add_field, column: true, after: leave_encashment_amount_per_day, field: {name: payment_account, type: link, to: Account, link_filters: {is_group: false}, description: Bank or cash account salaries are paid from}}
   - entity: SalarySlip
     ops:
-      - {op: add_field, column: true, after: arrears, field: {name: loans, type: table, of: SalaryLoanRepayment, label: Loan Repayments, description: "Instalments of the employee's loans, never more than the pay allows"}}
+      - {op: add_field, column: true, after: adjustment_amount, field: {name: loans, type: table, of: SalaryLoanRepayment, label: Loan Repayments, description: "Instalments of the employee's loans, never more than the pay allows"}}
       - {op: add_field, column: true, after: loans, field: {name: total_loan_repayment, type: currency, currency: currency, read_only: true, description: "Part of the total deduction"}}
   - entity: PayrollEntry
     ops:
