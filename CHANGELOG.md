@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.1
+
+A salary slip prints as a payslip: the company, the period, the employee, the days, earnings and deductions side by side with arrears, adjustments and loan instalments, employer contributions apart, net pay.
+Draft, Cancelled, Off-cycle, Final settlement and held salaries are marked on it. Payroll 0.5.1; nothing else changes.
+
 ## 0.11.0
 
 For a company moving its payroll here with its loans and its late leave.

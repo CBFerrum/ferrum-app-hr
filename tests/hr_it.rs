@@ -106,6 +106,11 @@ fn employer_contributions() {
 }
 
 #[test]
+fn payslip_print() {
+    run(payslip_print_scenario());
+}
+
+#[test]
 fn opening_figures_and_a_leavers_tax() {
     run(opening_scenario());
 }
@@ -3528,5 +3533,104 @@ async fn late_changes_scenario() {
     assert!(p.slip(&ben, "2026-11-01").await["adjustments"].as_array().unwrap().is_empty());
     for s in t.list(&t.admin, "SalarySlip", json!({"docstatus": 1})).await {
         assert_eq!(s["changed_after_payroll"], json!(false), "nothing waits: {}", s["number"]);
+    }
+}
+
+/// A salary slip prints as a payslip: its figures and labels, Draft until submitted, and a name
+/// with markup escaped. Set `PRINT_SAMPLES_DIR` to keep the rendered pages.
+async fn payslip_print_scenario() {
+    let t = T::new("hrslip").await;
+    let pm = t.user("pm@hrslip.test", &["Payroll Manager"]).await;
+    let account = |name: &str| json!({"account_name": name, "company": t.c(), "root_type": "Liability"});
+    let owed = t.ins(&t.admin, "Account", account("Employer PF Payable")).await;
+    let (bs, hra, pf) = (
+        t.one("SalaryComponent", json!({"abbr": "BS"})).await,
+        t.one("SalaryComponent", json!({"abbr": "HRA"})).await,
+        t.one("SalaryComponent", json!({"abbr": "PF"})).await,
+    );
+    let pf_acc = t.ins(&t.admin, "Account", account("Provident Fund Payable")).await;
+    t.k.update(&pm, "SalaryComponent", uid(&pf), obj(json!({"accounts": [{"company": t.c(), "account": pf_acc["id"]}]})), None).await.unwrap();
+    let epf = t
+        .ins(
+            &pm,
+            "SalaryComponent",
+            json!({"component_name": "Employer Provident Fund", "abbr": "EPF", "component_type": "Employer Contribution", "amount_based_on_formula": true,
+                   "formula": "min(BS * payment_days / working_days, 15000) * 0.12", "depends_on_payment_days": false,
+                   "accounts": [{"company": t.c(), "account": owed["id"]}]}),
+        )
+        .await;
+    let line = |c: &Doc| json!({"salary_component": c["id"]});
+    let st = t
+        .ins_submit(
+            &pm,
+            "SalaryStructure",
+            json!({"structure_name": "Payslip", "company": t.c(), "payroll_frequency": "Monthly", "earnings": [line(&bs), line(&hra)],
+                   "deductions": [line(&pf)], "employer_contributions": [line(&epf)]}),
+        )
+        .await;
+    let priya = t.employee("Priya", json!({"bank_name": "Test Bank", "bank_account_no": "0011223344", "tax_id": "ABCDE1234F"})).await;
+    let evil = t.employee("<script>alert(1)</script>", json!({})).await;
+    for e in [&priya, &evil] {
+        t.ins_submit(&pm, "SalaryStructureAssignment", json!({"employee": e["id"], "salary_structure": st["id"], "from_date": "2026-04-01", "base": "100000"}))
+            .await;
+    }
+    let pe = t.ins(&pm, "PayrollEntry", json!({"company": t.c(), "posting_date": "2026-09-30", "start_date": "2026-09-01", "end_date": "2026-09-30"})).await;
+    let pe_id = vid(&t.act(&pm, "PayrollEntry", uid(&pe), "get_employees", json!({})).await);
+    t.submit(&pm, "PayrollEntry", pe_id).await;
+    t.act(&pm, "PayrollEntry", pe_id, "create_salary_slips", json!({})).await;
+    let slip_of = |e: &Doc| {
+        let t = &t;
+        let e = e["id"].as_str().unwrap().to_string();
+        async move { t.one("SalarySlip", json!({"employee": e})).await }
+    };
+    let (s1, s2) = (slip_of(&priya).await, slip_of(&evil).await);
+    let keep = |name: &str, html: &str| {
+        if let Ok(dir) = std::env::var("PRINT_SAMPLES_DIR") {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(std::path::Path::new(&dir).join(format!("{name}.html")), html).unwrap();
+        }
+    };
+    let has = |html: &str, parts: &[&str]| {
+        for p in parts {
+            assert!(html.contains(p), "{p} in {html}");
+        }
+    };
+
+    // A draft says so, and prints the employee's name escaped.
+    let draft = t.k.render_print(&pm, "SalarySlip", uid(&s2)).await.unwrap();
+    has(&draft, &["Draft", "&lt;script&gt;alert(1)&lt;&#x2f;script&gt;"]);
+    assert!(!draft.contains("<script>alert"), "markup in a name is escaped");
+
+    t.act(&pm, "PayrollEntry", pe_id, "submit_salary_slips", json!({})).await;
+    let page = t.k.render_print(&pm, "SalarySlip", uid(&s1)).await.unwrap();
+    keep("payslip", &page);
+    has(
+        &page,
+        &[
+            "Payslip",
+            "2026-09-01",
+            "2026-09-30",
+            "Priya Test",
+            "Test Bank",
+            "Earnings",
+            "Deductions",
+            "Gross pay",
+            "Total deductions",
+            "Net pay",
+            "Employer contributions",
+            "not part of your pay",
+            "Provident Fund",
+            "Working days",
+            "Paid days",
+        ],
+    );
+    assert!(!page.contains("Draft") && !page.contains("Cancelled"), "a submitted slip is neither");
+    for empty in ["Off-cycle", "Final settlement", "Salary held", "Arrears of earlier", "<dd></dd>", "<h2></h2>"] {
+        assert!(!page.contains(empty), "{empty} does not print when it does not apply");
+    }
+    let s1 = t.get("SalarySlip", uid(&s1)).await;
+    for f in ["gross_pay", "total_deduction", "net_pay", "total_employer_contribution"] {
+        let shown = ferrum_kernel::print::format_money(&s1[f], 2);
+        assert!(page.contains(&shown), "{f} {shown} in {page}");
     }
 }
