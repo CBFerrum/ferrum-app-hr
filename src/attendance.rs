@@ -525,6 +525,13 @@ impl DocHook for AttendanceHook {
         Ok(())
     }
 
+    /// A day of a period already paid: what its slip now leaves waiting (refused by hand until
+    /// the slip says how such changes are handled).
+    async fn on_submit(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let day = opt_date(doc, "attendance_date");
+        crate::payroll::slip::late_change(hc, id(doc, "employee"), day, day).await
+    }
+
     /// Frees the punches so the day can be marked again.
     async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         sqlx::query("update e_employee_checkin set attendance = null where tenant_id = $1 and attendance = $2")
@@ -532,7 +539,8 @@ impl DocHook for AttendanceHook {
             .bind(id(doc, "id"))
             .execute(&mut **hc.tx)
             .await?;
-        Ok(())
+        let day = opt_date(doc, "attendance_date");
+        crate::payroll::slip::late_change(hc, id(doc, "employee"), day, day).await
     }
 }
 
@@ -680,7 +688,8 @@ impl DocHook for RequestHook {
         if rejected {
             return Ok(());
         }
-        mark_requested(hc, doc).await
+        mark_requested(hc, doc).await?;
+        crate::payroll::slip::late_change(hc, id(doc, "employee"), opt_date(doc, "from_date"), opt_date(doc, "to_date")).await
     }
 
     async fn before_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
@@ -700,6 +709,7 @@ impl DocHook for RequestHook {
         for a in made {
             hc.kernel.cancel_tx(&sctx, hc.tx, "Attendance", id(&a, "id").unwrap_or_default(), None).await?;
         }
+        crate::payroll::slip::late_change(hc, id(doc, "employee"), opt_date(doc, "from_date"), opt_date(doc, "to_date")).await?;
         let mut v = Doc::new();
         set(&mut v, "status", "Cancelled");
         hc.kernel.set_values_tx(&sctx, hc.tx, "AttendanceRequest", me, v).await

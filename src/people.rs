@@ -78,6 +78,8 @@ const ACCOUNTS: &[(&str, &str, &str, &str, &str)] = &[
     ("hr_employee_advance_account", "Employee Advances", "1170", "Current Assets", "Asset"),
     ("pay_payroll_payable_account", "Payroll Payable", "2160", "Current Liabilities", "Liability"),
     ("pay_salary_expense_account", "Salaries", "5220", "Indirect Expenses", "Expense"),
+    ("pay_employee_loan_account", "Employee Loans", "1175", "Current Assets", "Asset"),
+    ("pay_loan_interest_account", "Interest on Employee Loans", "4220", "Indirect Income", "Income"),
 ];
 
 /// Creates (or finds by name) the company's HR and payroll accounts and links the empty company

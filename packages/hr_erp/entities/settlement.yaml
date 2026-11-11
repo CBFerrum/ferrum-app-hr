@@ -3,7 +3,7 @@
   kind: child
   fields:
     - {name: component, type: data, required: true, max_length: 140, in_list: true, description: "What it is: the last pay, leave encashed, notice pay or recovery, gratuity, an expense claim, an advance…"}
-    - {name: reference_type, type: select, options: [Expense Claim, Employee Advance, Salary Slip, Payroll Salary, Leave Encashment, Notice Pay, Notice Recovery, Gratuity], read_only: true, in_list: true}
+    - {name: reference_type, type: select, options: [Expense Claim, Employee Advance, Salary Slip, Payroll Salary, Leave Encashment, Notice Pay, Notice Recovery, Gratuity, Employee Loan], read_only: true, in_list: true}
     - {name: reference, type: data, read_only: true, hidden: true, label: Reference Id}
     - {name: reference_number, type: data, read_only: true, in_list: true, label: Reference}
     - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}
@@ -35,7 +35,7 @@
     - {name: relieving_date, type: date, fetch_from: separation.relieving_date, read_only: true, in_list: true}
     - {name: transaction_date, type: date, required: true, default_expr: today}
     - {name: payables, type: table, of: FullAndFinalLine, description: "Paid to them: the last pay, leave encashed, notice pay, gratuity, open expense claims, and anything added"}
-    - {name: receivables, type: table, of: FullAndFinalLine, description: "Recovered from them: notice not served, advances not yet settled, and anything added"}
+    - {name: receivables, type: table, of: FullAndFinalLine, description: "Recovered from them: notice not served, advances not yet settled, loans still owed, and anything added"}
     - {name: total_payable, type: currency, currency: currency, read_only: true, no_copy: true}
     - {name: total_receivable, type: currency, currency: currency, read_only: true, no_copy: true}
     - {name: net_payable, type: currency, currency: currency, read_only: true, no_copy: true, in_list: true, description: "Paid to them when above zero; owed by them when below"}

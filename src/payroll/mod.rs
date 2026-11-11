@@ -5,6 +5,7 @@
 
 pub(crate) mod bank_file;
 pub(crate) mod formula;
+pub(crate) mod loans;
 pub(crate) mod payments;
 pub(crate) mod run;
 pub(crate) mod slip;
@@ -12,7 +13,7 @@ pub(crate) mod slip;
 use crate::leave::{self, LedgerEntry, allocation_on, available, sync_expiry};
 use crate::{employee_of, lookup, opt_date, stamp_company};
 use async_trait::async_trait;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use ferrum_domain::util::{b, d, elevated, get, id, money, round, rows, s, set, sys};
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, HookRegistry, Result};
 use formula::{Formula, Vars, check_abbr};
@@ -38,7 +39,8 @@ pub(crate) fn register(h: &mut HookRegistry) {
         .register("LeaveEncashment", Arc::new(EncashmentHook))
         .register("SalarySlip", Arc::new(slip::SlipHook))
         .register("PayrollOpening", Arc::new(OpeningHook))
-        .register("PayrollEntry", Arc::new(run::RunHook));
+        .register("PayrollEntry", Arc::new(run::RunHook))
+        .register("EmployeeLoan", Arc::new(loans::LoanHook));
 }
 
 /// The submitted salary structure assignment in force on `day`: the latest starting on or before it.
@@ -340,18 +342,109 @@ impl DocHook for DeclarationHook {
 }
 
 /// A submitted salary slip of the employee covering `day` that would pay an additional salary of
-/// that day (an off-cycle one for an off-cycle additional salary), if any.
+/// that day (an off-cycle one for an off-cycle additional salary), or for one that repeats, a period
+/// of its range, if any.
 async fn submitted_slip_on(hc: &mut HookCtx<'_>, extra: &Doc) -> Result<Option<String>> {
+    let until = if b(extra, "recurring") { opt_date(extra, "to_date") } else { opt_date(extra, "payroll_date") };
     Ok(sqlx::query_scalar(
         "select coalesce(number, id::text) from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus = 1 \
-         and start_date <= $3 and end_date >= $3 and coalesce(off_cycle, false) = $4 limit 1",
+         and start_date <= coalesce($5::date, 'infinity'::date) and end_date >= $3 and coalesce(off_cycle, false) = $4 order by start_date limit 1",
     )
     .bind(hc.ctx.tenant)
     .bind(id(extra, "employee"))
     .bind(opt_date(extra, "payroll_date"))
     .bind(b(extra, "off_cycle"))
+    .bind(until)
     .fetch_optional(&mut **hc.tx)
     .await?)
+}
+
+/// The day after the employee's last regular salary slip submitted, if any: where pay not yet paid starts.
+pub(crate) async fn paid_through(hc: &mut HookCtx<'_>, employee: Option<Uuid>) -> Result<Option<NaiveDate>> {
+    let last: Option<NaiveDate> = sqlx::query_scalar(
+        "select max(end_date) from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus = 1 and not coalesce(off_cycle, false)",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(employee)
+    .fetch_one(&mut **hc.tx)
+    .await?;
+    Ok(last)
+}
+
+/// The first day of the pay period after the one holding `day`.
+fn next_period(frequency: &str, day: NaiveDate) -> NaiveDate {
+    match frequency {
+        "Weekly" => day + chrono::Duration::days(7),
+        "Fortnightly" => day + chrono::Duration::days(14),
+        _ => day.with_day(1).and_then(|d| d.checked_add_months(chrono::Months::new(1))).unwrap_or(day),
+    }
+}
+
+/// Stops an additional salary that repeats from the next period not yet paid, or carries it on from
+/// there at a new amount (a new additional salary that keeps its cycle and last period). What was
+/// paid stays as it was, so corrections and arrears of those periods still find it.
+async fn stop_or_change(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -> Result<Value> {
+    let me = id(doc, "id").ok_or_else(|| Error::internal("additional salary without id"))?;
+    let label = format!("{}'s additional salary {}", s(doc, "employee_name").unwrap_or("the employee"), s(doc, "number").unwrap_or_default());
+    let first = opt_date(doc, "payroll_date").ok_or_else(|| Error::field("payroll_date", "is required"))?;
+    let amount = match params.get("amount") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(v)) if v.trim().is_empty() => None,
+        Some(v) => Some(ferrum_kernel::value::parse_decimal(v).map_err(|m| Error::field("amount", m))?),
+    };
+    if amount.is_some_and(|a| a <= Decimal::ZERO) {
+        return Err(Error::field("amount", "must be greater than zero; leave it empty to stop it"));
+    }
+    let next = paid_through(hc, id(doc, "employee")).await?.map(|p| p + chrono::Duration::days(1));
+    let Some(next) = next.filter(|n| *n > first) else {
+        return Err(Error::invalid(format!("{label} has not been paid yet; cancel it, or amend it")));
+    };
+    let until = opt_date(doc, "to_date");
+    if let Some(t) = until.filter(|t| *t < next) {
+        return Err(Error::invalid(format!("{label} was paid for the last time in the period of {t}; nothing is left to stop or change")));
+    }
+    let mut v = Doc::new();
+    set(&mut v, "to_date", (next - chrono::Duration::days(1)).to_string());
+    hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "AdditionalSalary", me, v).await?;
+    let Some(amount) = amount else {
+        return Ok(json!({"message": format!("{label} stops: the last period it was paid in was the one ending {}", next - chrono::Duration::days(1))}));
+    };
+    // Its next occurrence on or after the first period not yet paid.
+    let frequency = match assignment_on(hc, id(doc, "employee").unwrap_or_default(), next).await? {
+        Some(ssa) => lookup(hc, "SalaryStructure", id(&ssa, "salary_structure")).await?.and_then(|st| s(&st, "payroll_frequency").map(str::to_string)),
+        None => None,
+    }
+    .unwrap_or_else(|| "Monthly".into());
+    let every = doc.get("every").and_then(Value::as_i64).unwrap_or(1).max(1);
+    let mut from = next;
+    while slip::periods_between(&frequency, first, from) % every != 0 {
+        from = next_period(&frequency, from);
+    }
+    if until.is_some_and(|t| t < from) {
+        return Ok(json!({"message": format!("{label} stops: it had no period left to pay at a new amount")}));
+    }
+    let mut a = Doc::new();
+    for f in ["employee", "salary_component", "overwrite_salary_structure_amount", "deduct_full_tax", "every", "to_date"] {
+        set(&mut a, f, doc.get(f).cloned().unwrap_or_default());
+    }
+    set(&mut a, "recurring", true);
+    set(&mut a, "amount", money(amount));
+    set(&mut a, "payroll_date", from.to_string());
+    set(
+        &mut a,
+        "reason",
+        format!("In place of {} from {from}: {} instead of {}", s(doc, "number").unwrap_or_default(), amount.normalize(), d(doc, "amount").normalize()),
+    );
+    set(&mut a, "ref_doctype", "Additional Salary");
+    set(&mut a, "ref_docname", s(doc, "number").unwrap_or_default());
+    let user = elevated(hc.ctx);
+    let made = hc.kernel.insert_tx(&user, hc.tx, "AdditionalSalary", a).await?;
+    let made = hc.kernel.submit_tx(&user, hc.tx, "AdditionalSalary", id(&made, "id").unwrap_or_default(), None).await?;
+    Ok(json!({
+        "entity": "AdditionalSalary",
+        "id": s(&made, "id").unwrap_or_default(),
+        "message": format!("{label} carries on at {} from {from} as additional salary {}", amount.normalize(), s(&made, "number").unwrap_or_default()),
+    }))
 }
 
 /// An employee's pay and tax in a payroll year before the first slip made here. Income tax on
@@ -437,9 +530,19 @@ impl DocHook for AdditionalSalaryHook {
 
     async fn before_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         if let Some(n) = submitted_slip_on(hc, doc).await? {
+            if b(doc, "recurring") {
+                return Err(Error::invalid(format!("salary slip {n} already paid this; stop it from the next period instead (Stop or Change)")));
+            }
             return Err(Error::invalid(format!("salary slip {n} already paid this; cancel or correct the slip first")));
         }
         Ok(())
+    }
+
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        match name {
+            "stop_or_change" => stop_or_change(hc, doc, params).await.map(Some),
+            _ => Ok(None),
+        }
     }
 }
 

@@ -131,6 +131,21 @@ fn payments_made_before_the_upgrade() {
 }
 
 #[test]
+fn pay_that_repeats() {
+    run(repeats_scenario());
+}
+
+#[test]
+fn employee_loans() {
+    run(loans_scenario());
+}
+
+#[test]
+fn changes_after_payroll() {
+    run(late_changes_scenario());
+}
+
+#[test]
 fn hr_and_payroll_without_erp() {
     run(alone_scenario());
 }
@@ -2537,6 +2552,8 @@ async fn corrections_scenario() {
     assert_eq!((row_ben["salary_slip"].clone(), run["status"].clone()), (fixed["id"].clone(), json!("Slips Submitted")));
 
     // ───────────── Chen's corrected downward: a day absent ─────────────
+    // His September is paid: the day waits for its correction (0.11.0).
+    t.act(&pm, "SalarySlip", uid(&s_chen), "choose_late_changes", json!({"handling": "Correct the Slip"})).await;
     t.ins_submit(&hr, "Attendance", json!({"employee": chen["id"], "attendance_date": "2026-09-15", "status": "Absent"})).await;
     let fix = t.act(&pm, "SalarySlip", uid(&s_chen), "make_correction", json!({})).await;
     let fixed_c = t.submit(&pm, "SalarySlip", vid(&fix)).await;
@@ -3094,4 +3111,422 @@ async fn upgrade_scenario() {
 
 fn money(v: Decimal) -> String {
     v.to_string()
+}
+
+// ───────────────────────────── 0.11.0: changes after payroll, loans, pay that repeats ─────────────────────────────
+
+/// A workspace paying flat monthly salaries (every day of a month a working day, so a day is a
+/// thirtieth of September's pay), with income tax, a payroll manager, an HR manager and an accountant.
+struct P {
+    t: T,
+    pm: Ctx,
+    hr: Ctx,
+    acct: Ctx,
+    st: Doc,
+    slab: Doc,
+}
+
+impl P {
+    async fn new(slug: &str) -> P {
+        let t = T::new(slug).await;
+        let pm = t.user(&format!("pm@{slug}.test"), &["Payroll Manager"]).await;
+        let hr = t.user(&format!("hr@{slug}.test"), &["HR Manager"]).await;
+        let acct = t.user(&format!("acct@{slug}.test"), &["Accounts Manager"]).await;
+        let flat = t
+            .ins(
+                &pm,
+                "SalaryComponent",
+                json!({"component_name": "Flat Pay", "abbr": "FLAT", "component_type": "Earning", "amount_based_on_formula": true,
+                       "formula": "base", "depends_on_payment_days": true, "is_tax_applicable": true}),
+            )
+            .await;
+        let it = t.one("SalaryComponent", json!({"abbr": "IT"})).await;
+        t.k.update(&pm, "SalaryComponent", uid(&it), obj(json!({"accounts": [{"company": t.c(), "account": t.account("TDS Payable").await}]})), None)
+            .await
+            .unwrap();
+        let st = t
+            .ins_submit(
+                &pm,
+                "SalaryStructure",
+                json!({"structure_name": "Flat", "company": t.c(), "payroll_frequency": "Monthly", "earnings": [{"salary_component": flat["id"]}],
+                       "deductions": [{"salary_component": it["id"]}]}),
+            )
+            .await;
+        let slab = t
+            .ins(&pm, "IncomeTaxSlab", json!({"slab_name": "New Regime", "effective_from": "2026-04-01", "standard_tax_exemption_amount": "75000",
+                "slabs": [{"from_amount": "0", "to_amount": "400000", "percent_deduction": "0"}, {"from_amount": "400000", "to_amount": "800000", "percent_deduction": "5"},
+                          {"from_amount": "800000", "to_amount": "0", "percent_deduction": "10"}]}))
+            .await;
+        t.ins(&pm, "PayrollPeriod", json!({"period_name": "FY 2026-27", "company": t.c(), "start_date": "2026-04-01", "end_date": "2027-03-31"})).await;
+        P { t, pm, hr, acct, st, slab }
+    }
+
+    async fn hire(&self, first: &str, base: &str) -> Doc {
+        let e = self.t.employee(first, json!({"bank_name": "HDFC", "bank_account_no": format!("00{}", first.len() * 1111), "ifsc_code": "HDFC0000001"})).await;
+        self.t
+            .ins_submit(
+                &self.pm,
+                "SalaryStructureAssignment",
+                json!({"employee": e["id"], "salary_structure": self.st["id"], "from_date": "2026-04-01", "base": base, "income_tax_slab": self.slab["id"]}),
+            )
+            .await;
+        e
+    }
+
+    /// A payroll run of the period with its slips made (and submitted when `submit`).
+    async fn run(&self, start: &str, end: &str, submit: bool) -> Uuid {
+        let pe = self.t.ins(&self.pm, "PayrollEntry", json!({"company": self.t.c(), "posting_date": end, "start_date": start, "end_date": end})).await;
+        let id = vid(&self.t.act(&self.pm, "PayrollEntry", uid(&pe), "get_employees", json!({})).await);
+        self.t.submit(&self.pm, "PayrollEntry", id).await;
+        self.t.act(&self.pm, "PayrollEntry", id, "create_salary_slips", json!({})).await;
+        if submit {
+            self.t.act(&self.pm, "PayrollEntry", id, "submit_salary_slips", json!({})).await;
+        }
+        id
+    }
+
+    /// The employee's live regular slip of the period starting on `start`.
+    async fn slip(&self, e: &Doc, start: &str) -> Doc {
+        let rows = self.t.list(&self.t.admin, "SalarySlip", json!({"employee": e["id"], "start_date": start, "off_cycle": false})).await;
+        let live: Vec<&Doc> = rows.iter().filter(|r| r["docstatus"] != json!(2)).collect();
+        assert_eq!(live.len(), 1, "{} {start}", e["first_name"]);
+        self.t.get("SalarySlip", uid(live[0])).await
+    }
+
+    /// Corrects a submitted slip and submits the correction.
+    async fn correct(&self, slip: &Doc) -> Doc {
+        let fix = self.t.act(&self.pm, "SalarySlip", uid(slip), "make_correction", json!({})).await;
+        self.t.submit(&self.pm, "SalarySlip", vid(&fix)).await
+    }
+}
+
+fn amount_of(s: &Doc, table: &str, abbr: &str) -> Decimal {
+    s[table].as_array().unwrap().iter().find(|r| r["abbr"] == json!(abbr)).map(|r| dec(&r["amount"])).unwrap_or_default()
+}
+
+/// An allowance paid with four months' pay, stopped after two; another carried on at a new amount;
+/// the first month corrected after the stop; every other month; its full tax taken per occurrence.
+async fn repeats_scenario() {
+    let p = P::new("hrrep").await;
+    let t = &p.t;
+    let shift = t
+        .ins(
+            &p.pm,
+            "SalaryComponent",
+            json!({"component_name": "Shift Allowance", "abbr": "SHA", "component_type": "Earning", "depends_on_payment_days": false, "is_tax_applicable": true}),
+        )
+        .await;
+    let (asha, ben, dev, chen) = (p.hire("Asha", "100000").await, p.hire("Ben", "100000").await, p.hire("Dev", "100000").await, p.hire("Chen", "100000").await);
+    let repeat = |e: &Doc, amount: &str, from: &str, until: Option<&str>, every: i64, full_tax: bool| {
+        let v = json!({"employee": e["id"], "salary_component": shift["id"], "amount": amount, "payroll_date": from, "recurring": true,
+                       "to_date": until, "every": every, "deduct_full_tax": full_tax});
+        let p = &p;
+        async move { p.t.ins_submit(&p.pm, "AdditionalSalary", v).await }
+    };
+    // Asha's 3,000 for September to December, its full tax taken each time; Ben's 1,000 until stopped,
+    // every month; Dev's 2,000 every other month. Chen is given Asha's as two one-offs marked the same.
+    let a_shift = repeat(&asha, "3000", "2026-09-15", Some("2026-12-31"), 1, true).await;
+    let b_shift = repeat(&ben, "1000", "2026-09-01", None, 1, false).await;
+    repeat(&dev, "2000", "2026-09-01", None, 2, false).await;
+    for day in ["2026-09-30", "2026-10-31"] {
+        t.ins_submit(
+            &p.pm,
+            "AdditionalSalary",
+            json!({"employee": chen["id"], "salary_component": shift["id"], "amount": "3000", "payroll_date": day, "deduct_full_tax": true}),
+        )
+        .await;
+    }
+    refused(
+        t.try_ins(
+            &p.pm,
+            "AdditionalSalary",
+            json!({"employee": asha["id"], "salary_component": shift["id"], "amount": "1", "payroll_date": "2026-09-01",
+            "recurring": true, "off_cycle": true}),
+        )
+        .await,
+        "not off-cycle",
+    );
+
+    for (start, end) in [("2026-09-01", "2026-09-30"), ("2026-10-01", "2026-10-31")] {
+        p.run(start, end, true).await;
+        let (a, c) = (p.slip(&asha, start).await, p.slip(&chen, start).await);
+        assert_eq!((amount_of(&a, "earnings", "SHA"), amount_of(&p.slip(&ben, start).await, "earnings", "SHA")), (n("3000"), n("1000")), "{start}");
+        // Its full tax per occurrence, as a one-off marked so has it.
+        assert_eq!((amount_of(&a, "deductions", "IT"), dec(&a["net_pay"])), (amount_of(&c, "deductions", "IT"), dec(&c["net_pay"])), "{start}");
+        assert!(amount_of(&a, "deductions", "IT") > amount_of(&p.slip(&ben, start).await, "deductions", "IT"));
+    }
+    let s_asha = p.slip(&asha, "2026-09-01").await;
+    assert_eq!(amount_of(&p.slip(&dev, "2026-09-01").await, "earnings", "SHA"), n("2000"));
+    assert_eq!(amount_of(&p.slip(&dev, "2026-10-01").await, "earnings", "SHA"), Decimal::ZERO, "every other month");
+    refused(t.k.cancel(&p.pm, "AdditionalSalary", uid(&b_shift), None).await, "Stop or Change");
+
+    // Stopped after two, and Ben's carried on at 1,500.
+    let stop = t.act(&p.pm, "AdditionalSalary", uid(&a_shift), "stop_or_change", json!({})).await;
+    assert!(stop["message"].as_str().unwrap().contains("2026-10-31"), "{stop}");
+    assert_eq!(t.get("AdditionalSalary", uid(&a_shift)).await["to_date"], json!("2026-10-31"));
+    refused(t.k.run_action(&p.pm, "AdditionalSalary", uid(&a_shift), "stop_or_change", json!({})).await, "for the last time");
+    let changed = t.act(&p.pm, "AdditionalSalary", uid(&b_shift), "stop_or_change", json!({"amount": "1500"})).await;
+    let b_new = t.get("AdditionalSalary", vid(&changed)).await;
+    assert_eq!((b_new["payroll_date"].clone(), dec(&b_new["amount"]), b_new["recurring"].clone()), (json!("2026-11-01"), n("1500"), json!(true)));
+
+    p.run("2026-11-01", "2026-11-30", true).await;
+    assert_eq!(amount_of(&p.slip(&asha, "2026-11-01").await, "earnings", "SHA"), Decimal::ZERO, "stopped");
+    assert_eq!(amount_of(&p.slip(&ben, "2026-11-01").await, "earnings", "SHA"), n("1500"));
+    assert_eq!(amount_of(&p.slip(&dev, "2026-11-01").await, "earnings", "SHA"), n("2000"));
+    // September corrected after the stop: it still pays the allowance of its period, once.
+    let fixed = p.correct(&s_asha).await;
+    assert_eq!((amount_of(&fixed, "earnings", "SHA"), dec(&fixed["net_pay"])), (n("3000"), dec(&s_asha["net_pay"])));
+    let fixed_ben = p.correct(&p.slip(&ben, "2026-09-01").await).await;
+    assert_eq!(amount_of(&fixed_ben, "earnings", "SHA"), n("1000"), "September at its own amount");
+    p.run("2026-12-01", "2026-12-31", true).await;
+    assert_eq!(amount_of(&p.slip(&asha, "2026-12-01").await, "earnings", "SHA"), Decimal::ZERO);
+    assert_eq!(amount_of(&p.slip(&ben, "2026-12-01").await, "earnings", "SHA"), n("1500"));
+    // Paid in September and October only.
+    let mut total = Decimal::ZERO;
+    for s in t.list(&t.admin, "SalarySlip", json!({"employee": asha["id"], "docstatus": 1})).await {
+        total += amount_of(&t.get("SalarySlip", uid(&s)).await, "earnings", "SHA");
+    }
+    assert_eq!(total, n("6000"));
+}
+
+fn loan_row(s: &Doc) -> Option<(Decimal, Decimal, String)> {
+    s["loans"].as_array().unwrap().first().map(|r| (dec(&r["principal"]), dec(&r["interest"]), r["note"].as_str().unwrap_or("").to_string()))
+}
+
+/// Loans: one over six months at 12% a year with a month deferred, its slip corrected and its run
+/// cancelled, a lump sum and an early payoff; one whose instalment is more than a low month's pay,
+/// written off; and a leaver's, closed by the full and final statement. The loan account holds
+/// what the loans say is owed at every step.
+async fn loans_scenario() {
+    let p = P::new("hrloan").await;
+    let t = &p.t;
+    let (asha, ben, chen) = (p.hire("Asha", "100000").await, p.hire("Ben", "10000").await, p.hire("Chen", "50000").await);
+    let lend = |e: &Doc, amount: &str, terms: Value| {
+        let mut v =
+            obj(json!({"employee": e["id"], "loan_amount": amount, "posting_date": "2026-08-25", "repayment_start_date": "2026-09-01", "purpose": "Housing"}));
+        v.extend(obj(terms));
+        let p = &p;
+        async move { p.t.ins_submit(&p.pm, "EmployeeLoan", Value::Object(v)).await }
+    };
+    let agree = || async {
+        let loans = t.list(&t.admin, "EmployeeLoan", json!({"docstatus": 1})).await;
+        let owed: Decimal = loans.iter().map(|l| dec(&l["balance"])).sum();
+        assert_eq!(t.gl("Employee Loans").await, owed, "the loan account holds what the loans say is owed");
+        owed
+    };
+    let loan = |l: &Doc| t.get("EmployeeLoan", uid(l));
+    let bank = t.gl("Primary Bank").await;
+    let a_loan = lend(&asha, "60000", json!({"interest_rate": "12", "repayment_method": "Number of Periods", "repayment_periods": 6})).await;
+    let b_loan = lend(&ben, "30000", json!({"repayment_method": "Amount per Period", "repayment_amount": "15000"})).await;
+    let c_loan = lend(&chen, "20000", json!({"repayment_periods": 6})).await;
+    assert_eq!((agree().await, t.gl("Primary Bank").await - bank), (n("110000"), n("-110000")), "paid from the bank");
+    let a = loan(&a_loan).await;
+    assert_eq!((a["status"].clone(), a["schedule"].as_array().unwrap().len()), (json!("Repaying"), 6), "{a:?}");
+    refused(
+        t.try_ins(
+            &p.pm,
+            "EmployeeLoan",
+            json!({"employee": ben["id"], "loan_amount": "50000", "posting_date": "2026-08-25", "repayment_start_date": "2026-09-01", "interest_rate": "24",
+            "repayment_method": "Amount per Period", "repayment_amount": "500"}),
+        )
+        .await,
+        "does not cover the first month's interest (1000)",
+    );
+
+    // ───────────── September: equal instalments, interest first; Ben's pay too low ─────────────
+    p.run("2026-09-01", "2026-09-30", true).await;
+    let s_asha = p.slip(&asha, "2026-09-01").await;
+    assert_eq!(loan_row(&s_asha).map(|r| (r.0, r.1)), Some((n("9752.90"), n("600"))), "10,352.90: a month's interest on 60,000 and the rest");
+    assert_eq!(dec(&s_asha["total_loan_repayment"]), n("10352.90"));
+    assert_eq!(dec(&s_asha["gross_pay"]) - dec(&s_asha["total_deduction"]), dec(&s_asha["net_pay"]));
+    assert_eq!(t.gl("Interest on Employee Loans").await, n("-600"));
+    let s_ben = p.slip(&ben, "2026-09-01").await;
+    let (taken, _, note) = loan_row(&s_ben).unwrap();
+    assert_eq!((taken, dec(&s_ben["net_pay"])), (n("10000"), Decimal::ZERO), "never more than the pay allows");
+    assert!(note.contains("10000 of the 15000 due"), "{note}");
+    agree().await;
+
+    // ───────────── October deferred for Asha; Ben's shortfall comes with his next instalment ─────────────
+    refused(t.k.run_action(&p.pm, "EmployeeLoan", uid(&a_loan), "defer_instalment", json!({"period": "2026-10-10"})).await, "say why");
+    refused(
+        t.k.run_action(&p.pm, "EmployeeLoan", uid(&a_loan), "defer_instalment", json!({"period": "2026-09-10", "reason": "Wedding"})).await,
+        "already deducted the instalment of 2026-09-01",
+    );
+    t.act(&p.pm, "EmployeeLoan", uid(&a_loan), "defer_instalment", json!({"period": "2026-10-10", "reason": "Wedding in the family"})).await;
+    p.run("2026-10-01", "2026-10-31", true).await;
+    assert!(loan_row(&p.slip(&asha, "2026-10-01").await).is_none(), "deferred");
+    let o_ben = p.slip(&ben, "2026-10-01").await;
+    assert_eq!(loan_row(&o_ben).map(|r| r.0), Some(n("10000")), "20,000 due, as much as the pay allows");
+    agree().await;
+    // What is left of Ben's is written off.
+    refused(t.k.run_action(&p.pm, "EmployeeLoan", uid(&b_loan), "write_off", json!({"reason": "Hardship"})).await, "account");
+    let bad = t.ins(&t.admin, "Account", json!({"account_name": "Loans Written Off", "company": t.c(), "root_type": "Expense"})).await;
+    t.act(&p.pm, "EmployeeLoan", uid(&b_loan), "write_off", json!({"account": bad["id"], "reason": "Hardship"})).await;
+    let b = loan(&b_loan).await;
+    assert_eq!((b["status"].clone(), dec(&b["balance"]), t.gl("Loans Written Off").await), (json!("Written Off"), Decimal::ZERO, n("10000")));
+    refused(t.k.cancel(&p.pm, "EmployeeLoan", uid(&b_loan), None).await, "repaid in part");
+    agree().await;
+
+    // ───────────── November: corrected, then its run cancelled and made again ─────────────
+    let nov = p.run("2026-11-01", "2026-11-30", true).await;
+    let n_asha = p.slip(&asha, "2026-11-01").await;
+    let (principal, interest, _) = loan_row(&n_asha).unwrap();
+    assert_eq!(interest, n("502.47"), "on the 50,247.10 left");
+    let after_nov = agree().await;
+    let fixed = p.correct(&n_asha).await;
+    assert_eq!(loan_row(&fixed).map(|r| (r.0, r.1)), Some((principal, interest)), "given back and taken again, once");
+    assert_eq!(agree().await, after_nov);
+    t.k.cancel(&p.pm, "PayrollEntry", nov, None).await.expect("cancel November");
+    assert_eq!(dec(&loan(&a_loan).await["balance"]), n("50247.10"), "November's instalment given back");
+    agree().await;
+    p.run("2026-11-01", "2026-11-30", true).await;
+    assert_eq!(loan_row(&p.slip(&asha, "2026-11-01").await).map(|r| r.0), Some(principal));
+    agree().await;
+
+    // ───────────── a lump sum, then paid off early ─────────────
+    let before = dec(&loan(&a_loan).await["balance"]);
+    refused(t.k.run_action(&p.pm, "EmployeeLoan", uid(&a_loan), "repay", json!({"amount": "99999999"})).await, "left to repay");
+    t.act(&p.pm, "EmployeeLoan", uid(&a_loan), "repay", json!({"amount": "20000", "posting_date": "2026-12-05"})).await;
+    assert_eq!(dec(&loan(&a_loan).await["balance"]), before - n("20000"));
+    agree().await;
+    // Chen leaves on 15 December: his statement's own slip takes December's instalment, the statement the rest.
+    let sep = t
+        .ins_submit(
+            &p.hr,
+            "EmployeeSeparation",
+            json!({"employee": chen["id"], "reason": "Resignation", "resignation_letter_date": "2026-11-15",
+            "relieving_date": "2026-12-15", "shortfall_settlement": "Waive"}),
+        )
+        .await;
+    let fnf = t.act(&p.hr, "EmployeeSeparation", uid(&sep), "make_full_and_final", json!({})).await;
+    let fnf = t.get("FullAndFinalStatement", vid(&fnf)).await;
+    let last_pay = fnf["payables"].as_array().unwrap().iter().find(|r| r["reference_type"] == json!("Salary Slip")).unwrap().clone();
+    let own = t.get("SalarySlip", last_pay["reference"].as_str().unwrap().parse().unwrap()).await;
+    let in_last_pay = loan_row(&own).unwrap().0;
+    let owed = fnf["receivables"].as_array().unwrap().iter().find(|r| r["reference_type"] == json!("Employee Loan")).unwrap().clone();
+    assert_eq!(dec(&owed["amount"]) + in_last_pay, dec(&loan(&c_loan).await["balance"]), "{fnf:?}");
+    t.submit(&p.hr, "FullAndFinalStatement", uid(&fnf)).await;
+    let je = t.act(&p.hr, "FullAndFinalStatement", uid(&fnf), "make_payment_entry", json!({})).await;
+    t.submit(&p.acct, "JournalEntry", vid(&je)).await;
+    let c = loan(&c_loan).await;
+    assert_eq!((c["status"].clone(), dec(&c["balance"])), (json!("Repaid"), Decimal::ZERO), "closed by the statement");
+    agree().await;
+
+    p.run("2026-12-01", "2026-12-31", true).await;
+    let d_asha = p.slip(&asha, "2026-12-01").await;
+    assert!(loan_row(&d_asha).unwrap().0 < principal, "the rest spread over the months left");
+    agree().await;
+    let payoff = t.act(&p.pm, "EmployeeLoan", uid(&a_loan), "repay", json!({"posting_date": "2027-01-05"})).await;
+    assert!(payoff["message"].as_str().unwrap().contains("paid off"));
+    let a = loan(&a_loan).await;
+    assert_eq!((a["status"].clone(), dec(&a["balance"])), (json!("Repaid"), Decimal::ZERO));
+    assert_eq!(agree().await, Decimal::ZERO);
+    p.run("2027-01-01", "2027-01-31", true).await;
+    assert!(loan_row(&p.slip(&asha, "2027-01-01").await).is_none());
+    refused(t.k.run_action(&p.pm, "EmployeeLoan", uid(&a_loan), "repay", json!({})).await, "not available");
+}
+
+/// Leave and attendance changed after the payroll ran: leave without pay approved late, refused until
+/// the slip says how, then carried to the next pay at September's day's pay; the same left for a
+/// correction instead; the period carried from corrected afterwards, with nothing carried twice; an
+/// absence removed (a refund); paid leave swapped for paid leave going through.
+async fn late_changes_scenario() {
+    let p = P::new("hrlate").await;
+    let t = &p.t;
+    let approver = t.user("la@hrlate.test", &["Leave Approver"]).await;
+    let (asha, ben) = (p.hire("Asha", "30000").await, p.hire("Ben", "30000").await);
+    let lt = |name: &'static str| async move { t.one("LeaveType", json!({"leave_type_name": name})).await["id"].as_str().unwrap().to_string() };
+    let (casual, sick, lwp) = (lt("Casual Leave").await, lt("Sick Leave").await, lt("Leave Without Pay").await);
+    for e in [&asha, &ben] {
+        for kind in [&casual, &sick] {
+            t.ins_submit(
+                &p.hr,
+                "LeaveAllocation",
+                json!({"employee": e["id"], "leave_type": kind, "from_date": "2026-01-01", "to_date": "2026-12-31", "new_leaves_allocated": "5"}),
+            )
+            .await;
+        }
+    }
+    let leave = |e: &Doc, kind: &str, day: &str| {
+        let v = json!({"employee": e["id"], "leave_type": kind, "from_date": day, "to_date": day, "reason": "family"});
+        let hr = &p.hr;
+        async move { t.ins(hr, "LeaveApplication", v).await }
+    };
+    let approve = |a: &Doc| t.trans(&p.hr, "LeaveApplication", uid(a), "Approve");
+    let choose = |s: &Doc, how: &str| t.k.run_action(&p.pm, "SalarySlip", uid(s), "choose_late_changes", json!({"handling": how}));
+    let ledger_of = |a: &Doc| {
+        let a = a["id"].as_str().unwrap().to_string();
+        async move { t.list(&t.admin, "LeaveLedgerEntry", json!({"transaction_id": a})).await.len() }
+    };
+
+    p.run("2026-09-01", "2026-09-30", true).await;
+    let s_asha = p.slip(&asha, "2026-09-01").await;
+    assert_eq!(dec(&s_asha["payment_days"]), n("30"));
+
+    // ───────────── leave without pay approved for a September day: refused until the slip says how ─────────────
+    let a_lwp = leave(&asha, &lwp, "2026-09-14").await;
+    refused(approve(&a_lwp).await, "is already submitted (salary slip");
+    assert_eq!((t.get("LeaveApplication", uid(&a_lwp)).await["docstatus"].clone(), ledger_of(&a_lwp).await), (json!(0), 0), "nothing went through");
+    forbidden(t.k.run_action(&approver, "SalarySlip", uid(&s_asha), "choose_late_changes", json!({"handling": "Carry to Next Pay"})).await);
+    choose(&s_asha, "Carry to Next Pay").await.expect("carry");
+    approve(&a_lwp).await.expect("approved once the slip says how");
+    assert_eq!(ledger_of(&a_lwp).await, 1, "the leave ledger has it");
+    let s_asha = t.get("SalarySlip", uid(&s_asha)).await;
+    assert_eq!(
+        (s_asha["changed_after_payroll"].clone(), dec(&s_asha["pending_adjustment_days"]), dec(&s_asha["pending_adjustment"])),
+        (json!(true), n("-1"), n("-1000"))
+    );
+    // Ben's for a correction instead; his paid leave swapped for another paid leave goes through as it is.
+    let s_ben = p.slip(&ben, "2026-09-01").await;
+    let cas = leave(&ben, &casual, "2026-09-16").await;
+    approve(&cas).await.expect("paid leave on a paid day changes nothing paid");
+    t.trans(&p.hr, "LeaveApplication", uid(&cas), "Cancel").await.expect("cancel the casual leave");
+    approve(&leave(&ben, &sick, "2026-09-16").await).await.expect("sick leave in its place");
+    assert_eq!(t.get("SalarySlip", uid(&s_ben)).await["changed_after_payroll"], json!(false));
+    choose(&s_ben, "Correct the Slip").await.expect("correct");
+    approve(&leave(&ben, &lwp, "2026-09-21").await).await.expect("left for a correction");
+
+    // ───────────── October carries Asha's day, at September's day's pay; Ben's waits ─────────────
+    // An absence of Asha's in October, marked before its run.
+    let absent = t.ins_submit(&p.hr, "Attendance", json!({"employee": asha["id"], "attendance_date": "2026-10-20", "status": "Absent"})).await;
+    let salaries = t.gl("Salaries").await;
+    p.run("2026-10-01", "2026-10-31", true).await;
+    let o_asha = p.slip(&asha, "2026-10-01").await;
+    let rows = o_asha["adjustments"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0]["period_start"].clone(), dec(&rows[0]["days"]), dec(&rows[0]["daily_rate"]), dec(&rows[0]["amount"]), rows[0]["salary_slip"].clone()),
+        (json!("2026-09-01"), n("-1"), n("1000"), n("-1000"), s_asha["id"].clone())
+    );
+    assert!(rows[0]["reason"].as_str().unwrap().contains("0 unpaid days when salary slip"), "{}", rows[0]["reason"]);
+    let o_flat = amount_of(&o_asha, "earnings", "FLAT");
+    assert_eq!((dec(&o_asha["payment_days"]), dec(&o_asha["gross_pay"])), (n("30"), o_flat - n("1000")));
+    assert!(p.slip(&ben, "2026-10-01").await["adjustments"].as_array().unwrap().is_empty(), "left for a correction");
+    assert_eq!(t.gl("Salaries").await - salaries, dec(&o_asha["gross_pay"]) + dec(&p.slip(&ben, "2026-10-01").await["gross_pay"]), "posted with the run");
+    assert_eq!(t.get("SalarySlip", uid(&s_asha)).await["changed_after_payroll"], json!(false), "carried once");
+    assert_eq!(dec(&t.get("SalarySlip", uid(&s_ben)).await["pending_adjustment_days"]), n("-1"));
+
+    // ───────────── corrections: Ben's as chosen; Asha's after its day was carried ─────────────
+    let fixed_ben = p.correct(&s_ben).await;
+    assert_eq!((dec(&fixed_ben["payment_days"]), dec(&fixed_ben["adjustment_amount"])), (n("29"), Decimal::ZERO));
+    let fixed_asha = p.correct(&s_asha).await;
+    assert_eq!(
+        (dec(&fixed_asha["payment_days"]), dec(&fixed_asha["adjustment_amount"]), dec(&fixed_asha["gross_pay"])),
+        (n("29"), n("1000"), dec(&s_asha["gross_pay"])),
+        "it pays the day as it is now and takes back what October carried"
+    );
+
+    // ───────────── the October absence removed after its run: a refund at October's day's pay ─────────────
+    refused(t.k.cancel(&p.hr, "Attendance", uid(&absent), None).await, "Changes After Payroll");
+    choose(&o_asha, "Carry to Next Pay").await.expect("carry");
+    t.k.cancel(&p.hr, "Attendance", uid(&absent), None).await.expect("absence removed");
+    p.run("2026-11-01", "2026-11-30", true).await;
+    let n_asha = p.slip(&asha, "2026-11-01").await;
+    let rows = n_asha["adjustments"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "October's refund only: September is not carried twice");
+    assert_eq!((rows[0]["period_start"].clone(), dec(&rows[0]["days"]), dec(&rows[0]["amount"])), (json!("2026-10-01"), n("1"), n("967.74")));
+    assert!(p.slip(&ben, "2026-11-01").await["adjustments"].as_array().unwrap().is_empty());
+    for s in t.list(&t.admin, "SalarySlip", json!({"docstatus": 1})).await {
+        assert_eq!(s["changed_after_payroll"], json!(false), "nothing waits: {}", s["number"]);
+    }
 }
