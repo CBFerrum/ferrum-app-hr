@@ -25,7 +25,7 @@ entry. Employees get self-service access to what is theirs.
 
 | At a glance | |
 |---|---|
-| 📦 Version | `0.10.0` |
+| 📦 Version | `0.11.0` |
 | 🧱 Platform | Ferrum `>=0.3.2, <0.4` |
 | 🔗 Requires | nothing else |
 | 🖥️ Interface | its own, at `/people/` |
@@ -70,7 +70,7 @@ Openings, applicants, interviews and offers; onboarding, appraisals, promotions,
 <td width="50%" valign="top">
 
 ### 💸 Payroll
-Components with formulas (CEL), employer contributions, structures, tax slabs with a rebate, cesses and surcharges, declarations and opening year-to-date figures for a company moving here mid-year; slips, a leaver's tax settled on their last, accrual and bank payment; one slip corrected after the run is posted or paid (the difference owed or recovered from the next slip), arrears for a revision backdated into months already paid, off-cycle runs for a bonus, arrears or what is still owed, salaries held and released, and runs paid outside Ferrum recorded as paid.
+Components with formulas (CEL), employer contributions, structures, tax slabs with a rebate, cesses and surcharges, declarations and opening year-to-date figures for a company moving here mid-year; slips, a leaver's tax settled on their last, accrual and bank payment; one slip corrected after the run is posted or paid (the difference owed or recovered from the next slip), arrears for a revision backdated into months already paid, off-cycle runs for a bonus, arrears or what is still owed, salaries held and released, and runs paid outside Ferrum recorded as paid; additional salary that repeats; leave and attendance of a paid month locked, a late change carried to the next pay by days or left for a correction; employee loans with a schedule and optional interest, repaid by each slip within what the pay allows, deferred, repaid early, written off or closed by a leaver's statement.
 
 </td>
 <td width="50%" valign="top">
@@ -307,6 +307,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.11.0** | Additional salary that repeats; late leave and attendance carried to the next pay; employee loans repaid through salary. |
 | **0.10.0** | One slip of a posted or paid run corrected; arrears for a backdated revision; off-cycle runs; salaries held and released. |
 | **0.9.0** | Employer contributions; opening year-to-date figures and a previous employer's; notice served before leaving; a full and final statement that gathers the last pay, leave, notice and gratuity. |
 | **0.8.14** | Its reports' names in Arabic and Hindi. |

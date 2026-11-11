@@ -1,7 +1,7 @@
 package: payroll_erp
-version: 0.3.0
+version: 0.4.0
 label: Payroll and ERP
-description: Salary components' accounts, payroll runs posting one balanced accrual journal (earnings, deductions and employer contributions) and a bank entry that pays each salary in full (held ones left out, what is still owed from a correction or a release carried), a corrected slip's own journals, and the cost centers salaries post to.
+description: Salary components' accounts, payroll runs posting one balanced accrual journal (earnings, deductions and employer contributions) and a bank entry that pays each salary in full (held ones left out, what is still owed from a correction or a release carried), a corrected slip's own journals, the cost centers salaries post to, and employee loans repaid through salary with their interest.
 depends: [payroll, accounting]
 field_prefix: pay_
 

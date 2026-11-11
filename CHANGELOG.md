@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.11.0
+
+For a company moving its payroll here with its loans and its late leave.
+
+- **Additional salary that repeats.** Repeats, with Until (empty: until stopped) and Every
+  (Periods): paid once in every regular slip in range, or every N-th. Stop or Change stops it from
+  the next period not yet paid, or carries it on there at a new amount (a new additional salary
+  keeping its cycle). A correction of a paid period still pays it at that period's amount; its tax
+  tick applies to each payment. Refused: one that repeats off-cycle, cancelling one a slip paid.
+- **Leave and attendance changed after the payroll ran.** A change by a person that alters what a
+  submitted regular slip paid (leave without pay approved or cancelled, an absence marked or removed,
+  a half day, an attendance request) is refused, naming the slip and the days, until someone who
+  submits slips chooses on that slip (Changes After Payroll): Carry to Next Pay, or Correct the
+  Slip. A change that alters nothing paid goes through. Carried, the next slip (or an off-cycle one)
+  has a Pay Adjustment: the period, the days, its day's pay as paid, the amount and the reason, part
+  of gross pay and posted to the salary expense account, carried once; a correction of the period
+  pays its days as they are and takes back what was carried. Slips show what still waits (Changed
+  Since Submitted, a filter); a leaver's last slip carries all of it.
+- **Employee loans** (with the connector to ERP). Paid from the bank on their day (Employee Loans
+  debited), repaid from the first month over a number of months or an amount a month, interest on
+  the balance left at a yearly rate (none by default). Each monthly slip deducts the instalment due,
+  principal and interest apart (the loan and Interest on Employee Loans credited), never more than
+  the pay allows: the rest is due with the next. Defer an Instalment (with a reason), Repay Outside
+  Salary (in part, or all of it: paid off), Write Off (to an account, with a reason). A slip
+  corrected or cancelled gives its instalment back. The schedule shows what was deducted, deferred
+  and is due; the balance is what the loan account holds. A leaver's balance is a recovery on the
+  full and final statement and is closed by its entry. Refused: an amount a month below the first
+  month's interest, cancelling a loan repaid in part, deferring a month already deducted.
+
+What an upgrading workspace sees: each slip already submitted has no choice made, so a change to a
+paid month is refused until one is made on its slip. The Employee Loans and Interest on Employee
+Loans accounts are made on the company when the first loan needs them (or Create HR and Payroll
+Accounts); set others on the company if the chart has its own. Additional salary already made is
+one-off, as before. Names of the new models, fields and actions in Arabic and Hindi (translated by
+the model, to be reviewed by native speakers).
+
+Not yet: a list of what is waiting beyond the slip list's filter; an employee advance recovered
+through salary; loans in My space; a loan topped up; loans repaid weekly or fortnightly (monthly
+only); an instalment taken by an off-cycle slip.
+
 ## 0.10.0
 
 For a company moving its payroll here with nothing to put right by hand.
