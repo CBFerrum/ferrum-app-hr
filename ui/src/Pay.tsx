@@ -5,9 +5,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { api, docPath, download, errorMessage, formatDate, todayIso, t as tr, isolate } from "@ferrum/client";
-import { Badge, EmptyState, ErrorState, Icon, Spinner, toast } from "@ferrum/kit";
+import { Badge, Icon, ListSkeleton, StatePanel, toast } from "@ferrum/kit";
 import { f, rows, title, useCanRead } from "./data";
 import { money } from "./inbox";
+import { Failed } from "./Nav";
 import type { Employee } from "./people";
 import { cover, slipPeriod } from "./space";
 
@@ -32,9 +33,9 @@ function Payslips({ employee, declarations }: { employee: Employee; declarations
       </div>
       <div className="card-body">
         {q.error ? (
-          <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+          <Failed error={q.error} onRetry={() => void q.refetch()} />
         ) : !q.data ? (
-          <Spinner label={tr("Loading your payslips")} />
+          <ListSkeleton rows={3} />
         ) : !q.data.length ? (
           <p className="muted">{tr("No payslips yet. They appear here once payroll has run.")}</p>
         ) : (
@@ -94,7 +95,7 @@ function Documents({ employee, training }: { employee: Employee; training: boole
         {files.error ? (
           <p className="muted">{tr("Your documents cannot be shown ({error}).", { error: errorMessage(files.error) })}</p>
         ) : !files.data ? (
-          <Spinner small label={tr("Loading your documents")} />
+          <ListSkeleton rows={2} />
         ) : !files.data.length ? (
           <p className="muted">{tr("HR has not put any documents on your record.")}</p>
         ) : (
@@ -125,7 +126,7 @@ function Documents({ employee, training }: { employee: Employee; training: boole
             })}
           </ul>
         )}
-        {training && passed.error && <EmptyState title={tr("Your training cannot be shown")} />}
+        {training && passed.error && <StatePanel kind="failed" title={tr("Your training cannot be shown")} />}
       </div>
     </section>
   );
