@@ -5,6 +5,7 @@
 //! Users sign in with real roles (HR manager, leave/expense approver, employee, payroll manager,
 //! accountant, attendance device) and drive the documents through the kernel API.
 
+use ferrum_kernel::customize::NewCustomization;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery};
 use ferrum_meta::Catalog;
@@ -148,6 +149,31 @@ fn employee_loans() {
 #[test]
 fn changes_after_payroll() {
     run(late_changes_scenario());
+}
+
+#[test]
+fn employee_documents_with_expiry() {
+    run(documents_scenario());
+}
+
+#[test]
+fn onboarding_and_offboarding_from_templates() {
+    run(checklist_scenario());
+}
+
+#[test]
+fn statutory_formulas_as_configuration() {
+    run(statutory_scenario());
+}
+
+#[test]
+fn check_ins_with_place_and_proof() {
+    run(place_scenario());
+}
+
+#[test]
+fn recruiting_pipeline() {
+    run(pipeline_scenario());
 }
 
 #[test]
@@ -3633,4 +3659,458 @@ async fn payslip_print_scenario() {
         let shown = ferrum_kernel::print::format_money(&s1[f], 2);
         assert!(page.contains(&shown), "{f} {shown} in {page}");
     }
+}
+
+// ───────────────────────────── employee documents ─────────────────────────────
+
+/// Sends of a template in the workspace.
+async fn sends(t: &T, template: &str) -> i64 {
+    let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+    sqlx::query_scalar("select count(*) from message_send where tenant_id = $1 and template = $2")
+        .bind(t.tenant)
+        .bind(template)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap()
+}
+
+/// Documents on employees: types say who uploads and sees them; HR verifies; the upkeep warns the employee and
+/// HR once before expiry (also when two runs race); the report lists what expires and what is missing.
+async fn documents_scenario() {
+    let t = T::new("hrdocs").await;
+    let hr = t.user("hr@hrdocs.test", &["HR Manager"]).await;
+    let clerk = t.user("clerk@hrdocs.test", &["HR User"]).await;
+    let asha_ctx = t.user("asha@hrdocs.test", &["Employee"]).await;
+    let mira_ctx = t.user("mira@hrdocs.test", &["Employee"]).await;
+    let ravi_ctx = t.user("ravi@hrdocs.test", &["Employee"]).await;
+    let mira = t.employee("Mira", json!({"user": "mira@hrdocs.test"})).await;
+    let asha = t.employee("Asha", json!({"user": "asha@hrdocs.test", "reports_to": mira["id"]})).await;
+    let _ravi = t.employee("Ravi", json!({"user": "ravi@hrdocs.test"})).await;
+    let kind = |name: &str, extra: Value| {
+        let mut v = obj(json!({"type_name": name}));
+        v.extend(obj(extra));
+        Value::Object(v)
+    };
+    let permit = t
+        .ins(
+            &hr,
+            "EmployeeDocumentType",
+            kind("Work Permit", json!({"visible_to": "Employee and Manager", "expires": true, "warn_days_before": 30, "required": true})),
+        )
+        .await;
+    let passport = t.ins(&hr, "EmployeeDocumentType", kind("Passport", json!({"category": "Identity", "self_upload": true, "expires": true}))).await;
+    let bank = t.ins(&hr, "EmployeeDocumentType", kind("Bank Proof", json!({"category": "Bank", "visible_to": "HR only"}))).await;
+    let today = chrono::Utc::now().date_naive();
+    let in_10 = (today + chrono::Duration::days(10)).to_string();
+
+    // The employee uploads their own passport; not a bank proof, not for a colleague, and an expiring type needs its date.
+    let pass = t
+        .ins(
+            &asha_ctx,
+            "EmployeeDocument",
+            json!({"employee": asha["id"], "document_type": passport["id"], "document_number": "P1234567", "expiry_date": "2031-01-31"}),
+        )
+        .await;
+    forbidden(t.try_ins(&asha_ctx, "EmployeeDocument", json!({"employee": asha["id"], "document_type": bank["id"]})).await);
+    forbidden(t.try_ins(&asha_ctx, "EmployeeDocument", json!({"employee": mira["id"], "document_type": passport["id"], "expiry_date": "2031-01-31"})).await);
+    refused(t.try_ins(&hr, "EmployeeDocument", json!({"employee": asha["id"], "document_type": permit["id"]})).await, "expiry_date");
+    let work =
+        t.ins(&hr, "EmployeeDocument", json!({"employee": asha["id"], "document_type": permit["id"], "document_number": "WP-1", "expiry_date": in_10})).await;
+    let proof = t.ins(&hr, "EmployeeDocument", json!({"employee": asha["id"], "document_type": bank["id"]})).await;
+    assert_eq!(work["category"], json!("General"));
+
+    // Who sees what: the employee their own (not the HR-only bank proof), their manager the general permit only,
+    // a colleague nothing, an HR user no bank document.
+    let seen = |docs: Vec<Doc>| {
+        let mut v: Vec<String> = docs.iter().map(|d| d["id"].as_str().unwrap().to_string()).collect();
+        v.sort();
+        v
+    };
+    let ids = |docs: &[&Doc]| {
+        let mut v: Vec<String> = docs.iter().map(|d| d["id"].as_str().unwrap().to_string()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(seen(t.list(&asha_ctx, "EmployeeDocument", json!({})).await), ids(&[&pass, &work]));
+    assert_eq!(seen(t.list(&mira_ctx, "EmployeeDocument", json!({})).await), ids(&[&work]));
+    assert!(t.list(&ravi_ctx, "EmployeeDocument", json!({})).await.is_empty());
+    assert_eq!(seen(t.list(&clerk, "EmployeeDocument", json!({})).await), ids(&[&pass, &work]));
+    assert_eq!(seen(t.list(&hr, "EmployeeDocument", json!({})).await), ids(&[&pass, &work, &proof]));
+    assert!(matches!(t.k.get(&mira_ctx, "EmployeeDocument", uid(&proof), false).await, Err(Error::NotFound(_))));
+
+    // HR verifies; the employee cannot, nor change it once verified; a changed number takes the verification away.
+    forbidden(t.k.run_action(&asha_ctx, "EmployeeDocument", uid(&pass), "verify", json!({})).await);
+    let v = t.act(&clerk, "EmployeeDocument", uid(&pass), "verify", json!({})).await;
+    assert_eq!(v["verified_by"], json!("clerk@hrdocs.test"));
+    forbidden(t.k.update(&asha_ctx, "EmployeeDocument", uid(&pass), obj(json!({"document_number": "P7654321"})), None).await);
+    let changed = t.k.update(&hr, "EmployeeDocument", uid(&pass), obj(json!({"document_number": "P7654321"})), None).await.unwrap();
+    assert!(changed["verified_on"].is_null() && changed["verified_by"].is_null());
+
+    // The permit enters its 30-day window: one warning, to Asha and the HR manager, however many runs race.
+    let (a, b) = tokio::join!(ferrum_app_hr::upkeep(&t.k, t.tenant), ferrum_app_hr::upkeep(&t.k, t.tenant));
+    a.unwrap();
+    b.unwrap();
+    assert_eq!(sends(&t, "hr.document_expiring").await, 2, "Asha and the HR manager, once");
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+    assert_eq!(sends(&t, "hr.document_expiring").await, 2, "nothing twice");
+    assert_eq!(t.get("EmployeeDocument", uid(&work)).await["expiry_warned_on"], json!(today.to_string()));
+    // Renewed with a later date, it is warned about again when that one nears.
+    let renewed =
+        t.k.update(&hr, "EmployeeDocument", uid(&work), obj(json!({"expiry_date": (today + chrono::Duration::days(20)).to_string()})), None).await.unwrap();
+    assert!(renewed["expiry_warned_on"].is_null());
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+    assert_eq!(sends(&t, "hr.document_expiring").await, 4);
+
+    // The report: Asha's permit expiring, Mira's and Ravi's missing; the passport is years away.
+    let r = t.report(&hr, "expiring_documents", &[("company", &t.c())]).await.unwrap();
+    let rows: Vec<(String, String)> =
+        r["rows"].as_array().unwrap().iter().map(|r| (r["employee_name"].as_str().unwrap().to_string(), r["state"].as_str().unwrap().to_string())).collect();
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert!(
+        rows.contains(&("Asha Test".into(), "Expiring".into()))
+            && rows.contains(&("Mira Test".into(), "Missing".into()))
+            && rows.contains(&("Ravi Test".into(), "Missing".into()))
+    );
+    // Looking a long way ahead brings the passport; an employee sees only their own rows.
+    let far = t.report(&hr, "expiring_documents", &[("company", &t.c()), ("days", "3650")]).await.unwrap();
+    assert_eq!(far["rows"].as_array().unwrap().len(), 4);
+    let mine = t.report(&ravi_ctx, "expiring_documents", &[("company", &t.c())]).await.unwrap();
+    assert_eq!(mine["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(mine["rows"][0]["employee_name"], json!("Ravi Test"));
+}
+
+// ───────────────────────────── onboarding and offboarding templates ─────────────────────────────
+
+fn task(t: &Doc, name: &str) -> Doc {
+    t["activities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["activity_name"] == json!(name))
+        .and_then(|a| a.as_object().cloned())
+        .unwrap_or_else(|| panic!("no task {name}"))
+}
+
+/// The activities with one task changed (by name).
+fn tick(t: &Doc, name: &str, change: Value) -> Value {
+    let rows: Vec<Value> = t["activities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            let mut a = a.as_object().cloned().unwrap();
+            if a["activity_name"] == json!(name) {
+                a.extend(obj(change.clone()));
+            }
+            Value::Object(a)
+        })
+        .collect();
+    json!({"activities": rows})
+}
+
+/// Checklist templates chosen by department through data, copied in by `copy_lines` with dates from the joining
+/// or last working day, assignees from the employee's fields or roles, tasks that wait for a document or an
+/// approval, completion by required tasks, a hire's onboarding made from the offer, and overdue reminders once.
+async fn checklist_scenario() {
+    let t = T::new("hrchk").await;
+    let hr = t.user("hr@hrchk.test", &["HR Manager"]).await;
+    let mira_ctx = t.user("mira@hrchk.test", &["Employee"]).await;
+    let eng = t.ins(&hr, "Department", json!({"department_name": "Engineering", "company": t.c()})).await;
+    let id_card = t.ins(&hr, "EmployeeDocumentType", json!({"type_name": "ID Card"})).await;
+    let mira = t.employee("Mira", json!({"user": "mira@hrchk.test"})).await;
+    let standard = json!([
+        {"task": "Laptop", "assignee_role": "HR Manager", "due_days": -2},
+        {"task": "Meet the team", "assignee_field": "reports_to", "due_days": 0},
+        {"task": "Collect ID card", "assignee_role": "HR Manager", "due_days": 3, "document_type": id_card["id"]},
+        {"task": "Sign policy", "assignee_field": "reports_to", "due_days": 1, "requires_approval": true},
+        {"task": "Team lunch", "assignee_field": "reports_to", "due_days": 5, "required": false},
+    ]);
+    t.ins(&hr, "ChecklistTemplate", json!({"template_name": "Standard", "purpose": "Onboarding", "tasks": standard})).await;
+    t.ins(&hr, "ChecklistTemplate", json!({"template_name": "Engineering", "purpose": "Onboarding", "department": eng["id"], "tasks": [{"task": "Repository access", "assignee_role": "HR Manager", "due_days": 0}]})).await;
+    t.ins(
+        &hr,
+        "ChecklistTemplate",
+        json!({"template_name": "Exit", "purpose": "Offboarding", "tasks": [{"task": "Return laptop", "assignee_role": "HR Manager", "due_days": 0}]}),
+    )
+    .await;
+
+    // Asha joins outside Engineering: the standard template, dated from her joining day, her manager named.
+    let asha = t.employee("Asha", json!({"date_of_joining": "2026-11-20", "reports_to": mira["id"]})).await;
+    let onb = t
+        .ins(&hr, "EmployeeOnboarding", json!({"employee": asha["id"], "employee_name": "Asha Test", "company": t.c(), "date_of_joining": "2026-11-20"}))
+        .await;
+    let onb = t.get("EmployeeOnboarding", uid(&onb)).await;
+    assert_eq!(onb["activities"].as_array().unwrap().len(), 5);
+    assert_eq!(task(&onb, "Laptop")["due_date"], json!("2026-11-18"));
+    assert_eq!(task(&onb, "Collect ID card")["due_date"], json!("2026-11-23"));
+    assert_eq!(task(&onb, "Meet the team")["assignee"], json!("mira@hrchk.test"));
+    assert_eq!(onb["status"], json!("Pending"));
+    refused(t.k.run_action(&hr, "EmployeeOnboarding", uid(&onb), "apply_checklist", json!({})).await, "not available");
+
+    // Mira sees it through her tasks and ticks hers, not HR's; she cannot approve her own.
+    let theirs = t.list(&mira_ctx, "EmployeeOnboarding", json!({})).await;
+    assert_eq!(theirs.len(), 1);
+    let work = call(&t, Some(&mira_ctx), "GET", "work", &[], Value::Null).await.expect("work");
+    let titles: Vec<&str> = work["items"].as_array().unwrap().iter().filter_map(|i| i["title"].as_str()).collect();
+    assert_eq!(titles, ["Asha Test: Meet the team", "Asha Test: Sign policy", "Asha Test: Team lunch"]);
+    let hr_work = call(&t, Some(&hr), "GET", "work", &[], Value::Null).await.expect("work");
+    assert_eq!(hr_work["items"].as_array().unwrap().len(), 2, "the tasks of the HR Manager role");
+    let onb = obj(json!(t.k.update(&mira_ctx, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Meet the team", json!({"done": true}))), None).await.unwrap()));
+    forbidden(t.k.update(&mira_ctx, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Laptop", json!({"done": true}))), None).await);
+    let onb = t.k.update(&mira_ctx, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Sign policy", json!({"done": true}))), None).await.unwrap();
+    refused(t.k.update(&mira_ctx, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Sign policy", json!({"approved": true}))), None).await, "someone other");
+    let onb = t.k.update(&hr, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Sign policy", json!({"approved": true}))), None).await.unwrap();
+    assert_eq!(task(&onb, "Sign policy")["approved_by"], json!("hr@hrchk.test"));
+    // The ID card waits for the document.
+    refused(t.k.update(&hr, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Collect ID card", json!({"done": true}))), None).await, "document");
+    t.ins(&hr, "EmployeeDocument", json!({"employee": asha["id"], "document_type": id_card["id"]})).await;
+    let onb = t.k.update(&hr, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Collect ID card", json!({"done": true}))), None).await.unwrap();
+    assert_eq!(onb["status"], json!("In Process"));
+    // Every required task done (the lunch is not required): complete.
+    let onb = t.k.update(&hr, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Laptop", json!({"done": true}))), None).await.unwrap();
+    assert_eq!(onb["status"], json!("Completed"));
+
+    // A hire into Engineering gets the Engineering onboarding from the offer.
+    let designation = t.ins(&hr, "Designation", json!({"designation_name": "Engineer"})).await;
+    let opening = t.ins(&hr, "JobOpening", json!({"job_title": "Engineer", "company": t.c(), "designation": designation["id"], "department": eng["id"]})).await;
+    let applicant = t.ins(&hr, "JobApplicant", json!({"applicant_name": "Kiran Rao", "email_id": "kiran@mail.test", "job_opening": opening["id"]})).await;
+    let offer = t
+        .ins_submit(&hr, "JobOffer", json!({"job_applicant": applicant["id"], "company": t.c(), "department": eng["id"], "offer_date": "2026-10-10", "expected_joining_date": "2026-10-20"}))
+        .await;
+    t.act(&hr, "JobOffer", uid(&offer), "accept", json!({})).await;
+    let kiran = t.act(&hr, "JobOffer", uid(&offer), "make_employee", json!({})).await;
+    let kob = t.one("EmployeeOnboarding", json!({"employee": kiran["id"]})).await;
+    let kob = t.get("EmployeeOnboarding", uid(&kob)).await;
+    assert_eq!((kob["job_offer"].clone(), kob["activities"].as_array().unwrap().len()), (offer["id"].clone(), 1));
+    assert_eq!(task(&kob, "Repository access")["due_date"], json!("2026-10-20"));
+
+    // Its task is overdue (joined 20 October): one reminder to the HR manager, however often the upkeep runs.
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+    assert_eq!(sends(&t, "hr.checklist_task_overdue").await, 1);
+
+    // Notice given: the offboarding tasks are dated from the last working day.
+    let sep = t.ins(&hr, "EmployeeSeparation", json!({"employee": asha["id"], "reason": "Resignation", "relieving_date": "2026-12-31"})).await;
+    let sep = t.get("EmployeeSeparation", uid(&sep)).await;
+    assert_eq!(task(&sep, "Return laptop")["due_date"], json!("2026-12-31"));
+}
+
+// ───────────────────────────── payroll formula context ─────────────────────────────
+
+/// Made-up statutory rules as configuration only: a fund at a percent of pay up to a ceiling that changes by
+/// year with the employer's share, a wage tax by bands on the projected year trued up to date less verified
+/// savings, a levy by region and month from a table, an exemption as the least of three; each a formula over
+/// the slip's context and the administrator's lookup tables.
+async fn statutory_scenario() {
+    let t = T::with("hrstat", &["payroll"]).await;
+    let pm = t.user("pm@hrstat.test", &["Payroll Manager"]).await;
+    let north = t.ins(&t.admin, "Branch", json!({"branch_name": "North Office", "region": "North"})).await;
+    let emp = t.employee("Nia", json!({"branch": north["id"], "date_of_joining": "2021-08-15"})).await;
+    t.ins(&t.admin, "PayrollPeriod", json!({"period_name": "2026-27", "company": t.c(), "start_date": "2026-04-01", "end_date": "2027-03-31"})).await;
+    let table = |name: &str, rows: Value| json!({"table_name": name, "rows": rows});
+    t.ins(
+        &pm,
+        "PayrollLookupTable",
+        table("fund_ceiling", json!([{"effective_from": "2025-04-01", "amount": "5000"}, {"effective_from": "2026-04-01", "amount": "6000"}])),
+    )
+    .await;
+    t.ins(
+        &pm,
+        "PayrollLookupTable",
+        table(
+            "wage_tax",
+            json!([{"effective_from": "2026-01-01", "from_amount": "0", "to_amount": "30000", "rate": "0"},
+                   {"effective_from": "2026-01-01", "from_amount": "30000", "to_amount": "60000", "rate": "10"},
+                   {"effective_from": "2026-01-01", "from_amount": "60000", "rate": "20"}]),
+        ),
+    )
+    .await;
+    t.ins(
+        &pm,
+        "PayrollLookupTable",
+        table(
+            "levy",
+            json!([{"effective_from": "2026-01-01", "key1": "North", "from_amount": "1000", "amount": "20"},
+                   {"effective_from": "2026-01-01", "key1": "North", "key2": "5", "from_amount": "1000", "amount": "30"}]),
+        ),
+    )
+    .await;
+    refused(t.try_ins(&pm, "PayrollLookupTable", table("bad name", json!([]))).await, "table_name");
+    let comp = |name: &str, abbr: &str, kind: &str, formula: &str, statistical: bool| {
+        json!({"component_name": name, "abbr": abbr, "component_type": kind, "amount_based_on_formula": true, "formula": formula,
+               "depends_on_payment_days": false, "statistical_component": statistical})
+    };
+    let ceiling = "min(PAY, lookup('fund_ceiling', 'amount', 0))";
+    let made = [
+        comp("Pay", "PAY", "Earning", "base", false),
+        comp("Fund", "FUND", "Deduction", &format!("{ceiling} * 0.10"), false),
+        comp("Levy", "LEVY", "Deduction", "lookup('levy', 'amount', gross, location.region, period.month)", false),
+        comp("Wage Tax", "WT", "Deduction", "max(banded('wage_tax', ytd_total.gross + gross * period.left - verified.SAVE) - ytd.WT, 0) / period.left", false),
+        comp("Last Wage Tax", "LWT", "Deduction", "previous.WT", true),
+        comp("Savings Relief", "RELIEF", "Deduction", "min(declared.SAVE, PAY * 0.5, 2500)", true),
+        comp("Long Service", "LONG", "Deduction", "years_between(employee.date_of_joining, period.end) >= 4 ? 1 : 0", true),
+        comp("Employer Fund", "EFUND", "Employer Contribution", &format!("{ceiling} * 0.12"), false),
+    ];
+    let mut ids = Vec::new();
+    for c in made {
+        ids.push(t.ins(&pm, "SalaryComponent", c).await);
+    }
+    refused(t.try_ins(&pm, "SalaryComponent", comp("Year", "ytd", "Earning", "base", false)).await, "reserved");
+    refused(t.try_ins(&pm, "SalaryComponent", comp("Odd", "ODD", "Earning", "nothing.here * 2", false)).await, "unknown name");
+    let line = |c: &Doc| json!({"salary_component": c["id"]});
+    let st = t
+        .ins_submit(
+            &pm,
+            "SalaryStructure",
+            json!({"structure_name": "Statutory", "company": t.c(), "payroll_frequency": "Monthly",
+                   "earnings": [line(&ids[0])], "deductions": ids[1..7].iter().map(line).collect::<Vec<_>>(), "employer_contributions": [line(&ids[7])]}),
+        )
+        .await;
+    t.ins_submit(&pm, "SalaryStructureAssignment", json!({"employee": emp["id"], "salary_structure": st["id"], "from_date": "2026-04-01", "base": "8000"}))
+        .await;
+    // The employee declares savings with a proof; HR verifies it.
+    let period = t.one("PayrollPeriod", json!({"period_name": "2026-27"})).await;
+    let save = t.ins(&pm, "EmployeeTaxExemptionCategory", json!({"category_name": "Savings", "code": "SAVE"})).await;
+    let decl = t
+        .ins_submit(
+            &pm,
+            "EmployeeTaxExemptionDeclaration",
+            json!({"employee": emp["id"], "payroll_period": period["id"], "declarations": [{"exemption_category": save["id"], "amount": "3000", "proof": "https://files.example.test/receipt.pdf"}]}),
+        )
+        .await;
+    assert_eq!(t.act(&pm, "EmployeeTaxExemptionDeclaration", uid(&decl), "verify_proofs", json!({})).await["verified"], json!(1));
+
+    let slip = |start: &'static str, end: &'static str| {
+        let (t, pm, e) = (&t, &pm, emp["id"].clone());
+        async move { t.ins_submit(pm, "SalarySlip", json!({"employee": e, "start_date": start, "end_date": end})).await }
+    };
+    // April: 10% and 12% of this year's 6000 ceiling; the levy's any-month row; the year projected at
+    // 8000 x 12 - 3000 = 93000 gives 3000 + 6600 of tax, a twelfth now.
+    let april = slip("2026-04-01", "2026-04-30").await;
+    let a = |s: &Doc, table: &str, abbr: &str| amount_of(s, table, abbr);
+    assert_eq!(
+        (a(&april, "deductions", "FUND"), a(&april, "employer_contributions", "EFUND"), a(&april, "deductions", "LEVY"), a(&april, "deductions", "WT")),
+        (n("600"), n("720"), n("20"), n("800"))
+    );
+    assert_eq!((a(&april, "deductions", "RELIEF"), a(&april, "deductions", "LONG"), a(&april, "deductions", "LWT")), (n("2500"), n("1"), n("0")));
+    // May: the month's own levy row; the tax trued up to what April took, over the 11 months left; the previous slip read.
+    let may = slip("2026-05-01", "2026-05-31").await;
+    assert_eq!((a(&may, "deductions", "LEVY"), a(&may, "deductions", "WT"), a(&may, "deductions", "LWT")), (n("30"), n("800"), n("800")));
+    assert_eq!(dec(&may["net_pay"]), n("8000") - n("600") - n("30") - n("800"));
+}
+
+// ───────────────────────────── check-ins with a place ─────────────────────────────
+
+/// An employee's own check-in carries a position, its accuracy, a photo and a device mark; the work location's
+/// point and radius and its rule (or the shift's) decide: refused outside or without a position, marked when
+/// the rule only warns; HR's own entries are not held to it.
+async fn place_scenario() {
+    let t = T::new("hrgeo").await;
+    let me = t.user("geo@hrgeo.test", &["Employee"]).await;
+    let site = t
+        .ins(&t.admin, "Branch", json!({"branch_name": "Plant", "latitude": "10.5", "longitude": "20.25", "radius": 200, "check_in_place_rule": "Refuse"}))
+        .await;
+    let emp = t.employee("Geo", json!({"user": "geo@hrgeo.test", "branch": site["id"]})).await;
+    let punch = |time: &str, extra: Value| {
+        let mut v = obj(json!({"employee": emp["id"], "log_type": "IN", "log_time": time}));
+        v.extend(obj(extra));
+        Value::Object(v)
+    };
+    let inside = t
+        .ins(&me, "EmployeeCheckin", punch("2026-11-02T09:00:00Z", json!({"latitude": "10.5009", "longitude": "20.25", "accuracy": "15", "photo": "https://files.example.test/selfie.jpg", "device_mark": "browser"})))
+        .await;
+    assert_eq!((inside["place_check"].clone(), dec(&inside["distance"])), (json!("Inside"), n("85")), "100 m less 15 m of accuracy");
+    refused(t.try_ins(&me, "EmployeeCheckin", punch("2026-11-03T09:00:00Z", json!({"latitude": "10.51", "longitude": "20.25"}))).await, "1112 metres away");
+    refused(t.try_ins(&me, "EmployeeCheckin", punch("2026-11-04T09:00:00Z", json!({}))).await, "without a position");
+    // HR records a punch without a position.
+    let by_hr = t.ins(&t.admin, "EmployeeCheckin", punch("2026-11-04T09:05:00Z", json!({}))).await;
+    assert!(by_hr["place_check"].is_null());
+    // The shift only warns: outside is kept and marked.
+    let shift = t.ins(&t.admin, "ShiftType", json!({"shift_name": "Field", "start_time": "09:00", "end_time": "18:00", "check_in_place_rule": "Warn"})).await;
+    t.k.update(&t.admin, "Employee", uid(&emp), obj(json!({"default_shift": shift["id"]})), None).await.unwrap();
+    let outside = t.ins(&me, "EmployeeCheckin", punch("2026-11-05T09:00:00Z", json!({"latitude": "10.51", "longitude": "20.25"}))).await;
+    assert_eq!(outside["place_check"], json!("Outside"));
+}
+
+// ───────────────────────────── recruiting as a pipeline ─────────────────────────────
+
+/// A requisition approved through a policy the workspace sets opens the job; applicants move through the
+/// workspace's stages (the job's own, else the defaults), each move kept, a Rejected stage needing a reason;
+/// interviewers score the job's weighted criteria; an offer approved the same way, accepted, makes the employee
+/// and moves the applicant to the Hired stage.
+async fn pipeline_scenario() {
+    let t = T::new("hrpipe").await;
+    let policy = json!({"steps": [{"label": "HR manager", "approvers": {"role": "HR Manager"}}]});
+    let op = |entity: &str| -> NewCustomization {
+        serde_json::from_value(json!({"entity": entity, "op": {"op": "set_approval", "on": "submit", "approval": policy}})).unwrap()
+    };
+    t.k.batch_customizations(&t.admin, vec![op("JobRequisition"), op("JobOffer")], false).await.map_err(|(_, e)| describe(&e)).expect("the approval policies");
+    // Signed in after the workspace set its policies.
+    let hr = t.user("hr@hrpipe.test", &["HR Manager"]).await;
+    let clerk = t.user("clerk@hrpipe.test", &["HR User"]).await;
+
+    let designation = t.ins(&hr, "Designation", json!({"designation_name": "Analyst"})).await;
+    let req = t
+        .ins(
+            &clerk,
+            "JobRequisition",
+            json!({"job_title": "Data Analyst", "company": t.c(), "designation": designation["id"], "vacancies": 2, "reason": "Growth"}),
+        )
+        .await;
+    let asked = t.k.submit(&clerk, "JobRequisition", uid(&req), None).await.unwrap();
+    assert_eq!(asked.get("_approval").map(|a| a["status"].clone()), Some(json!("pending")), "{asked:?}");
+    assert!(t.list(&hr, "JobOpening", json!({})).await.is_empty(), "nothing opens before it is approved");
+    t.k.decide_approval(&hr, "JobRequisition", uid(&req), true, None).await.unwrap();
+    let req = t.get("JobRequisition", uid(&req)).await;
+    let job = t.get("JobOpening", req["job_opening"].as_str().unwrap().parse().unwrap()).await;
+    assert_eq!((job["job_title"].clone(), job["vacancies"].clone(), job["requisition"].clone()), (json!("Data Analyst"), json!(2), req["id"].clone()));
+    t.k.update(&hr, "JobOpening", uid(&job), obj(json!({"criteria": [{"criterion": "Design", "weight": "2"}, {"criterion": "Coding", "weight": "1"}]})), None)
+        .await
+        .unwrap();
+
+    // Default stages, and the job's own (which replace them for it).
+    let stage = |name: &str, seq: i64, category: &str, job: Value| json!({"stage_name": name, "sequence": seq, "category": category, "job_opening": job});
+    t.ins(&hr, "JobStage", stage("New", 1, "Screening", Value::Null)).await;
+    let mine: Vec<Doc> = {
+        let mut v = Vec::new();
+        for (name, seq, cat) in
+            [("Phone screen", 1, "Screening"), ("Case study", 2, "Interview"), ("Offer", 3, "Offer"), ("Hired", 4, "Hired"), ("Declined", 5, "Rejected")]
+        {
+            v.push(t.ins(&hr, "JobStage", stage(name, seq, cat, job["id"].clone())).await);
+        }
+        v
+    };
+    let other_job = t.ins(&hr, "JobOpening", json!({"job_title": "Other", "company": t.c(), "designation": designation["id"]})).await;
+    let elsewhere = t.ins(&hr, "JobStage", stage("Elsewhere", 1, "Interview", other_job["id"].clone())).await;
+    let app = t.ins(&hr, "JobApplicant", json!({"applicant_name": "Ravi Kumar", "email_id": "ravi@mail.test", "job_opening": job["id"]})).await;
+    assert_eq!((app["stage"].clone(), app["stage_history"].as_array().unwrap().len()), (mine[0]["id"].clone(), 1), "the job's first stage");
+    let app = t.k.update(&hr, "JobApplicant", uid(&app), obj(json!({"stage": mine[1]["id"]})), None).await.unwrap();
+    assert_eq!(app["stage_history"].as_array().unwrap().len(), 2);
+    refused(t.k.update(&hr, "JobApplicant", uid(&app), obj(json!({"stage": elsewhere["id"]})), None).await, "another job");
+    refused(t.k.update(&hr, "JobApplicant", uid(&app), obj(json!({"stage": mine[4]["id"]})), None).await, "say why");
+
+    // The scorecard: two interviewers on the job's weighted criteria.
+    let panel = json!([{"interviewer": "a@hrpipe.test"}, {"interviewer": "b@hrpipe.test"}]);
+    let iv = |scores: Value| json!({"job_applicant": app["id"], "interview_round": "Case", "scheduled_on": "2026-11-20T10:00:00Z", "interviewers": panel, "scores": scores});
+    refused(t.try_ins(&hr, "Interview", iv(json!([{"interviewer": "a@hrpipe.test", "criterion": "Charm", "rating": 5}]))).await, "criteria");
+    let done = t
+        .ins(
+            &hr,
+            "Interview",
+            iv(json!([{"interviewer": "a@hrpipe.test", "criterion": "Design", "rating": 4}, {"interviewer": "a@hrpipe.test", "criterion": "Coding", "rating": 5},
+                      {"interviewer": "b@hrpipe.test", "criterion": "Design", "rating": 3}, {"interviewer": "b@hrpipe.test", "criterion": "Coding", "rating": 2}])),
+        )
+        .await;
+    assert_eq!(dec(&done["weighted_score"]), n("3.5"), "(8 + 5 + 6 + 2) / 6");
+
+    // The offer, approved, accepted: the employee, and the applicant at the Hired stage.
+    let offer = t
+        .ins(&clerk, "JobOffer", json!({"job_applicant": app["id"], "company": t.c(), "offer_date": "2026-11-25", "expected_joining_date": "2026-12-01"}))
+        .await;
+    assert_eq!(t.k.submit(&clerk, "JobOffer", uid(&offer), None).await.unwrap()["_approval"]["status"], json!("pending"));
+    t.k.decide_approval(&hr, "JobOffer", uid(&offer), true, None).await.unwrap();
+    t.act(&hr, "JobOffer", uid(&offer), "accept", json!({})).await;
+    t.act(&hr, "JobOffer", uid(&offer), "make_employee", json!({})).await;
+    let app = t.get("JobApplicant", uid(&app)).await;
+    assert_eq!((app["stage"].clone(), app["status"].clone()), (mine[3]["id"].clone(), json!("Accepted")));
 }

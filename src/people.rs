@@ -2,10 +2,10 @@
 //! company, self-service rules, and the lifecycle documents (onboarding, separation, promotion,
 //! transfer).
 
-use crate::{employee_of, lookup, opt_date, stamp_company, today};
+use crate::{employee_of, lookup, opt_date, stamp_company, stored, today};
 use async_trait::async_trait;
 use ferrum_domain::util::{b, elevated, find, get, id, rows, s, set, sys};
-use ferrum_kernel::{Action, Doc, DocHook, Error, Filter, HookCtx, HookRegistry, Result};
+use ferrum_kernel::{Action, Doc, DocHook, Error, FieldError, Filter, HookCtx, HookRegistry, Result};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -30,6 +30,10 @@ pub(crate) const OWNED: &[&str] = &[
     "LeaveEncashment",
     "EmployeeTaxExemptionDeclaration",
 ];
+
+/// Entities about one employee whose `employee_user` follows the employee's sign-in, whose own checks say who
+/// may write them (an HR user reaches others' documents by a condition, so the self-service check does not fit).
+const FOLLOWS_SIGN_IN: &[&str] = &["EmployeeDocument"];
 
 pub(crate) fn register(h: &mut HookRegistry) {
     // The company's HR and payroll accounts come with the connectors to ERP.
@@ -223,7 +227,7 @@ impl DocHook for EmployeeHook {
             return Ok(());
         }
         let emp = id(doc, "id").ok_or_else(|| Error::internal("employee without id"))?;
-        for entity in OWNED {
+        for entity in OWNED.iter().chain(FOLLOWS_SIGN_IN) {
             let Some(ent) = hc.ctx.schema.entity(entity) else { continue };
             let sql = format!(
                 "update {} set employee_user = $3 where tenant_id = $1 and employee = $2 and employee_user is distinct from $3",
@@ -237,37 +241,214 @@ impl DocHook for EmployeeHook {
 
 // ───────────────────────────── lifecycle ─────────────────────────────
 
-/// Onboarding and separation: activity checklists whose completion drives the status.
+/// Onboarding and separation: checklists whose required tasks' completion drives the status. Their tasks come
+/// from a checklist template ([`choose_template`]) copied in by the `apply_checklist` action's `copy_lines` when
+/// the record is made; each task's assignee is named from the employee's field the template gives (their manager,
+/// say), else whoever holds its role does it.
 struct ChecklistHook;
+
+/// The date a checklist's tasks are due from, and the template purpose, by entity.
+fn checklist_of(entity: &str) -> (&'static str, &'static str) {
+    if entity == "EmployeeSeparation" { ("relieving_date", "Offboarding") } else { ("date_of_joining", "Onboarding") }
+}
+
+/// The template of `purpose` for `emp`: of those whose department, designation and employment type are empty or
+/// the employee's, the highest priority, then the one matching most, then by name.
+pub(crate) async fn choose_template(hc: &mut HookCtx<'_>, purpose: &str, emp: &Doc) -> Result<Option<String>> {
+    if hc.ctx.schema.entity("ChecklistTemplate").is_none() {
+        return Ok(None);
+    }
+    Ok(sqlx::query_scalar(
+        "select id::text from e_checklist_template where tenant_id = $1 and purpose = $2 and not coalesce(disabled, false) \
+         and (department is null or department = $3) and (designation is null or designation = $4) and (employment_type is null or employment_type = $5) \
+         order by coalesce(priority, 0) desc, (department is not null)::int + (designation is not null)::int + (employment_type is not null)::int desc, template_name limit 1",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(purpose)
+    .bind(id(emp, "department"))
+    .bind(id(emp, "designation"))
+    .bind(id(emp, "employment_type"))
+    .fetch_optional(&mut **hc.tx)
+    .await?)
+}
+
+/// Who an employee's `field` names: an email, or the sign-in of the employee a link names.
+async fn assignee_from(hc: &mut HookCtx<'_>, emp: &Doc, field: &str) -> Result<Option<String>> {
+    let Some(f) = hc.ctx.schema.entity("Employee").and_then(|e| e.field(field)).cloned() else { return Ok(None) };
+    if f.to.as_deref() == Some("Employee") {
+        return Ok(lookup(hc, "Employee", id(emp, field)).await?.and_then(|m| s(&m, "user").map(str::to_string)));
+    }
+    Ok(s(emp, field).filter(|v| v.contains('@')).map(str::to_string))
+}
+
+/// Whether a task counts as done: ticked and, when it asks for one, approved.
+fn task_done(a: &Doc) -> bool {
+    b(a, "done") && (!b(a, "requires_approval") || b(a, "approved"))
+}
 
 #[async_trait]
 impl DocHook for ChecklistHook {
     async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
-        if let Some(emp) = stamp_company(hc, doc).await? {
-            set(doc, "employee_name", s(&emp, "employee_name").unwrap_or_default());
+        let emp = stamp_company(hc, doc).await?;
+        if let Some(emp) = &emp {
+            set(doc, "employee_name", s(emp, "employee_name").unwrap_or_default());
         } else if s(doc, "employee_name").is_none()
             && let Some(app) = lookup(hc, "JobApplicant", id(doc, "job_applicant")).await?
         {
             set(doc, "employee_name", s(&app, "applicant_name").unwrap_or_default());
         }
+        let entity = hc.entity.def.name.clone();
+        let (_, purpose) = checklist_of(&entity);
+        let templated = hc.entity.field("checklist_template").is_some();
         let mut acts = rows(doc, "activities");
+        if templated && s(doc, "checklist_template").is_none() && acts.is_empty() {
+            // Chosen by the department, designation and employment type: the employee's, else the onboarding's own.
+            let mut who = emp.clone().unwrap_or_default();
+            for f in ["department", "designation"] {
+                if id(&who, f).is_none() {
+                    who.insert(f.into(), doc.get(f).cloned().unwrap_or_default());
+                }
+            }
+            if let Some(tpl) = choose_template(hc, purpose, &who).await? {
+                set(doc, "checklist_template", tpl);
+            }
+        }
+        let old = stored(hc, doc).await?;
+        let before: std::collections::HashMap<String, Doc> =
+            old.as_ref().map(|o| rows(o, "activities").into_iter().filter_map(|r| Some((s(&r, "id")?.to_string(), r))).collect()).unwrap_or_default();
         for a in acts.iter_mut() {
+            if s(a, "assignee").is_none()
+                && let (Some(field), Some(emp)) = (s(a, "assignee_field").map(str::to_string), &emp)
+                && let Some(who) = assignee_from(hc, emp, &field).await?
+            {
+                set(a, "assignee", who);
+            }
             if !b(a, "done") {
                 set(a, "completed_on", Value::Null);
             } else if s(a, "completed_on").is_none() {
                 set(a, "completed_on", today().to_string());
             }
+            let was = s(a, "id").and_then(|i| before.get(i));
+            let approved_by = match was {
+                _ if !b(a, "approved") => Value::Null,
+                Some(w) if b(w, "approved") => w.get("approved_by").cloned().unwrap_or_default(),
+                _ => json!(hc.ctx.email),
+            };
+            set(a, "approved_by", approved_by);
+            // Reminded once per due date: a new one is reminded about again.
+            let reminded = was.filter(|w| w.get("due_date") == a.get("due_date")).and_then(|w| w.get("reminded_on").cloned()).unwrap_or_default();
+            set(a, "reminded_on", reminded);
         }
-        let done = acts.iter().filter(|a| b(a, "done")).count();
-        let status = match done {
-            0 => "Pending",
-            n if n == acts.len() => "Completed",
-            _ => "In Process",
+        let required: Vec<&Doc> = acts.iter().filter(|a| a.get("required").and_then(Value::as_bool).unwrap_or(true)).collect();
+        let done = acts.iter().filter(|a| task_done(a)).count();
+        let status = if done == 0 {
+            "Pending"
+        } else if required.iter().all(|a| task_done(a)) {
+            "Completed"
+        } else {
+            "In Process"
         };
         set(doc, "status", status);
         set(doc, "activities", Value::Array(acts.into_iter().map(Value::Object).collect()));
         Ok(())
     }
+
+    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let entity = hc.entity.def.name.clone();
+        let old = stored(hc, doc).await?;
+        let before: std::collections::HashMap<String, Doc> =
+            old.as_ref().map(|o| rows(o, "activities").into_iter().filter_map(|r| Some((s(&r, "id")?.to_string(), r))).collect()).unwrap_or_default();
+        let others = crate::full_access(hc.ctx, &entity, &[Action::Write]);
+        let mut errors = Vec::new();
+        for (i, a) in rows(doc, "activities").iter().enumerate() {
+            let was = s(a, "id").and_then(|i| before.get(i));
+            let changed = was.is_none_or(|w| w != a);
+            // Someone reaching the record through a task named for them changes only their own tasks.
+            if !others && changed && !s(a, "assignee").is_some_and(|x| x.eq_ignore_ascii_case(&hc.ctx.email)) {
+                return Err(Error::Forbidden("you can change only the tasks named for you".into()));
+            }
+            if b(a, "approved") && !was.is_some_and(|w| b(w, "approved")) && s(a, "assignee").is_some_and(|x| x.eq_ignore_ascii_case(&hc.ctx.email)) {
+                errors.push(FieldError::new("approved", "is given by someone other than whoever does the task").in_row("activities", i));
+            }
+            if b(a, "done")
+                && !was.is_some_and(|w| b(w, "done"))
+                && let (Some(kind), Some(emp)) = (id(a, "document_type"), id(doc, "employee"))
+            {
+                let has: bool =
+                    sqlx::query_scalar("select exists(select 1 from e_employee_document where tenant_id = $1 and employee = $2 and document_type = $3)")
+                        .bind(hc.ctx.tenant)
+                        .bind(emp)
+                        .bind(kind)
+                        .fetch_one(&mut **hc.tx)
+                        .await?;
+                if !has {
+                    errors.push(FieldError::new("done", "waits for the employee's document of this type").in_row("activities", i));
+                }
+            }
+        }
+        if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
+    }
+
+    /// A new record with a template gets its tasks at once, through the template's `apply_checklist` action.
+    async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
+        let entity = hc.entity.def.name.clone();
+        let (from, _) = checklist_of(&entity);
+        if old.is_some() || s(doc, "checklist_template").is_none() || !rows(doc, "activities").is_empty() || s(doc, from).is_none() {
+            return Ok(());
+        }
+        if !hc.entity.def.actions.iter().any(|a| a.name == "apply_checklist") {
+            return Ok(());
+        }
+        let me = id(doc, "id").ok_or_else(|| Error::internal("checklist without id"))?;
+        hc.kernel.run_action_tx(&elevated(hc.ctx), hc.tx, &entity, me, "apply_checklist", &json!({})).await?;
+        Ok(())
+    }
+}
+
+/// Maintenance: reminds whoever does an onboarding or offboarding task once it is overdue, once (the mark and the
+/// sends in one transaction, the mark taken by an update one run wins).
+pub(crate) async fn remind_overdue_tasks(k: &ferrum_kernel::Kernel, ctx: &ferrum_kernel::Ctx) -> Result<()> {
+    let has = |e: &str| ctx.schema.entity(e).and_then(|e| e.field("activities")).is_some();
+    if !has("EmployeeOnboarding") || ctx.schema.entity("EmployeeActivity").and_then(|e| e.field("reminded_on")).is_none() {
+        return Ok(());
+    }
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let today = crate::local_today(&mut tx, ctx.tenant).await?;
+    let sctx = sys(ctx);
+    for (parent, child, entity) in [
+        ("e_employee_onboarding", "e_employee_onboarding__activities", "EmployeeOnboarding"),
+        ("e_employee_separation", "e_employee_separation__activities", "EmployeeSeparation"),
+    ] {
+        let sql = format!(
+            "update {child} a set reminded_on = $2 from {parent} p where a.tenant_id = $1 and p.tenant_id = $1 and p.id = a.parent_id \
+             and p.status <> 'Completed' and coalesce(p.docstatus, 0) < 2 and not coalesce(a.done, false) and a.due_date < $2 and a.reminded_on is null \
+             returning a.parent_id, a.activity_name, a.assignee, a.assignee_role, a.due_date, p.employee_name"
+        );
+        let due: Vec<(Uuid, Option<String>, Option<String>, Option<String>, chrono::NaiveDate, Option<String>)> =
+            sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(ctx.tenant).bind(today).fetch_all(&mut *tx).await?;
+        for (record, task, assignee, role, due_date, name) in due {
+            let to = match (assignee, role) {
+                (Some(a), _) => vec![ferrum_kernel::messages::Recipient::address(&a)],
+                (None, Some(r)) => ferrum_kernel::messages::recipients(k, &mut tx, &sctx, entity, &json!({}), &format!("role:{r}")).await?,
+                _ => continue,
+            };
+            let mut values = serde_json::Map::new();
+            values.insert("task".into(), json!(task));
+            values.insert("employee_name".into(), json!(name));
+            values.insert("due_date".into(), json!(due_date.to_string()));
+            let m = ferrum_kernel::messages::Message {
+                template: "hr.checklist_task_overdue".into(),
+                entity: Some(entity.into()),
+                record: Some(record),
+                to,
+                values,
+                ..Default::default()
+            };
+            ferrum_kernel::messages::send(k, &mut tx, &sctx, &m).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Reasons a separation needs no notice.

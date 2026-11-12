@@ -21,9 +21,67 @@
     - {name: lower_range, type: currency, min: "0", label: Salary From}
     - {name: upper_range, type: currency, min: "0", label: Salary To}
     - {name: description, type: markdown}
+    - {name: requisition, type: link, to: JobRequisition, read_only: true, no_copy: true, description: "The approved requisition that opened it"}
+    - {name: application_link, type: url, description: "Where candidates apply for this job (a form of the Forms app, say), for a published list of openings to show"}
+    - {name: criteria, type: table, of: JobCriterion, description: "What interviewers score candidates on, each with its weight"}
   rules:
     - {name: salary_range, check: "doc.upper_range == 0.0 || doc.upper_range >= doc.lower_range", message: "Salary To must not be below Salary From"}
   list: {columns: [number, job_title, designation, vacancies, hired, status], sort: created_at desc}
+
+- name: JobCriterion
+  label: Interview Criterion
+  kind: child
+  fields:
+    - {name: criterion, type: data, required: true, in_list: true}
+    - {name: weight, type: decimal, default: 1, min: "0", in_list: true}
+
+- name: JobRequisition
+  label: Job Requisition
+  kind: document
+  module: recruitment
+  submittable: true
+  company_scoped: true
+  title_field: job_title
+  numbering: {template: "HR-REQ-{YYYY}-{seq:4}"}
+  description: "A request to hire. Submitted (after the approval a workspace sets on it, if any), it opens the job opening."
+  fields:
+    - {name: job_title, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: designation, type: link, to: Designation, required: true, in_list: true, in_filter: true}
+    - {name: department, type: link, to: Department, in_filter: true}
+    - {name: employment_type, type: link, to: EmploymentType}
+    - {name: branch, type: link, to: Branch}
+    - {name: vacancies, type: int, default: 1, min: 1, required: true, in_list: true}
+    - {name: lower_range, type: currency, min: "0", label: Salary From, perm_group: pay}
+    - {name: upper_range, type: currency, min: "0", label: Salary To, perm_group: pay}
+    - {name: expected_by, type: date, label: Needed By}
+    - {name: reason, type: text}
+    - {name: requested_by, type: email, default_expr: "user.email", read_only: true}
+    - {name: job_opening, type: link, to: JobOpening, read_only: true, no_copy: true, in_list: true}
+  list: {columns: [number, job_title, designation, vacancies, job_opening], sort: created_at desc}
+
+- name: JobStage
+  label: Recruitment Stage
+  kind: master
+  module: recruitment
+  title_field: stage_name
+  description: "A step of hiring, in order. A job's own stages, else those for no job. The category is what the app reads: an applicant moved to a Rejected stage is rejected, to a Hired stage accepted."
+  fields:
+    - {name: stage_name, type: data, required: true, in_list: true}
+    - {name: job_opening, type: link, to: JobOpening, in_list: true, in_filter: true, description: "Empty: for every job without stages of its own"}
+    - {name: sequence, type: int, default: 0, in_list: true}
+    - {name: category, type: select, options: [Screening, Interview, Offer, Hired, Rejected], required: true, in_list: true, in_filter: true}
+  unique: [[job_opening, stage_name]]
+  list: {columns: [stage_name, job_opening, sequence, category], sort: sequence asc}
+
+- name: ApplicantStageMove
+  label: Stage History
+  kind: child
+  fields:
+    - {name: stage, type: link, to: JobStage, in_list: true}
+    - {name: category, type: data, in_list: true}
+    - {name: entered_on, type: datetime, in_list: true}
+    - {name: moved_by, type: email, in_list: true}
 
 - name: JobApplicant
   label: Job Applicant
@@ -47,6 +105,12 @@
     - {name: resume_link, type: url}
     - {name: cover_letter, type: text}
     - {name: notes, type: text}
+    - {name: stage, type: link, to: JobStage, in_list: true, in_filter: true, description: "Where the applicant is: the job's first stage when they apply"}
+    - {name: rejection_reason, type: data, visible_if: "doc.status == 'Rejected'"}
+    - {name: stage_history, type: table, of: ApplicantStageMove, read_only: true}
+  rules:
+    - {name: stage_of_the_job, check: "isEmpty(doc.stage) || isEmpty(links.stage.job_opening) || links.stage.job_opening == doc.job_opening", field: stage, message: "is a stage of another job"}
+    - {name: rejection_needs_reason, check: "isEmpty(doc.stage) || links.stage.category != 'Rejected' || !isEmpty(doc.rejection_reason)", field: rejection_reason, message: "say why the applicant is rejected"}
   unique: [[email_id, job_opening]]
   list: {columns: [number, applicant_name, job_opening, status], sort: created_at desc}
 
@@ -65,6 +129,15 @@
     - {name: result, type: select, options: [Cleared, Rejected], required: true, in_list: true}
     - {name: feedback, type: text}
 
+- name: InterviewScore
+  label: Score
+  kind: child
+  fields:
+    - {name: interviewer, type: email, required: true, in_list: true}
+    - {name: criterion, type: data, required: true, in_list: true}
+    - {name: rating, type: int, required: true, min: 1, max: 5, in_list: true}
+    - {name: note, type: text}
+
 - name: Interview
   label: Interview
   kind: master
@@ -81,6 +154,8 @@
     - {name: interviewers, type: table, of: InterviewDetail, required: true}
     - {name: feedback, type: table, of: InterviewFeedback}
     - {name: average_rating, type: decimal, read_only: true, in_list: true}
+    - {name: scores, type: table, of: InterviewScore, label: Scorecard, description: "Each interviewer's rating of each of the job's criteria"}
+    - {name: weighted_score, type: decimal, read_only: true, in_list: true, description: "The scorecard's ratings weighted by the job's criteria"}
     - {name: notes, type: text}
   list: {columns: [number, applicant_name, interview_round, scheduled_on, status, average_rating], sort: scheduled_on desc}
 
