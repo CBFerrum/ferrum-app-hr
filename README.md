@@ -62,7 +62,7 @@ Types and policies, allocations, approvals, a leave ledger, encashment (while em
 <td width="50%" valign="top">
 
 ### 🤝 Recruitment to separation
-Openings, applicants, interviews and offers; onboarding, appraisals, promotions, transfers and exits with their notice served (at work until the last working day, a shortfall recovered, paid in lieu or waived), a leaver's sign-in ended after it, and their full and final statement (last pay, leave encashed, notice, gratuity by the company's rule, claims and advances) settled by one journal entry.
+Requisitions, openings, applicants through stages per job, scorecards and offers; employee documents with expiry warnings; onboarding and offboarding from templates, appraisals, promotions, transfers and exits with their notice served (at work until the last working day, a shortfall recovered, paid in lieu or waived), a leaver's sign-in ended after it, and their full and final statement (last pay, leave encashed, notice, gratuity by the company's rule, claims and advances) settled by one journal entry.
 
 </td>
 </tr>
@@ -70,12 +70,12 @@ Openings, applicants, interviews and offers; onboarding, appraisals, promotions,
 <td width="50%" valign="top">
 
 ### 💸 Payroll
-Components with formulas (CEL), employer contributions, structures, tax slabs with a rebate, cesses and surcharges, declarations and opening year-to-date figures for a company moving here mid-year; slips, a leaver's tax settled on their last, accrual and bank payment; one slip corrected after the run is posted or paid (the difference owed or recovered from the next slip), arrears for a revision backdated into months already paid, off-cycle runs for a bonus, arrears or what is still owed, salaries held and released, and runs paid outside Ferrum recorded as paid; additional salary that repeats; leave and attendance of a paid month locked, a late change carried to the next pay by days or left for a correction; employee loans with a schedule and optional interest, repaid by each slip within what the pay allows, deferred, repaid early, written off or closed by a leaver's statement.
+Components with formulas (CEL) over the employee, the work location, the period, year-to-date and previous amounts, verified declarations and lookup tables; employer contributions, structures, tax slabs with a rebate, cesses and surcharges, declarations and opening year-to-date figures for a company moving here mid-year; slips, a leaver's tax settled on their last, accrual and bank payment; one slip corrected after the run is posted or paid (the difference owed or recovered from the next slip), arrears for a revision backdated into months already paid, off-cycle runs for a bonus, arrears or what is still owed, salaries held and released, and runs paid outside Ferrum recorded as paid; additional salary that repeats; leave and attendance of a paid month locked, a late change carried to the next pay by days or left for a correction; employee loans with a schedule and optional interest, repaid by each slip within what the pay allows, deferred, repaid early, written off or closed by a leaver's statement.
 
 </td>
 <td width="50%" valign="top">
 
-### 📊 Eleven reports
+### 📊 Twelve reports
 From the monthly attendance sheet to the salary register and bank remittance.
 
 </td>
@@ -307,6 +307,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.12.0** | Employee documents with expiry warnings, onboarding and offboarding from templates, recruiting stages, requisitions and scorecards, payroll formulas over lookup tables and year-to-date figures, check-ins with a place. |
 | **0.11.3** | Rebuilt on the tuned design system: better menu icons, a lighter first page, a visible scroll cue, cleaner print. |
 | **0.11.2** | The redesigned interface: the upgraded design system, shaped loading, told-apart states. |
 | **0.11.1** | A salary slip prints as a payslip. |
