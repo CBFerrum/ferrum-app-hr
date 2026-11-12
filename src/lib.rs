@@ -90,6 +90,7 @@ pub async fn upkeep(k: &Kernel, tenant: Uuid) -> Result<()> {
         ("job openings", talent::close_openings(k, &ctx).await),
         ("leavers", people::offboard_leavers(k, &ctx).await),
         ("document expiry", documents::warn_expiring(k, &ctx).await),
+        ("overdue tasks", people::remind_overdue_tasks(k, &ctx).await),
     ];
     for (what, r) in results {
         if let Err(e) = r {

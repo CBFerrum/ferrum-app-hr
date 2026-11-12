@@ -156,6 +156,11 @@ fn employee_documents_with_expiry() {
 }
 
 #[test]
+fn onboarding_and_offboarding_from_templates() {
+    run(checklist_scenario());
+}
+
+#[test]
 fn hr_and_payroll_without_erp() {
     run(alone_scenario());
 }
@@ -3756,4 +3761,120 @@ async fn documents_scenario() {
     let mine = t.report(&ravi_ctx, "expiring_documents", &[("company", &t.c())]).await.unwrap();
     assert_eq!(mine["rows"].as_array().unwrap().len(), 1);
     assert_eq!(mine["rows"][0]["employee_name"], json!("Ravi Test"));
+}
+
+// ───────────────────────────── onboarding and offboarding templates ─────────────────────────────
+
+fn task(t: &Doc, name: &str) -> Doc {
+    t["activities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["activity_name"] == json!(name))
+        .and_then(|a| a.as_object().cloned())
+        .unwrap_or_else(|| panic!("no task {name}"))
+}
+
+/// The activities with one task changed (by name).
+fn tick(t: &Doc, name: &str, change: Value) -> Value {
+    let rows: Vec<Value> = t["activities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            let mut a = a.as_object().cloned().unwrap();
+            if a["activity_name"] == json!(name) {
+                a.extend(obj(change.clone()));
+            }
+            Value::Object(a)
+        })
+        .collect();
+    json!({"activities": rows})
+}
+
+/// Checklist templates chosen by department through data, copied in by `copy_lines` with dates from the joining
+/// or last working day, assignees from the employee's fields or roles, tasks that wait for a document or an
+/// approval, completion by required tasks, a hire's onboarding made from the offer, and overdue reminders once.
+async fn checklist_scenario() {
+    let t = T::new("hrchk").await;
+    let hr = t.user("hr@hrchk.test", &["HR Manager"]).await;
+    let mira_ctx = t.user("mira@hrchk.test", &["Employee"]).await;
+    let eng = t.ins(&hr, "Department", json!({"department_name": "Engineering", "company": t.c()})).await;
+    let id_card = t.ins(&hr, "EmployeeDocumentType", json!({"type_name": "ID Card"})).await;
+    let mira = t.employee("Mira", json!({"user": "mira@hrchk.test"})).await;
+    let standard = json!([
+        {"task": "Laptop", "assignee_role": "HR Manager", "due_days": -2},
+        {"task": "Meet the team", "assignee_field": "reports_to", "due_days": 0},
+        {"task": "Collect ID card", "assignee_role": "HR Manager", "due_days": 3, "document_type": id_card["id"]},
+        {"task": "Sign policy", "assignee_field": "reports_to", "due_days": 1, "requires_approval": true},
+        {"task": "Team lunch", "assignee_field": "reports_to", "due_days": 5, "required": false},
+    ]);
+    t.ins(&hr, "ChecklistTemplate", json!({"template_name": "Standard", "purpose": "Onboarding", "tasks": standard})).await;
+    t.ins(&hr, "ChecklistTemplate", json!({"template_name": "Engineering", "purpose": "Onboarding", "department": eng["id"], "tasks": [{"task": "Repository access", "assignee_role": "HR Manager", "due_days": 0}]})).await;
+    t.ins(
+        &hr,
+        "ChecklistTemplate",
+        json!({"template_name": "Exit", "purpose": "Offboarding", "tasks": [{"task": "Return laptop", "assignee_role": "HR Manager", "due_days": 0}]}),
+    )
+    .await;
+
+    // Asha joins outside Engineering: the standard template, dated from her joining day, her manager named.
+    let asha = t.employee("Asha", json!({"date_of_joining": "2026-11-20", "reports_to": mira["id"]})).await;
+    let onb = t
+        .ins(&hr, "EmployeeOnboarding", json!({"employee": asha["id"], "employee_name": "Asha Test", "company": t.c(), "date_of_joining": "2026-11-20"}))
+        .await;
+    let onb = t.get("EmployeeOnboarding", uid(&onb)).await;
+    assert_eq!(onb["activities"].as_array().unwrap().len(), 5);
+    assert_eq!(task(&onb, "Laptop")["due_date"], json!("2026-11-18"));
+    assert_eq!(task(&onb, "Collect ID card")["due_date"], json!("2026-11-23"));
+    assert_eq!(task(&onb, "Meet the team")["assignee"], json!("mira@hrchk.test"));
+    assert_eq!(onb["status"], json!("Pending"));
+    refused(t.k.run_action(&hr, "EmployeeOnboarding", uid(&onb), "apply_checklist", json!({})).await, "not available");
+
+    // Mira sees it through her tasks and ticks hers, not HR's; she cannot approve her own.
+    let theirs = t.list(&mira_ctx, "EmployeeOnboarding", json!({})).await;
+    assert_eq!(theirs.len(), 1);
+    let work = call(&t, Some(&mira_ctx), "GET", "work", &[], Value::Null).await.expect("work");
+    let titles: Vec<&str> = work["items"].as_array().unwrap().iter().filter_map(|i| i["title"].as_str()).collect();
+    assert_eq!(titles, ["Asha Test: Meet the team", "Asha Test: Sign policy", "Asha Test: Team lunch"]);
+    let hr_work = call(&t, Some(&hr), "GET", "work", &[], Value::Null).await.expect("work");
+    assert_eq!(hr_work["items"].as_array().unwrap().len(), 2, "the tasks of the HR Manager role");
+    let onb = obj(json!(t.k.update(&mira_ctx, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Meet the team", json!({"done": true}))), None).await.unwrap()));
+    forbidden(t.k.update(&mira_ctx, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Laptop", json!({"done": true}))), None).await);
+    let onb = t.k.update(&mira_ctx, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Sign policy", json!({"done": true}))), None).await.unwrap();
+    refused(t.k.update(&mira_ctx, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Sign policy", json!({"approved": true}))), None).await, "someone other");
+    let onb = t.k.update(&hr, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Sign policy", json!({"approved": true}))), None).await.unwrap();
+    assert_eq!(task(&onb, "Sign policy")["approved_by"], json!("hr@hrchk.test"));
+    // The ID card waits for the document.
+    refused(t.k.update(&hr, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Collect ID card", json!({"done": true}))), None).await, "document");
+    t.ins(&hr, "EmployeeDocument", json!({"employee": asha["id"], "document_type": id_card["id"]})).await;
+    let onb = t.k.update(&hr, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Collect ID card", json!({"done": true}))), None).await.unwrap();
+    assert_eq!(onb["status"], json!("In Process"));
+    // Every required task done (the lunch is not required): complete.
+    let onb = t.k.update(&hr, "EmployeeOnboarding", uid(&onb), obj(tick(&onb, "Laptop", json!({"done": true}))), None).await.unwrap();
+    assert_eq!(onb["status"], json!("Completed"));
+
+    // A hire into Engineering gets the Engineering onboarding from the offer.
+    let designation = t.ins(&hr, "Designation", json!({"designation_name": "Engineer"})).await;
+    let opening = t.ins(&hr, "JobOpening", json!({"job_title": "Engineer", "company": t.c(), "designation": designation["id"], "department": eng["id"]})).await;
+    let applicant = t.ins(&hr, "JobApplicant", json!({"applicant_name": "Kiran Rao", "email_id": "kiran@mail.test", "job_opening": opening["id"]})).await;
+    let offer = t
+        .ins_submit(&hr, "JobOffer", json!({"job_applicant": applicant["id"], "company": t.c(), "department": eng["id"], "offer_date": "2026-10-10", "expected_joining_date": "2026-10-20"}))
+        .await;
+    t.act(&hr, "JobOffer", uid(&offer), "accept", json!({})).await;
+    let kiran = t.act(&hr, "JobOffer", uid(&offer), "make_employee", json!({})).await;
+    let kob = t.one("EmployeeOnboarding", json!({"employee": kiran["id"]})).await;
+    let kob = t.get("EmployeeOnboarding", uid(&kob)).await;
+    assert_eq!((kob["job_offer"].clone(), kob["activities"].as_array().unwrap().len()), (offer["id"].clone(), 1));
+    assert_eq!(task(&kob, "Repository access")["due_date"], json!("2026-10-20"));
+
+    // Its task is overdue (joined 20 October): one reminder to the HR manager, however often the upkeep runs.
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+    assert_eq!(sends(&t, "hr.checklist_task_overdue").await, 1);
+
+    // Notice given: the offboarding tasks are dated from the last working day.
+    let sep = t.ins(&hr, "EmployeeSeparation", json!({"employee": asha["id"], "reason": "Resignation", "relieving_date": "2026-12-31"})).await;
+    let sep = t.get("EmployeeSeparation", uid(&sep)).await;
+    assert_eq!(task(&sep, "Return laptop")["due_date"], json!("2026-12-31"));
 }

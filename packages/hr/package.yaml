@@ -17,7 +17,7 @@ modules:
     icon: users
     order: 70
     # The full and final statement comes with the connector to ERP (hr_erp); without it the item drops out.
-    items: [Employee, EmployeeDocument, EmployeeDocumentType, Department, Designation, Branch, EmployeeGrade, EmploymentType, EmployeeOnboarding, EmployeeSeparation, FullAndFinalStatement,
+    items: [Employee, EmployeeDocument, EmployeeDocumentType, Department, Designation, Branch, EmployeeGrade, EmploymentType, EmployeeOnboarding, EmployeeSeparation, ChecklistTemplate, FullAndFinalStatement,
             EmployeePromotion, EmployeeTransfer, report:employee_directory, report:headcount, report:employee_events, report:expiring_documents]
   - name: attendance
     label: Attendance & Leave
@@ -99,6 +99,7 @@ roles:
       - {entity: EmployeeGrade, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EmploymentType, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EmployeeOnboarding, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: ChecklistTemplate, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EmployeeSeparation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: EmployeePromotion, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, read_groups: [pay], write_groups: [pay]}
       - {entity: EmployeeTransfer, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
@@ -136,6 +137,7 @@ roles:
       - {entity: EmployeeGrade, read: true}
       - {entity: EmploymentType, read: true}
       - {entity: EmployeeOnboarding, read: true, write: true, create: true, delete: true}
+      - {entity: ChecklistTemplate, read: true}
       - {entity: EmployeeSeparation, read: true, write: true, create: true, delete: true}
       - {entity: EmployeePromotion, read: true, write: true, create: true, delete: true, read_groups: [pay], write_groups: [pay]}
       - {entity: EmployeeTransfer, read: true, write: true, create: true, delete: true}
@@ -168,6 +170,9 @@ roles:
       # and as a manager, the general documents of those reporting to them whose type shows them to managers.
       - {entity: EmployeeDocument, read: true, write: true, create: true, if_owner: true, where: {visible_to: [Employee, Employee and Manager]}}
       - {entity: EmployeeDocument, read: true, via: employee.reports_to.user, where: {visible_to: Employee and Manager, category: General}}
+      # The onboardings and offboardings with a task named for them (their own tasks only, checked on save).
+      - {entity: EmployeeOnboarding, read: true, write: true, via: activities.assignee}
+      - {entity: EmployeeSeparation, read: true, write: true, via: activities.assignee}
       - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: EmployeeCheckin, read: true, create: true, if_owner: true}
       - {entity: Attendance, read: true, if_owner: true}
@@ -235,6 +240,17 @@ handover:
 
 # What the app sends; a workspace edits the wording under Settings.
 messages:
+  - key: hr.checklist_task_overdue
+    label: Onboarding or offboarding task overdue
+    values: [task, employee_name, due_date]
+    languages:
+      en:
+        email:
+          subject: "Overdue: {{ values.task }} for {{ values.employee_name }}"
+          body: "<p>The task {{ values.task }} for {{ values.employee_name }} was due on {{ values.due_date }} and is not done yet.</p>"
+        inapp:
+          title: "Overdue: {{ values.task }} for {{ values.employee_name }}"
+          text: "It was due on {{ values.due_date }}."
   - key: hr.document_expiring
     label: Employee document about to expire
     entity: EmployeeDocument
