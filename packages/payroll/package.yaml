@@ -1,5 +1,5 @@
 package: payroll
-version: 0.5.1
+version: 0.6.0
 label: Payroll
 description: Salary components with CEL formulas (earnings, deductions and employer contributions), salary structures and assignments, payroll periods and progressive income tax with exemption declarations and opening year-to-date figures, salary slips prorated by payment days with arrears for revisions backdated into periods already paid, payroll runs (regular and off-cycle) whose slips can be corrected one by one and held, additional salary and leave encashment.
 depends: [hr]
@@ -17,7 +17,7 @@ modules:
     order: 75
     # The full and final statement comes with the connector to ERP (hr_erp); without it the item drops out.
     items: [PayrollEntry, SalarySlip, FullAndFinalStatement, EmployeeLoan, SalaryStructure, SalaryStructureAssignment, SalaryComponent, AdditionalSalary, PayrollPeriod,
-            PayrollOpening, IncomeTaxSlab, EmployeeTaxExemptionDeclaration, EmployeeTaxExemptionCategory, report:salary_register, report:payroll_summary,
+            PayrollOpening, IncomeTaxSlab, PayrollLookupTable, EmployeeTaxExemptionDeclaration, EmployeeTaxExemptionCategory, report:salary_register, report:payroll_summary,
             report:bank_remittance, report:income_tax_deductions]
 
 roles:
@@ -29,6 +29,7 @@ roles:
       - {entity: SalaryStructureAssignment, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
       - {entity: PayrollPeriod, read: true, write: true, create: true, delete: true}
       - {entity: IncomeTaxSlab, read: true, write: true, create: true, delete: true}
+      - {entity: PayrollLookupTable, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EmployeeTaxExemptionCategory, read: true, write: true, create: true, delete: true}
       - {entity: EmployeeTaxExemptionDeclaration, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: AdditionalSalary, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
@@ -51,6 +52,7 @@ roles:
       - {entity: SalaryStructureAssignment, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: PayrollPeriod, read: true, write: true, create: true, delete: true}
       - {entity: IncomeTaxSlab, read: true, write: true, create: true, delete: true}
+      - {entity: PayrollLookupTable, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EmployeeTaxExemptionCategory, read: true, write: true, create: true, delete: true}
       - {entity: EmployeeTaxExemptionDeclaration, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: AdditionalSalary, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}

@@ -18,7 +18,7 @@
 //!   arrears, with the tax they bring;
 //! * a slip of a payroll run takes back what an earlier run slip, corrected, paid too much.
 
-use super::formula::{Formula, Vars, annual_tax};
+use super::formula::{Formula, LookupRow, Tables, Vars, annual_tax};
 use super::{FLAGS, assignment_on, row_formula, run};
 use crate::calendar::{employee_holidays, working_days};
 use crate::{lookup, opt_date, stamp_company};
@@ -27,6 +27,7 @@ use chrono::{Datelike, NaiveDate};
 use ferrum_app_erp::ledger;
 use ferrum_domain::util::{Company, b, company, d, elevated, get, id, money, round, rows, s, set, sys};
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
@@ -102,7 +103,7 @@ impl Row {
 type Extra = BTreeMap<Uuid, (Decimal, bool, Decimal)>;
 
 /// Each table's rows, in order.
-type Tables = HashMap<&'static str, Vec<Row>>;
+type Rows = HashMap<&'static str, Vec<Row>>;
 
 /// A period's days as a slip pays them.
 #[derive(Clone, Copy)]
@@ -162,9 +163,188 @@ impl Proration<'_> {
     }
 }
 
+/// A record's fields as a formula reads them: every field of the entity (empty ones null), numbers as numbers,
+/// secrets left out.
+fn fields_of(hc: &HookCtx<'_>, entity: &str, doc: Option<&Doc>) -> Value {
+    use ferrum_meta::FieldType as F;
+    let mut out = serde_json::Map::new();
+    let Some(ent) = hc.ctx.schema.entity(entity) else { return Value::Object(out) };
+    for f in ent.def.fields.iter().filter(|f| !matches!(f.ftype, F::Secret | F::Table)) {
+        let v = doc.and_then(|d| d.get(&f.name)).cloned().unwrap_or(Value::Null);
+        let v = match (f.ftype, &v) {
+            (F::Int | F::Decimal | F::Currency | F::Percent, Value::String(x)) => x.parse::<f64>().map(|n| json!(n)).unwrap_or(Value::Null),
+            _ => v,
+        };
+        out.insert(f.name.clone(), v);
+    }
+    Value::Object(out)
+}
+
+/// `(abbreviation, amount)` sums as a formula's map, every component's abbreviation there (0 when it paid none).
+fn by_abbr(all: &[String], paid: Vec<(Option<String>, Decimal)>) -> Value {
+    let mut m: serde_json::Map<String, Value> = all.iter().map(|a| (a.clone(), json!(0.0))).collect();
+    for (a, v) in paid {
+        if let Some(a) = a {
+            m.insert(a, json!(v.to_f64().unwrap_or_default()));
+        }
+    }
+    Value::Object(m)
+}
+
+/// What statutory formulas read ([`super::formula::CONTEXT`]) for `emp`'s period `[start, end]`, slip `me`
+/// left out of what was paid before it, and the lookup tables as of `end`.
+async fn context(
+    hc: &mut HookCtx<'_>,
+    emp: &Doc,
+    co: &Company,
+    (start, end): (NaiveDate, NaiveDate),
+    me: Option<Uuid>,
+    frequency: &str,
+    vars: &mut Vars,
+) -> Result<()> {
+    let tenant = hc.ctx.tenant;
+    let emp_id = id(emp, "id").unwrap_or_default();
+    vars.maps.insert("employee".into(), fields_of(hc, "Employee", Some(emp)));
+    let branch = lookup(hc, "Branch", id(emp, "branch")).await?;
+    vars.maps.insert("location".into(), fields_of(hc, "Branch", branch.as_ref()));
+    // The payroll year: the payroll period holding the end, else the calendar year.
+    let period: Option<(Uuid, NaiveDate, NaiveDate)> = sqlx::query_as(
+        "select id, start_date, end_date from e_payroll_period where tenant_id = $1 and company = $2 and start_date <= $3 and end_date >= $3 limit 1",
+    )
+    .bind(tenant)
+    .bind(co.id)
+    .bind(end)
+    .fetch_optional(&mut **hc.tx)
+    .await?;
+    let (pid, y_start, y_end) = match period {
+        Some((p, s, e)) => (Some(p), s, e),
+        None => (None, NaiveDate::from_ymd_opt(end.year(), 1, 1).unwrap_or(end), NaiveDate::from_ymd_opt(end.year(), 12, 31).unwrap_or(end)),
+    };
+    vars.maps.insert(
+        "period".into(),
+        json!({"start": start.to_string(), "end": end.to_string(), "month": end.month(), "year": end.year(), "days": (end - start).num_days() + 1,
+               "number": periods_between(frequency, y_start, start) + 1, "count": periods_between(frequency, y_start, y_end) + 1,
+               "left": periods_left(frequency, start, y_end)}),
+    );
+    let all: Vec<String> =
+        sqlx::query_scalar("select abbr from e_salary_component where tenant_id = $1 and abbr is not null").bind(tenant).fetch_all(&mut **hc.tx).await?;
+    let rows_of = |which: &str| {
+        format!(
+            "select r.abbr, sum(r.amount) from (select parent_id, abbr, amount, tenant_id from e_salary_slip__earnings union all select parent_id, abbr, amount, tenant_id \
+             from e_salary_slip__deductions union all select parent_id, abbr, amount, tenant_id from e_salary_slip__employer_contributions) r \
+             join e_salary_slip s on s.tenant_id = r.tenant_id and s.id = r.parent_id where r.tenant_id = $1 and s.employee = $2 and s.docstatus = 1 \
+             and ($3::uuid is null or s.id <> $3) and {which} group by r.abbr"
+        )
+    };
+    let ytd: Vec<(Option<String>, Decimal)> = sqlx::query_as(sqlx::AssertSqlSafe(rows_of("s.start_date >= $4 and s.end_date < $5")))
+        .bind(tenant)
+        .bind(emp_id)
+        .bind(me)
+        .bind(y_start)
+        .bind(start)
+        .fetch_all(&mut **hc.tx)
+        .await?;
+    vars.maps.insert("ytd".into(), by_abbr(&all, ytd));
+    let totals: (Decimal, Decimal, Decimal, Decimal, Decimal, Decimal) = sqlx::query_as(
+        "select coalesce(sum(gross_pay), 0), coalesce(sum(total_deduction), 0), coalesce(sum(net_pay), 0), coalesce(sum(total_employer_contribution), 0), \
+         coalesce(sum(taxable_earnings), 0), coalesce(sum(income_tax_deducted), 0) from e_salary_slip where tenant_id = $1 and employee = $2 and docstatus = 1 \
+         and ($3::uuid is null or id <> $3) and start_date >= $4 and end_date < $5",
+    )
+    .bind(tenant)
+    .bind(emp_id)
+    .bind(me)
+    .bind(y_start)
+    .bind(start)
+    .fetch_one(&mut **hc.tx)
+    .await?;
+    let opening: (Decimal, Decimal) = sqlx::query_as(
+        "select coalesce(sum(coalesce(taxable_earnings, 0) + coalesce(previous_employer_income, 0)), 0), \
+         coalesce(sum(coalesce(tax_deducted, 0) + coalesce(previous_employer_tax, 0)), 0) from e_payroll_opening \
+         where tenant_id = $1 and employee = $2 and payroll_period = $3 and docstatus = 1",
+    )
+    .bind(tenant)
+    .bind(emp_id)
+    .bind(pid)
+    .fetch_one(&mut **hc.tx)
+    .await?;
+    let f = |d: Decimal| d.to_f64().unwrap_or_default();
+    vars.maps.insert(
+        "ytd_total".into(),
+        json!({"gross": f(totals.0), "deductions": f(totals.1), "net": f(totals.2), "employer": f(totals.3),
+               "taxable": f(totals.4 + opening.0), "tax": f(totals.5 + opening.1)}),
+    );
+    let previous: Vec<(Option<String>, Decimal)> = sqlx::query_as(sqlx::AssertSqlSafe(rows_of(
+        "s.id = (select p.id from e_salary_slip p where p.tenant_id = $1 and p.employee = $2 and p.docstatus = 1 and not coalesce(p.off_cycle, false) \
+         and ($3::uuid is null or p.id <> $3) and p.end_date < $4 order by p.end_date desc limit 1)",
+    )))
+    .bind(tenant)
+    .bind(emp_id)
+    .bind(me)
+    .bind(start)
+    .fetch_all(&mut **hc.tx)
+    .await?;
+    vars.maps.insert("previous".into(), by_abbr(&all, previous));
+    // What the employee declared for the payroll year, by category code, and of it what HR verified.
+    let codes: Vec<String> = sqlx::query_scalar("select code from e_employee_tax_exemption_category where tenant_id = $1 and code is not null")
+        .bind(tenant)
+        .fetch_all(&mut **hc.tx)
+        .await?;
+    let declared: Vec<(Option<String>, Decimal, Decimal)> = sqlx::query_as(
+        "select c.code, sum(r.amount), sum(case when coalesce(r.verified, false) then r.amount else 0 end) \
+         from e_employee_tax_exemption_declaration d join e_employee_tax_exemption_declaration__declarations r on r.tenant_id = d.tenant_id and r.parent_id = d.id \
+         join e_employee_tax_exemption_category c on c.tenant_id = r.tenant_id and c.id = r.exemption_category \
+         where d.tenant_id = $1 and d.employee = $2 and d.payroll_period = $3 and d.docstatus = 1 and c.code is not null group by c.code",
+    )
+    .bind(tenant)
+    .bind(emp_id)
+    .bind(pid)
+    .fetch_all(&mut **hc.tx)
+    .await?;
+    vars.maps.insert("declared".into(), by_abbr(&codes, declared.iter().map(|(c, a, _)| (c.clone(), *a)).collect()));
+    vars.maps.insert("verified".into(), by_abbr(&codes, declared.iter().map(|(c, _, v)| (c.clone(), *v)).collect()));
+    let rows: Vec<(String, NaiveDate, Option<String>, Option<String>, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>)> = sqlx::query_as(
+        "select t.table_name, r.effective_from, r.key1, r.key2, r.from_amount, r.to_amount, r.rate, r.amount from e_payroll_lookup_table t \
+         join e_payroll_lookup_table__rows r on r.tenant_id = t.tenant_id and r.parent_id = t.id where t.tenant_id = $1 and r.effective_from <= $2",
+    )
+    .bind(tenant)
+    .bind(end)
+    .fetch_all(&mut **hc.tx)
+    .await?;
+    let n = |d: Option<Decimal>| d.and_then(|d| d.to_f64()).unwrap_or_default();
+    vars.tables = std::sync::Arc::new(Tables {
+        on: Some(end),
+        rows: rows
+            .into_iter()
+            .map(|(table, effective_from, k1, k2, lo, hi, rate, amount)| LookupRow {
+                table,
+                effective_from,
+                key1: k1.unwrap_or_default(),
+                key2: k2.unwrap_or_default(),
+                from: n(lo),
+                to: n(hi),
+                rate: n(rate),
+                amount: n(amount),
+            })
+            .collect(),
+    });
+    Ok(())
+}
+
 /// The structure's rows for a period of `days`, with the period's additional salary for the
-/// components it has (taken out of `extra`), and the income tax components apart.
-async fn evaluate(hc: &mut HookCtx<'_>, emp: &Doc, ssa: &Doc, structure: &Doc, co: &Company, days: Days, extra: &mut Extra) -> Result<(Tables, Vec<Doc>)> {
+/// components it has (taken out of `extra`), and the income tax components apart. Formulas reading the
+/// statutory context get it for `period`, slip `me` left out of what was paid before.
+#[allow(clippy::too_many_arguments)]
+async fn evaluate(
+    hc: &mut HookCtx<'_>,
+    emp: &Doc,
+    ssa: &Doc,
+    structure: &Doc,
+    co: &Company,
+    days: Days,
+    extra: &mut Extra,
+    period: (NaiveDate, NaiveDate),
+    me: Option<Uuid>,
+) -> Result<(Rows, Vec<Doc>)> {
     let mut vars = Vars::default();
     vars.set("base", d(ssa, "base"));
     vars.set("variable", d(ssa, "variable"));
@@ -174,8 +354,20 @@ async fn evaluate(hc: &mut HookCtx<'_>, emp: &Doc, ssa: &Doc, structure: &Doc, c
     vars.set("absent_days", days.absent);
     vars.set("gross", Decimal::ZERO);
     texts(hc, emp, &mut vars).await?;
+    // The context, only when a formula of the structure reads it.
+    let abbrs: Vec<String> = TABLES.iter().flat_map(|t| rows(structure, t)).filter_map(|r| s(&r, "abbr").map(str::to_string)).collect();
+    let mut reads = false;
+    for r in TABLES.iter().flat_map(|t| rows(structure, t)) {
+        let comp = lookup(hc, "SalaryComponent", id(&r, "salary_component")).await?;
+        let sources = [s(&r, "condition"), comp.as_ref().and_then(|c| row_formula(&r, c))];
+        reads |= sources.into_iter().flatten().any(|src| Formula::compile(src).is_ok_and(|f| f.uses_context(&abbrs)));
+    }
+    if reads {
+        let frequency = s(structure, "payroll_frequency").unwrap_or("Monthly").to_string();
+        context(hc, emp, co, period, me, &frequency, &mut vars).await?;
+    }
     let cx = Proration { co, payment_days: days.payment, working: days.working };
-    let mut out: Tables = HashMap::new();
+    let mut out: Rows = HashMap::new();
     let mut tax: Vec<Doc> = Vec::new();
     let mut gross_full = Decimal::ZERO;
     let mut errors = Vec::new();
@@ -311,7 +503,7 @@ async fn arrears(hc: &mut HookCtx<'_>, emp: &Doc, co: &Company, me: Option<Uuid>
             lwp: d(&paid_slip, "leave_without_pay"),
             absent: d(&paid_slip, "absent_days"),
         };
-        let (now, _) = evaluate(hc, emp, &ssa, &structure, co, days, &mut BTreeMap::new()).await?;
+        let (now, _) = evaluate(hc, emp, &ssa, &structure, co, days, &mut BTreeMap::new(), (start, end), Some(slip_id)).await?;
         let mut due: BTreeMap<Uuid, (Doc, Decimal)> = BTreeMap::new();
         for r in now.into_values().flatten().filter(|r| !r.flag("statistical_component")) {
             due.insert(id(&r.component, "id").unwrap_or_default(), (r.component, r.amount));
@@ -636,9 +828,9 @@ pub(crate) async fn compute(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
     // year's income for tax.
     let (mut out, tax) = if off_cycle {
         let full = Days { working: Decimal::ONE, payment: Decimal::ONE, lwp: Decimal::ZERO, absent: Decimal::ZERO };
-        evaluate(hc, &emp, &ssa, &structure, &co, full, &mut BTreeMap::new()).await?
+        evaluate(hc, &emp, &ssa, &structure, &co, full, &mut BTreeMap::new(), (start, end), me).await?
     } else {
-        evaluate(hc, &emp, &ssa, &structure, &co, days, &mut extra).await?
+        evaluate(hc, &emp, &ssa, &structure, &co, days, &mut extra, (start, end), me).await?
     };
     let taxable_earning = |r: &Row| r.flag("is_tax_applicable") && !r.flag("statistical_component");
     let exempt_deduction = |r: &Row| r.flag("exempted_from_income_tax") && !r.flag("statistical_component");

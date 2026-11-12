@@ -32,6 +32,12 @@
   fields:
     - {name: branch_name, type: data, required: true, unique: true, in_list: true}
     - {name: address, type: text}
+    - {name: region, type: data, in_list: true, in_filter: true, description: "The state, province or region its rules follow; payroll formulas read it as location.region"}
+    - {name: country, type: data, in_filter: true, description: "Payroll formulas read it as location.country"}
+    - {name: latitude, type: decimal, description: "The place's point, for check-ins from a phone or a browser"}
+    - {name: longitude, type: decimal}
+    - {name: radius, type: int, min: "0", default: 200, label: Radius (metres), description: "How far from the point a check-in still counts as here"}
+    - {name: check_in_place_rule, type: select, options: [Off, Warn, Refuse], default: Off, label: Check-ins Outside, description: "What happens to an employee's own check-in away from the place, or without a position: nothing, marked, or refused. A shift may say otherwise"}
   list: {sort: branch_name asc}
 
 - name: EmployeeGrade
@@ -131,8 +137,16 @@
     - {name: activity_name, type: data, required: true, in_list: true}
     - {name: assignee, type: email, in_list: true}
     - {name: due_date, type: date, in_list: true}
+    - {name: assignee_role, type: data, description: "Whoever holds this role does it, when no one is named"}
+    - {name: assignee_field, type: data, hidden: true, description: "The employee's field naming who does it (copied from the checklist template)"}
     - {name: done, type: check, in_list: true}
     - {name: completed_on, type: date, read_only: true, in_list: true}
+    - {name: document_type, type: link, to: EmployeeDocumentType, description: "Done only once the employee has a document of this type"}
+    - {name: required, type: check, default: true, description: "The checklist is complete when every required task is done"}
+    - {name: requires_approval, type: check, description: "Counts as done once someone other than its assignee approves it"}
+    - {name: approved, type: check}
+    - {name: approved_by, type: email, read_only: true}
+    - {name: reminded_on, type: date, read_only: true, hidden: true}
     - {name: notes, type: text}
 
 - name: EmployeeOnboarding
@@ -152,8 +166,18 @@
     - {name: designation, type: link, to: Designation}
     - {name: date_of_joining, type: date, in_list: true}
     - {name: status, type: select, options: [Pending, In Process, Completed], default: Pending, read_only: true, in_list: true, in_filter: true}
+    - {name: checklist_template, type: link, to: ChecklistTemplate, link_filters: {purpose: Onboarding}, description: "Chosen by the templates' department, designation and employment type when empty; its tasks are copied in once"}
     - {name: activities, type: table, of: EmployeeActivity}
     - {name: notes, type: text}
+  actions:
+    - name: apply_checklist
+      label: Apply Checklist
+      permission: write
+      condition: "doc.checklist_template != null && size(doc.activities) == 0"
+      effects:
+        - {type: copy_lines, table: activities, link: checklist_template, from_table: tasks,
+           values: {activity_name: item.task, assignee_role: item.assignee_role, assignee_field: item.assignee_field, due_date: "addDays(doc.date_of_joining, item.due_days)",
+                    document_type: item.document_type, required: item.required, requires_approval: item.requires_approval}}
   list: {columns: [number, employee_name, date_of_joining, status], sort: created_at desc}
 
 - name: EmployeeSeparation
@@ -182,7 +206,18 @@
     - {name: shortfall_settlement, type: select, options: [Recover from Employee, Pay in Lieu of Notice, Waive], visible_if: "doc.notice_shortfall_days > 0", label: Notice Short, description: "Recovered when the employee leaves early; paid in lieu when the employer ends it early; or waived. The full and final statement carries it"}
     - {name: exit_interview, type: text}
     - {name: status, type: select, options: [Pending, In Process, Completed], default: Pending, read_only: true, in_list: true, in_filter: true}
+    - {name: checklist_template, type: link, to: ChecklistTemplate, link_filters: {purpose: Offboarding}, description: "Chosen by the templates' department, designation and employment type when empty; its tasks are copied in once"}
     - {name: activities, type: table, of: EmployeeActivity}
+  actions:
+    - name: apply_checklist
+      label: Apply Checklist
+      permission: write
+      docstatus: [0]
+      condition: "doc.checklist_template != null && size(doc.activities) == 0"
+      effects:
+        - {type: copy_lines, table: activities, link: checklist_template, from_table: tasks,
+           values: {activity_name: item.task, assignee_role: item.assignee_role, assignee_field: item.assignee_field, due_date: "addDays(doc.relieving_date, item.due_days)",
+                    document_type: item.document_type, required: item.required, requires_approval: item.requires_approval}}
   list: {columns: [number, employee_name, relieving_date, status], sort: created_at desc}
 
 - name: EmployeePromotion
@@ -235,3 +270,32 @@
     - {name: new_reports_to, type: link, to: Employee}
     - {name: reason, type: text}
   list: {columns: [number, employee_name, transfer_date, new_department, new_branch], sort: transfer_date desc}
+
+- name: ChecklistTemplateTask
+  label: Checklist Task
+  kind: child
+  fields:
+    - {name: task, type: data, required: true, in_list: true}
+    - {name: assignee_role, type: data, in_list: true, description: "A role whose holders do it"}
+    - {name: assignee_field, type: data, in_list: true, description: "Or the employee's field naming who does it: reports_to (their manager), leave_approver, user (the employee), or a field of your own holding an email or an employee"}
+    - {name: due_days, type: int, default: 0, in_list: true, label: Due (Days), description: "Days after the joining or last working date; before it when negative"}
+    - {name: document_type, type: link, to: EmployeeDocumentType, description: "A document to collect: the task is done only once the employee has one"}
+    - {name: required, type: check, default: true}
+    - {name: requires_approval, type: check}
+
+- name: ChecklistTemplate
+  label: Checklist Template
+  kind: master
+  module: hr
+  title_field: template_name
+  description: "The tasks of an onboarding or an offboarding. The one applied to an employee is the template of that purpose whose department, designation and employment type (each empty for any) match them, the highest priority first, then the one matching most."
+  fields:
+    - {name: template_name, type: data, required: true, unique: true, in_list: true}
+    - {name: purpose, type: select, options: [Onboarding, Offboarding], required: true, in_list: true, in_filter: true}
+    - {name: department, type: link, to: Department, in_list: true}
+    - {name: designation, type: link, to: Designation, in_list: true}
+    - {name: employment_type, type: link, to: EmploymentType, in_list: true}
+    - {name: priority, type: int, default: 0}
+    - {name: disabled, type: check, in_filter: true}
+    - {name: tasks, type: table, of: ChecklistTemplateTask}
+  list: {columns: [template_name, purpose, department, designation, employment_type], sort: template_name asc}

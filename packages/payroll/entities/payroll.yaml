@@ -157,6 +157,7 @@
   title_field: category_name
   fields:
     - {name: category_name, type: data, required: true, unique: true, in_list: true}
+    - {name: code, type: data, unique: true, in_list: true, description: "The name payroll formulas read what was declared under it by: declared.<code>, and of it what HR verified, verified.<code>"}
     - {name: max_amount, type: currency, min: "0", in_list: true, description: Most that counts per payroll period (0 = no limit)}
     - {name: description, type: text}
   list: {sort: category_name asc}
@@ -168,6 +169,8 @@
     - {name: exemption_category, type: link, to: EmployeeTaxExemptionCategory, required: true, in_list: true}
     - {name: amount, type: currency, required: true, min: "0", in_list: true}
     - {name: max_amount, type: currency, read_only: true, in_list: true}
+    - {name: proof, type: attach, description: "The receipt or certificate HR verifies"}
+    - {name: verified, type: check, read_only: true, in_list: true}
 
 - name: EmployeeTaxExemptionDeclaration
   label: Tax Exemption Declaration
@@ -187,6 +190,10 @@
     - {name: declarations, type: table, of: TaxExemptionDeclarationRow, required: true}
     - {name: total_declared_amount, type: currency, read_only: true, in_list: true}
     - {name: total_exemption_amount, type: currency, read_only: true, description: Declared amounts capped by each category's limit}
+    - {name: verified_by, type: email, read_only: true, no_copy: true}
+    - {name: verified_on, type: date, read_only: true, no_copy: true}
+  actions:
+    - {name: verify_proofs, label: Verify Proofs, docstatus: [1], permission: submit, confirm: "Mark every declared amount that has a proof verified?"}
   list: {columns: [number, employee_name, payroll_period, total_exemption_amount], sort: created_at desc}
 
 - name: AdditionalSalary
@@ -457,3 +464,29 @@
     - {label: Paid by a previous employer, fields: [previous_employer, previous_employer_income, previous_employer_tax]}
     - {label: Notes, collapsible: true, fields: [notes]}
   list: {columns: [number, employee_name, payroll_period, up_to_date, taxable_earnings, tax_deducted], sort: up_to_date desc}
+
+- name: PayrollLookupRow
+  label: Lookup Row
+  kind: child
+  fields:
+    - {name: effective_from, type: date, required: true, in_list: true}
+    - {name: key1, type: data, in_list: true, label: Key, description: "A region, a band, a month: what the formula passes; empty fits any"}
+    - {name: key2, type: data, in_list: true, label: Second Key}
+    - {name: from_amount, type: decimal, default: 0, in_list: true, label: From}
+    - {name: to_amount, type: decimal, default: 0, in_list: true, label: Up To, description: "Up to but not including; 0 = no limit"}
+    - {name: rate, type: decimal, in_list: true, description: "A percent"}
+    - {name: amount, type: decimal, in_list: true}
+
+- name: PayrollLookupTable
+  label: Payroll Lookup Table
+  kind: master
+  module: payroll
+  title_field: table_name
+  description: "Rates and amounts payroll formulas read by name, with the dates they take effect: a ceiling by year, a slab by region, bands of a tax. lookup(table, 'rate' or 'amount', value, key, second key) gives the row in force whose band holds the value; banded(table, value, key, second key) sums the value's part in each band times its rate."
+  fields:
+    - {name: table_name, type: data, required: true, unique: true, in_list: true}
+    - {name: description, type: text}
+    - {name: rows, type: table, of: PayrollLookupRow}
+  rules:
+    - {name: table_name_identifier, check: "doc.table_name == null || doc.table_name.matches('^[A-Za-z_][A-Za-z0-9_]*$')", field: table_name, message: "must start with a letter or _ and hold only letters, digits and _"}
+  list: {sort: table_name asc}

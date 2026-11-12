@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.12.0
+
+What a business meets on day one around the core, and payroll rules a workspace or a country pack writes as
+data. HR 0.4.0, payroll 0.6.0. Nothing names a country; an upgraded workspace keeps working as before with no
+administrator action (each new job of the upkeep waits for the fields it reads).
+
+- **Employee documents.** Document Types (category General, Identity or Bank; who sees it: HR only, Employee,
+  Employee and Manager; whether employees upload it; whether it expires and how many days before to warn,
+  30 by default; required for everyone or for a department, designation, employment type or branch). Employee
+  Documents with the file, number, issue and expiry dates; Verify by HR (never the employee); changing what was
+  verified takes the verification away. The employee sees their own of the types shown to them, their manager
+  a general one whose type says so, an HR user no bank document. The upkeep warns the employee and the HR
+  managers once per expiry date (message template `hr.document_expiring`, value `document_type`). Report:
+  Expiring and Missing Documents.
+- **Onboarding and offboarding from templates.** Checklist Templates (Onboarding or Offboarding; department,
+  designation and employment type, empty for any; priority) with tasks: a role, or an employee field naming who
+  does it (reports_to for the manager), due days from the joining or last working day, a document type to
+  collect, required, approval. A new onboarding or separation takes the matching template and its tasks are
+  copied in by the Apply Checklist action's `copy_lines`; an accepted offer's employee gets their onboarding.
+  A task with a document type waits for that document; one asking approval counts once someone else approves
+  it; the checklist is complete when every required task is. Assignees see their tasks in My work, may change
+  only theirs, and are reminded once when one is overdue (`hr.checklist_task_overdue`).
+- **Recruiting as a pipeline.** Job Requisitions open their job when submitted, after whatever approval policy
+  the workspace sets on them. Recruitment Stages per job (else the defaults) in order, by category (Screening,
+  Interview, Offer, Hired, Rejected): applicants start at the first, every move is kept, a Rejected stage needs a
+  reason and rejects them, Hired accepts them; the employee made from an offer moves them there. A job's
+  interview criteria with weights; interviewers' scorecards and a weighted score. An offer takes the approval
+  a workspace sets on its submit. Openings carry an application link for a published list.
+- **Payroll formulas see what statutory rules need.** `employee.<field>` and `location.<field>` (the branch,
+  now with region and country), `period` (start, end, month, year, number, count, left, days), `ytd.<abbr>`,
+  `ytd_total` (gross, deductions, net, employer, taxable and tax with the opening figures), `previous.<abbr>`,
+  `declared.<code>` and `verified.<code>` (exemption categories now have a code; declared amounts a proof and
+  Verify Proofs), and Payroll Lookup Tables with effective dates, keys and bands read by `lookup(table, 'rate' or
+  'amount', value, key, key)` and `banded(table, value, key, key)`; `years_between` and `months_between`. A
+  contribution capped by a ceiling that changes by year, a tax by bands on the projected year trued up to date
+  less verified declarations, a levy by region and month and an exemption as the least of three are formulas.
+- **Check-ins with place and proof.** A check-in carries latitude, longitude, accuracy, a photo and a device
+  mark; a branch a point, a radius (200 m) and a rule for its employees' own check-ins outside it or without a
+  position (Off, Warn, Refuse; a shift may say otherwise). Distance and Place are kept on the check-in.
+
 ## 0.11.3
 
 Rebuilt with Ferrum-Frontend 45dad7f, the design system as tuned after the landed build was reviewed. The left menu's icons are chosen so that none repeats on more than three rows and each fits its row; their drawings load beside the first page instead of inside it, so the page starts lighter; a row that scrolls sideways fades at the edge where there is more, in every browser and with reduced motion; a printed record leaves out empty fields and keeps its totals with the table; menus and popovers sit inside the page's landmarks for assistive technology; a selection bar folds what does not fit into More on a narrow screen. Nothing else changes.
