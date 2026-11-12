@@ -167,7 +167,9 @@ impl T {
     async fn employee(&self, first: &str, extra: Value) -> Doc {
         let mut v = obj(json!({"first_name": first, "last_name": "Test", "company": self.c(), "date_of_joining": "2024-06-01"}));
         v.extend(obj(extra));
-        self.ins(&self.admin.clone(), "Employee", Value::Object(v)).await
+        // The administrator as the workspace is now: its own fields included.
+        let admin = self.k.load_ctx(self.tenant, self.admin.user, None, "it".into()).await.expect("ctx");
+        self.ins(&admin, "Employee", Value::Object(v)).await
     }
 
     /// The stored text of a file named by `/files/{id}`.
@@ -401,4 +403,144 @@ async fn alone_letters_scenario() {
     let docs = t.list(&t.admin, "EmployeeDocument", json!({})).await;
     let newest = docs.iter().find(|d| d["document_number"] == json!("APT-2026-27-0002")).unwrap();
     assert_eq!(t.file_text(newest["file"].as_str().unwrap()), "<p>Welcome Ann, ref APT-2026-27-0002</p>");
+}
+
+/// A payroll run's submitted slips in a workspace with HR and payroll only, one slip per employee named.
+async fn slips(t: &T, pm: &Ctx, names: &[(&str, Value)], (start, end): (&str, &str)) -> Vec<Doc> {
+    let st = match t.list(&t.admin, "SalaryStructure", json!({"structure_name": "Flat"})).await.pop() {
+        Some(st) => st,
+        None => {
+            let pen = t
+                .ins(
+                    &t.admin,
+                    "SalaryComponent",
+                    json!({"component_name": "Pension", "abbr": "PEN", "component_type": "Deduction", "amount": "1800", "depends_on_payment_days": false}),
+                )
+                .await;
+            let flat = t
+                .ins(
+                    &t.admin,
+                    "SalaryComponent",
+                    json!({"component_name": "Flat Pay", "abbr": "FLAT", "component_type": "Earning", "amount": "30000", "depends_on_payment_days": false}),
+                )
+                .await;
+            let st = t
+                .ins(
+                    &t.admin,
+                    "SalaryStructure",
+                    json!({"structure_name": "Flat", "company": t.c(), "payroll_frequency": "Monthly", "earnings": [{"salary_component": flat["id"]}], "deductions": [{"salary_component": pen["id"]}]}),
+                )
+                .await;
+            t.k.submit(&t.admin, "SalaryStructure", uid(&st), None).await.unwrap()
+        }
+    };
+    for (first, extra) in names {
+        let e = t.employee(first, extra.clone()).await;
+        let a = t
+            .ins(&t.admin, "SalaryStructureAssignment", json!({"employee": e["id"], "salary_structure": st["id"], "from_date": "2026-04-01", "base": "30000"}))
+            .await;
+        t.k.submit(&t.admin, "SalaryStructureAssignment", uid(&a), None).await.unwrap();
+    }
+    let pe = t.ins(pm, "PayrollEntry", json!({"company": t.c(), "posting_date": end, "start_date": start, "end_date": end})).await;
+    let pe = t.act(pm, "PayrollEntry", uid(&pe), "get_employees", json!({})).await;
+    let pe_id: Uuid = pe["id"].as_str().unwrap().parse().unwrap();
+    t.k.submit(pm, "PayrollEntry", pe_id, None).await.unwrap();
+    t.act(pm, "PayrollEntry", pe_id, "create_salary_slips", json!({})).await;
+    t.act(pm, "PayrollEntry", pe_id, "submit_salary_slips", json!({})).await;
+    t.list(&t.admin, "SalarySlip", json!({"payroll_entry": pe_id.to_string()})).await
+}
+
+#[test]
+fn the_payslip_as_a_document_template() {
+    run(payslip_scenario());
+}
+
+async fn payslip_scenario() {
+    let t = T::new("hrpayslip", &["payroll"]).await;
+    let pm = t.user("pm@hrpayslip.test", &["Payroll Manager"]).await;
+    let me = t.user("asha@hrpayslip.test", &["Employee"]).await;
+    t.user("bo@hrpayslip.test", &["Employee"]).await;
+    t.user("cy@hrpayslip.test", &["Employee"]).await;
+    let got = slips(
+        &t,
+        &pm,
+        &[
+            ("Asha", json!({"user": "asha@hrpayslip.test", "bank_name": "Test Bank", "bank_account_no": "0011223344", "tax_id": "ABCDE1234F"})),
+            ("<b>Bo</b>", json!({"user": "bo@hrpayslip.test"})),
+        ],
+        ("2026-09-01", "2026-09-30"),
+    )
+    .await;
+    assert_eq!(got.len(), 2);
+    let asha = got.iter().find(|s| s["employee_name"] == json!("Asha Test")).unwrap();
+    let id = uid(asha);
+
+    // The template has the print format's content, whoever reads it.
+    let strip = |s: &str| {
+        let i = s.find("Printed ").expect("the print's last line");
+        s[..i].lines().map(str::trim_end).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
+    };
+    for who in [&pm, &me] {
+        let printed = t.k.render_print(who, "SalarySlip", id).await.unwrap();
+        let made = t.k.render_document(who, "payroll.payslip", id, None, false).await.unwrap();
+        assert_eq!(strip(&String::from_utf8(made.bytes).unwrap()), strip(&printed), "the template prints what the print format printed");
+    }
+
+    // The two coexist: a print uses the print format (a workspace's customised one included) until a workspace
+    // makes a copy of the template its default.
+    assert_eq!(t.k.default_document(&pm, "SalarySlip").await.unwrap(), None);
+    assert!(t.k.document_choices(&pm, "SalarySlip").await.unwrap()["templates"].to_string().contains("payroll.payslip"));
+    let read = t.k.document_template(&t.admin, "payroll.payslip").await.unwrap();
+    let mut def: ferrum_meta::DocumentDef = serde_json::from_value(read["template"].clone()).unwrap();
+    t.k.save_document_template(&t.admin, &def).await.expect("a workspace edits it: every body passes the check, with no letterhead fields");
+    def.default = true;
+    t.k.save_document_template(&t.admin, &def).await.unwrap();
+    assert_eq!(t.k.default_document(&pm, "SalarySlip").await.unwrap(), Some("payroll.payslip".into()));
+    t.k.reset_document_template(&t.admin, "payroll.payslip").await.unwrap();
+    assert_eq!(t.k.default_document(&pm, "SalarySlip").await.unwrap(), None);
+
+    // Mailed and filed: the file on the slip, one document among the employee's, the account number masked in what leaves.
+    t.act(&pm, "SalarySlip", id, "mail_payslip", json!({})).await;
+    t.drain().await;
+    let docs = t.list(&me, "EmployeeDocument", json!({})).await;
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0]["document_number"], asha["number"]);
+    let page = t.file_text(docs[0]["file"].as_str().unwrap());
+    assert!(page.contains("Asha Test") && page.contains("•••• 3344") && !page.contains("0011223344") && !page.contains("ABCDE1234F"), "{page}");
+    let mailed = MAILED.lock().unwrap().clone();
+    let m = mailed.iter().find(|m| m.0 == "asha@hrpayslip.test").expect("mailed to the employee");
+    assert_eq!(m.2.len(), 1);
+    assert!(String::from_utf8_lossy(&m.2[0].1).contains("Asha Test"));
+    // Again: the same document, its file replaced.
+    t.act(&pm, "SalarySlip", id, "mail_payslip", json!({"send_mail": "No"})).await;
+    t.drain().await;
+    let docs = t.list(&me, "EmployeeDocument", json!({})).await;
+    assert_eq!(docs.len(), 1, "mailing again does not file it twice");
+    assert_eq!(
+        mailed.iter().filter(|m| m.0 == "asha@hrpayslip.test").count(),
+        MAILED.lock().unwrap().iter().filter(|m| m.0 == "asha@hrpayslip.test").count(),
+        "No: filed, not mailed"
+    );
+    assert!(t.file_text(docs[0]["file"].as_str().unwrap()).contains("Asha Test"));
+    // The employee sees the file they were mailed.
+    assert!(t.k.read_file(&me, docs[0]["file"].as_str().unwrap().strip_prefix("/files/").unwrap().parse().unwrap()).await.is_ok());
+
+    // Every slip mailed when payroll releases them: a workspace's own automation on the slips' submission, the same effects.
+    ferrum_kernel::automation::save(
+        &t.k,
+        &t.admin,
+        &obj(json!({"name": "Mail payslips", "entity": "SalarySlip", "event": "submitted", "actions": [
+            {"type": "generate", "template": "payroll.payslip", "name": "'Payslip ' + doc.number", "values": {"mask": "true"}},
+            {"type": "message", "template": "payroll.payslip_mail", "to": "expr:coalesce(links.employee.user, links.employee.company_email)", "channels": ["email"], "attachments": ["results[0]"]}]})),
+    )
+    .await
+    .expect("the automation");
+    let before = MAILED.lock().unwrap().len();
+    let later = slips(&t, &pm, &[("Cy", json!({"user": "cy@hrpayslip.test"}))], ("2026-10-01", "2026-10-31")).await;
+    t.drain().await;
+    t.drain().await;
+    assert!(!later.is_empty());
+    assert!(MAILED.lock().unwrap().len() > before, "released slips were mailed by the automation");
+    let cy = MAILED.lock().unwrap().iter().find(|m| m.0 == "cy@hrpayslip.test").cloned().expect("mailed to Cy");
+    assert!(cy.2.len() == 1 && String::from_utf8_lossy(&cy.2[0].1).contains("Cy Test") && !cy.1.is_empty());
 }
