@@ -29,7 +29,7 @@ modules:
     label: Recruitment
     icon: user-plus
     order: 73
-    items: [JobOpening, JobApplicant, Interview, JobOffer, report:recruitment_pipeline]
+    items: [JobRequisition, JobOpening, JobApplicant, Interview, JobOffer, JobStage, report:recruitment_pipeline]
   - name: performance
     label: Performance
     icon: target
@@ -115,6 +115,8 @@ roles:
       - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
       - {entity: LeaveLedgerEntry, read: true, export: true}
       - {entity: JobOpening, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: JobRequisition, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, read_groups: [pay], write_groups: [pay]}
+      - {entity: JobStage, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: JobApplicant, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Interview, read: true, write: true, create: true, delete: true, export: true}
       - {entity: JobOffer, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, read_groups: [pay], write_groups: [pay]}
@@ -153,6 +155,8 @@ roles:
       - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, cancel: true}
       - {entity: LeaveLedgerEntry, read: true}
       - {entity: JobOpening, read: true, write: true, create: true}
+      - {entity: JobRequisition, read: true, write: true, create: true, submit: true, read_groups: [pay], write_groups: [pay]}
+      - {entity: JobStage, read: true}
       - {entity: JobApplicant, read: true, write: true, create: true, delete: true, import: true}
       - {entity: Interview, read: true, write: true, create: true, delete: true}
       - {entity: JobOffer, read: true, write: true, create: true, delete: true, submit: true, read_groups: [pay], write_groups: [pay]}
