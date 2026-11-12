@@ -1,5 +1,5 @@
 package: payroll
-version: 0.6.0
+version: 0.7.0
 label: Payroll
 description: Salary components with CEL formulas (earnings, deductions and employer contributions), salary structures and assignments, payroll periods and progressive income tax with exemption declarations and opening year-to-date figures, salary slips prorated by payment days with arrears for revisions backdated into periods already paid, payroll runs (regular and off-cycle) whose slips can be corrected one by one and held, additional salary and leave encashment.
 depends: [hr]
@@ -86,6 +86,16 @@ personal_data:
   - {entity: LeaveEncashment, match: employee_user, retain: "Payroll and tax records"}
   - {entity: PayrollOpening, match: employee_user, retain: "Payroll and tax records"}
 
+messages:
+  - key: payroll.payslip_mail
+    label: Payslip sent
+    entity: SalarySlip
+    languages:
+      en:
+        email:
+          subject: "Your payslip for {{ doc.start_date }} to {{ doc.end_date }}"
+          body: "<p>Dear {{ doc.employee_name }},</p><p>Your payslip for {{ doc.start_date }} to {{ doc.end_date }} is attached.</p>"
+
 documents:
   - key: payroll.salary_certificate
     label: Salary certificate
@@ -125,4 +135,169 @@ documents:
           <p>This is to certify that <b dir="auto">{{ doc.employee_name }}</b>{% if em.number %} (employee number {{ em.number }}){% endif %}{% if (em._titles or {}).designation %}, <span dir="auto">{{ em._titles.designation }}</span>,{% endif %} is employed by {{ co.company_name }} and, from {{ doc.from_date|date('long') }}, has a base salary of <b>{{ doc.base|amount(money_cur) }}</b> ({{ doc.base|words(money_cur) }}) paid {{ ((links.salary_structure or {}).payroll_frequency or 'Monthly')|lower }}{% if doc.variable %}, together with variable pay of up to {{ doc.variable|amount(money_cur) }}{% endif %}.</p>
           <p>This certificate is issued at the employee's request and carries no obligation on the company.</p>
           <div class="sign"><div class="line">Authorised signatory</div><div dir="auto">{{ co.company_name }}</div></div>
+          </body></html>
+  - key: payroll.payslip
+    label: Payslip
+    entity: SalarySlip
+    output: page
+    # The tax id, account number and IBAN show their last four digits only when the caller passes values.mask (the Send Payslip
+    # button does, so a file that leaves by mail carries no whole account number); a print shows them as the print format did.
+    values: [mask]
+    # Not the default: a workspace that customised the print format keeps it. Make this the default (tick Default on a copy
+    # of it) to print, mail and edit the payslip as one template.
+    languages:
+      en:
+        body: |
+          <!doctype html>
+          <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payslip {{ doc.number or "" }}</title>
+          <style>
+           :root{--ink:#14171c;--muted:#5b6470;--line:#d3d8de;--soft:#f3f5f7;--accent:#1f3a5f}
+           *{box-sizing:border-box}
+           body{margin:0;padding:22px 28px;font:12px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue","Noto Sans","Noto Sans Arabic","Noto Sans Devanagari",Arial,sans-serif;color:var(--ink);background:#fff}
+           h1{font-size:22px;line-height:1.2;margin:0;color:var(--accent)}
+           h2{font-size:10px;margin:0 0 4px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+           .muted{color:var(--muted)} .small{font-size:11px} .pre{white-space:pre-line} .strong{font-weight:600}
+           .head{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding-bottom:12px;border-bottom:2px solid var(--accent)}
+           .brand{display:flex;gap:14px;align-items:flex-start;min-width:0}
+           .logo{max-height:64px;max-width:160px;object-fit:contain}
+           .co-name{font-size:15px;font-weight:700}
+           .title{text-align:end;flex:none}
+           .mark{display:inline-block;margin-top:4px;margin-inline-start:4px;padding:1px 9px;border:1px solid var(--muted);border-radius:10px;font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+           .cols{display:flex;gap:16px 28px;flex-wrap:wrap;margin:14px 0}
+           .cols>div{flex:1 1 220px;min-width:0}
+           .kv{display:grid;grid-template-columns:auto 1fr;gap:1px 12px}
+           .kv dt{color:var(--muted)} .kv dd{margin:0}
+           table{border-collapse:collapse;width:100%}
+           .lines{margin:8px 0}
+           .lines th,.lines td{padding:5px 7px;text-align:start;vertical-align:top;border-bottom:1px solid var(--line)}
+           .lines th{background:var(--soft);font-weight:600;border-top:1px solid var(--line)}
+           .lines .num{text-align:end;font-variant-numeric:tabular-nums;white-space:nowrap}
+           .lines tfoot td{font-weight:700;border-top:2px solid var(--ink);border-bottom:0}
+           .sides{display:flex;gap:16px 28px;flex-wrap:wrap;align-items:flex-start}
+           .sides>div{flex:1 1 260px;min-width:0}
+           .net{display:flex;justify-content:space-between;gap:16px;margin:12px 0;padding:8px 10px;border:2px solid var(--accent);border-radius:4px;font-size:15px;font-weight:700}
+           .net span:last-child{font-variant-numeric:tabular-nums}
+           .box{border:1px solid var(--line);border-radius:4px;padding:8px 10px;margin:8px 0}
+           .foot{margin-top:16px;padding-top:8px;border-top:1px solid var(--line);text-align:center}
+           @page{margin:12mm}
+           @media print{
+            body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+            thead{display:table-header-group} tfoot{display:table-footer-group}
+            tr,.keep{break-inside:avoid;page-break-inside:avoid}
+            h2{break-after:avoid}
+           }
+          </style>
+          </head><body>
+          {% set co = links.company or {} %}{% set dt = doc._titles or {} %}
+          {% macro opt(key) %}{% if co[key] is defined and co[key] %}{{ co[key] }}{% endif %}{% endmacro %}
+          {% macro hide(v) %}{% if not values.mask %}{{ v }}{% else %}{% set c = v|string|replace(" ", "") %}{% if v|string|first == "•" %}{{ v }}{% elif c|length <= 4 %}••••••••{% else %}•••• {{ c[-4:] }}{% endif %}{% endif %}{% endmacro %}
+          {% set em = links.employee or {} %}
+          {% set cu_rec = links.currency or {} %}{% set cur = dt.currency or "" %}
+          {% set prec = cu_rec.precision if cu_rec.precision is not none else 2 %}
+          {% macro mo(v) %}{{ v|money(prec) }}{% endmacro %}
+          {% macro dec(v) %}{{ display({"name":"q","type":"decimal"}, {"q": v}) }}{% endmacro %}
+          {% macro day(label, v) %}{% if v is not none %}<dt>{{ label }}</dt><dd>{{ dec(v) }}</dd>{% endif %}{% endmacro %}
+          {% macro rowname(r) %}<span dir="auto">{{ (r._titles or {}).salary_component or r.abbr }}</span>{% if r.statistical_component %} <span class="muted small">(for information: not in the total)</span>{% endif %}{% if r.arrears_amount|float != 0 %}<div class="muted small">including arrears {{ mo(r.arrears_amount) }}</div>{% endif %}{% endmacro %}
+          {% set earn = doc.earnings|default([])|rejectattr("statistical_component")|list %}
+          {% set stat = doc.earnings|default([])|selectattr("statistical_component")|list %}
+          {% set ded = doc.deductions|default([]) %}
+          {% set emp_c = doc.employer_contributions|default([]) %}
+          {% set adj = doc.adjustments|default([]) %}
+          {% set loans = doc.loans|default([]) %}
+          <div class="head">
+           <div class="brand">
+            {% if co.acc_logo is defined and co.acc_logo %}<img class="logo" src="{{ co.acc_logo }}" alt="">{% endif %}
+            <div>
+             <div class="co-name" dir="auto">{{ co.company_name or dt.company }}</div>
+             {% set cityline = [[opt('acc_city'), opt('acc_region')]|select|join(", "), opt('acc_postal_code')]|select|join(" ") %}
+             {% for ln in [[opt('acc_address_line1'), opt('acc_address_line2')]|select|join("\n"), cityline, co.country]|select %}<div class="pre" dir="auto">{{ ln }}</div>{% endfor %}
+             {% set contact = [opt('acc_phone'), opt('acc_email'), opt('acc_website')]|select|join(" · ") %}
+             {% if contact %}<div class="muted" dir="auto">{{ contact }}</div>{% endif %}
+             {% if co.tax_id %}<div><span class="muted">Tax ID</span> {{ co.tax_id }}</div>{% endif %}
+            </div>
+           </div>
+           <div class="title">
+            <h1>Payslip</h1>
+            <div class="strong">{{ doc.start_date }}{% if doc.end_date and doc.end_date != doc.start_date %} – {{ doc.end_date }}{% endif %}</div>
+            {% if doc.number %}<div class="muted">{{ doc.number }}</div>{% endif %}
+            <div>
+             {% if doc.off_cycle %}<span class="mark">Off-cycle</span>{% endif %}
+             {% if doc.final_settlement %}<span class="mark">Final settlement</span>{% endif %}
+             {% if doc.docstatus == 2 %}<span class="mark">Cancelled</span>{% elif doc.docstatus != 1 %}<span class="mark">Draft</span>{% endif %}
+            </div>
+            {% if doc.posting_date %}<div><span class="muted">Date</span> {{ doc.posting_date }}</div>{% endif %}
+           </div>
+          </div>
+          <div class="cols">
+           <div>
+            <h2>Employee</h2>
+            <div class="strong" dir="auto">{{ doc.employee_name or dt.employee }}</div>
+            <dl class="kv">
+             {% if em.number %}<dt>Employee no.</dt><dd dir="auto">{{ em.number }}</dd>{% endif %}
+             {% if dt.designation %}<dt>Designation</dt><dd dir="auto">{{ dt.designation }}</dd>{% endif %}
+             {% if dt.department %}<dt>Department</dt><dd dir="auto">{{ dt.department }}</dd>{% endif %}
+             {% if em.date_of_joining %}<dt>Date of joining</dt><dd>{{ em.date_of_joining }}</dd>{% endif %}
+             {% if em.tax_id %}<dt>Tax ID</dt><dd dir="auto">{{ hide(em.tax_id) }}</dd>{% endif %}
+             {% if em.bank_name %}<dt>Bank</dt><dd dir="auto">{{ em.bank_name }}</dd>{% endif %}
+             {% if em.bank_account_no %}<dt>Account no.</dt><dd dir="auto">{{ hide(em.bank_account_no) }}</dd>{% endif %}
+             {% if em.iban %}<dt>IBAN</dt><dd dir="auto">{{ hide(em.iban) }}</dd>{% endif %}
+            </dl>
+           </div>
+           {% if doc.total_working_days is not none or doc.payment_days is not none %}
+           <div>
+            <h2>Days</h2>
+            <dl class="kv">
+             {{ day("Working days", doc.total_working_days) }}
+             {{ day("Paid days", doc.payment_days) }}
+             {{ day("Leave without pay", doc.leave_without_pay) }}
+             {{ day("Absent", doc.absent_days) }}
+            </dl>
+           </div>
+           {% endif %}
+          </div>
+          <div class="sides">
+           <div>
+            <table class="lines">
+             <thead><tr><th>Earnings</th><th class="num">{{ cur }}</th></tr></thead>
+             <tbody>
+             {% for r in earn %}<tr><td>{{ rowname(r) }}</td><td class="num">{{ mo(r.amount) }}</td></tr>{% endfor %}
+             {% for a in adj %}<tr><td dir="auto">Adjustment for {{ a.period_start }} – {{ a.period_end }}{% if a.days is not none %}<div class="muted small">{{ dec(a.days) }} day{% if a.days|float|abs != 1 %}s{% endif %}{% if a.daily_rate is not none %} at {{ mo(a.daily_rate) }}{% endif %}{% if a.reason %}: {{ a.reason }}{% endif %}</div>{% endif %}</td><td class="num">{{ mo(a.amount) }}</td></tr>{% endfor %}
+             </tbody>
+             <tfoot><tr><td>Gross pay</td><td class="num">{{ mo(doc.gross_pay) }}</td></tr></tfoot>
+            </table>
+           </div>
+           <div>
+            <table class="lines">
+             <thead><tr><th>Deductions</th><th class="num">{{ cur }}</th></tr></thead>
+             <tbody>
+             {% for r in ded %}<tr><td>{{ rowname(r) }}</td><td class="num">{{ mo(r.amount) }}</td></tr>{% endfor %}
+             {% if doc.recovery_amount|float != 0 %}<tr><td>Excess pay recovered<div class="muted small">An earlier slip paid more than was due</div></td><td class="num">{{ mo(doc.recovery_amount) }}</td></tr>{% endif %}
+             {% for l in loans %}<tr><td dir="auto">Loan instalment{% set lt = (l._titles or {}).loan %}{% if lt %}: {{ lt }}{% endif %}<div class="muted small">principal {{ mo(l.principal) }}, interest {{ mo(l.interest) }}</div></td><td class="num">{{ mo(l.total) }}</td></tr>{% endfor %}
+             </tbody>
+             <tfoot><tr><td>Total deductions</td><td class="num">{{ mo(doc.total_deduction) }}</td></tr></tfoot>
+            </table>
+           </div>
+          </div>
+          {% if stat %}<div class="muted small keep">For information, not in the totals: {% for r in stat %}<span dir="auto">{{ (r._titles or {}).salary_component or r.abbr }}</span> {{ mo(r.amount) }}{% if not loop.last %}; {% endif %}{% endfor %}</div>{% endif %}
+          <div class="net keep"><span>Net pay {{ cur }}</span><span>{{ mo(doc.net_pay) }}</span></div>
+          {% if doc.rounded_total is not none and doc.rounded_total|float != 0 and doc.rounded_total|float != doc.net_pay|float %}<div class="small keep">Net pay rounded: <span class="strong">{{ mo(doc.rounded_total) }}</span></div>{% endif %}
+          {% if doc.recovery_left|float != 0 %}<div class="box keep small">Still to be recovered from later pay: <span class="strong">{{ mo(doc.recovery_left) }}</span></div>{% endif %}
+          {% if doc.held %}<div class="box keep"><span class="strong">Salary held.</span> Not paid by bank until released.{% if doc.hold_reason %} <span class="pre" dir="auto">{{ doc.hold_reason }}</span>{% endif %}</div>{% elif doc.released_on %}<div class="box keep small">Salary released on {{ doc.released_on }}.</div>{% endif %}
+          {% if emp_c %}
+          <table class="lines keep">
+           <thead><tr><th>Employer contributions <span class="muted small">(paid by the employer: not part of your pay)</span></th><th class="num">{{ cur }}</th></tr></thead>
+           <tbody>{% for r in emp_c %}<tr><td>{{ rowname(r) }}</td><td class="num">{{ mo(r.amount) }}</td></tr>{% endfor %}</tbody>
+           {% if doc.total_employer_contribution is not none %}<tfoot><tr><td>Total employer contributions</td><td class="num">{{ mo(doc.total_employer_contribution) }}</td></tr></tfoot>{% endif %}
+          </table>
+          {% endif %}
+          {% if doc.arrears %}
+          <table class="lines">
+           <thead><tr><th>Arrears of earlier periods</th><th class="num">As paid</th><th class="num">Due now</th><th class="num">Arrears</th></tr></thead>
+           <tbody>{% for a in doc.arrears %}<tr>
+            <td>{{ a.period_start }} – {{ a.period_end }}, <span dir="auto">{{ (a._titles or {}).salary_component or a.abbr }}</span></td>
+            <td class="num">{{ mo(a.paid_amount) }}</td><td class="num">{{ mo(a.due_amount) }}</td><td class="num">{{ mo(a.amount) }}</td>
+           </tr>{% endfor %}</tbody>
+          </table>
+          {% endif %}
+          <div class="foot small"><div class="muted">Printed {{ now }}</div></div>
           </body></html>
