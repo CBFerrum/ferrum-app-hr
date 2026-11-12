@@ -1,0 +1,179 @@
+{
+ "format": "ferrum.pack/1",
+ "name": "payroll-file-examples-reports",
+ "label": "Payroll file examples, step 1: the saved reports and the mail wording",
+ "version": 1,
+ "requires": {
+  "packages": {
+   "payroll": "0.7.0"
+  }
+ },
+ "studio": [
+  {
+   "entity": "Report",
+   "name": "Example contributions rows",
+   "record": {
+    "label": "Example contributions rows",
+    "kind": "table",
+    "sharing": "roles",
+    "roles": [
+     {
+      "role": "Payroll Manager"
+     }
+    ],
+    "description": "One row per employee for one deduction component (change PEN in the filter to the component the file is about); the Example contributions file reads it. Add a column for any employee field, a workspace's own included (employee.x_member_id), and read it in the template.",
+    "spec": {
+     "entity": "SalarySlip",
+     "filters": {
+      "docstatus": 1,
+      "deductions.abbr": "PEN"
+     },
+     "fields": [
+      {
+       "field": "employee"
+      },
+      {
+       "field": "employee.number",
+       "label": "Employee Number"
+      },
+      {
+       "field": "employee_name"
+      },
+      {
+       "field": "gross_pay"
+      },
+      {
+       "field": "deductions.amount",
+       "label": "Contribution"
+      }
+     ],
+     "date_range": {
+      "field": "start_date"
+     },
+     "sort": [
+      {
+       "by": "employee_name"
+      }
+     ],
+     "limit": 10000
+    }
+   }
+  },
+  {
+   "entity": "Report",
+   "name": "Example net pay rows",
+   "record": {
+    "label": "Example net pay rows",
+    "kind": "table",
+    "sharing": "roles",
+    "roles": [
+     {
+      "role": "Payroll Manager"
+     }
+    ],
+    "description": "Submitted slips' net pay, one row per slip, with the employee's account number; the Example net pay file reads it. Add the bank's other columns (employee.bank_name, employee.ifsc_code) the same way.",
+    "spec": {
+     "entity": "SalarySlip",
+     "filters": {
+      "docstatus": 1
+     },
+     "fields": [
+      {
+       "field": "employee"
+      },
+      {
+       "field": "employee.number",
+       "label": "Employee Number"
+      },
+      {
+       "field": "employee_name"
+      },
+      {
+       "field": "employee.bank_account_no"
+      },
+      {
+       "field": "net_pay"
+      }
+     ],
+     "date_range": {
+      "field": "start_date"
+     },
+     "sort": [
+      {
+       "by": "employee_name"
+      }
+     ],
+     "limit": 10000
+    }
+   }
+  },
+  {
+   "entity": "Report",
+   "name": "Example slips of a year",
+   "record": {
+    "label": "Example slips of a year",
+    "kind": "table",
+    "sharing": "roles",
+    "roles": [
+     {
+      "role": "Payroll Manager"
+     }
+    ],
+    "description": "Submitted slips with their amounts; the Example annual statement makes one page for each employee from it.",
+    "spec": {
+     "entity": "SalarySlip",
+     "filters": {
+      "docstatus": 1
+     },
+     "fields": [
+      {
+       "field": "employee"
+      },
+      {
+       "field": "start_date"
+      },
+      {
+       "field": "end_date"
+      },
+      {
+       "field": "gross_pay"
+      },
+      {
+       "field": "total_deduction"
+      },
+      {
+       "field": "net_pay"
+      }
+     ],
+     "date_range": {
+      "field": "start_date"
+     },
+     "sort": [
+      {
+       "by": "start_date"
+      }
+     ],
+     "limit": 10000
+    }
+   }
+  }
+ ],
+ "messages": [
+  {
+   "key": "payfile.annual_statement_mail",
+   "label": "Example annual statement sent",
+   "entity": "Employee",
+   "values": [
+    "period"
+   ],
+   "languages": {
+    "en": {
+     "email": {
+      "subject": "Your pay statement for {{ values.period }}",
+      "body": "<p>Dear {{ doc.employee_name }},</p><p>Your statement of pay for {{ values.period }} is attached.</p>"
+     }
+    }
+   }
+  }
+ ]
+}

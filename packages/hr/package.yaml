@@ -1,5 +1,5 @@
 package: hr
-version: 0.4.0
+version: 0.5.0
 label: Human Resources
 description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
 depends: [core]
@@ -17,7 +17,7 @@ modules:
     icon: users
     order: 70
     # The full and final statement comes with the connector to ERP (hr_erp); without it the item drops out.
-    items: [Employee, EmployeeDocument, EmployeeDocumentType, Department, Designation, Branch, EmployeeGrade, EmploymentType, EmployeeOnboarding, EmployeeSeparation, ChecklistTemplate, FullAndFinalStatement,
+    items: [Employee, EmployeeDocument, EmployeeLetter, EmployeeDocumentType, Department, Designation, Branch, EmployeeGrade, EmploymentType, EmployeeOnboarding, EmployeeSeparation, ChecklistTemplate, FullAndFinalStatement,
             EmployeePromotion, EmployeeTransfer, report:employee_directory, report:headcount, report:employee_events, report:expiring_documents]
   - name: attendance
     label: Attendance & Leave
@@ -83,6 +83,7 @@ personal_data:
   - {entity: EmployeeTransfer, match: employee_user, retain: "Employment records"}
   - {entity: Appraisal, match: employee_user, retain: "Employment records"}
   - {entity: EmployeeDocument, match: employee_user, retain: "Employment records"}
+  - {entity: EmployeeLetter, match: recipient_email, name: recipient_name, erase: [recipient_name, recipient_email, sent_to]}
 roles:
   - name: HR Manager
     description: Everything in HR, including bank and identity details.
@@ -92,6 +93,7 @@ roles:
       - {entity: TrainingRecord, read: true, export: true}
       - {entity: Employee, read: true, write: true, create: true, delete: true, export: true, import: true, read_groups: [bank, identity, personal], write_groups: [bank, identity, personal]}
       - {entity: EmployeeDocumentType, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: EmployeeLetter, read: true, export: true}
       - {entity: EmployeeDocument, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Department, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Designation, read: true, write: true, create: true, delete: true, export: true, import: true}
@@ -131,6 +133,7 @@ roles:
     permissions:
       - {entity: Employee, read: true, write: true, create: true, export: true, read_groups: [identity, personal], write_groups: [identity, personal]}
       - {entity: EmployeeDocumentType, read: true}
+      - {entity: EmployeeLetter, read: true}
       # Documents of the categories whose employee details they see: general and identity, not bank.
       - {entity: EmployeeDocument, read: true, write: true, create: true, delete: true, where: {category: [General, Identity]}}
       - {entity: Department, read: true, write: true, create: true}
@@ -170,6 +173,7 @@ roles:
     permissions:
       - {entity: Employee, read: true, if_owner: true, read_groups: [bank, identity, personal]}
       - {entity: EmployeeDocumentType, read: true}
+      - {entity: EmployeeLetter, read: true, if_owner: true}
       # Their own documents of the types they may see (uploading only those the type lets them, checked on save),
       # and as a manager, the general documents of those reporting to them whose type shows them to managers.
       - {entity: EmployeeDocument, read: true, write: true, create: true, if_owner: true, where: {visible_to: [Employee, Employee and Manager]}}
@@ -267,3 +271,234 @@ messages:
         inapp:
           title: "{{ values.document_type }} of {{ doc.employee_name }} expires on {{ doc.expiry_date }}"
           text: "Renew it and add the new one to the employee's documents."
+  - key: hr.letter_issued
+    label: Letter or certificate sent
+    values: [serial]
+    languages:
+      en:
+        email:
+          subject: "Your letter {{ values.serial }}"
+          body: "<p>Please find your letter, reference {{ values.serial }}, attached.</p>"
+  - key: hr.letter_requested
+    label: A letter or certificate was asked for
+    entity: Employee
+    values: [letter, note]
+    languages:
+      en:
+        email:
+          subject: "{{ doc.employee_name }} asks for: {{ values.letter }}"
+          body: "<p>{{ doc.employee_name }} asks for: {{ values.letter }}.</p>{% if values.note %}<p>{{ values.note }}</p>{% endif %}<p>Issue it from the employee's Letters buttons.</p>"
+        inapp:
+          title: "{{ doc.employee_name }} asks for: {{ values.letter }}"
+          text: "{{ values.note }}"
+
+documents:
+  - key: hr.offer_letter
+    label: Offer letter
+    entity: JobOffer
+    output: page
+    roles: [HR Manager, HR User]
+    values: [serial]
+    languages:
+      en:
+        body: |
+          <!doctype html><html><head><meta charset="utf-8"><style>
+           body{margin:0;padding:28px 36px;font:13px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans","Noto Sans Arabic","Noto Sans Devanagari",Arial,sans-serif;color:#14171c}
+           .head{display:flex;gap:14px;align-items:flex-start;padding-bottom:10px;border-bottom:2px solid #1f3a5f;margin-bottom:22px}
+           .logo{max-height:60px;max-width:150px;object-fit:contain}
+           .co-name{font-size:16px;font-weight:700;color:#1f3a5f}
+           .muted{color:#5b6470} .pre{white-space:pre-line}
+           .meta{display:flex;justify-content:space-between;gap:16px;margin-bottom:18px}
+           h1{font-size:16px;margin:18px 0 12px;text-align:center;text-transform:uppercase;letter-spacing:.06em}
+           .sign{margin-top:56px} .line{display:inline-block;min-width:200px;border-top:1px solid #14171c;padding-top:4px}
+           table.kv{border-collapse:collapse;margin:10px 0} table.kv td{padding:3px 18px 3px 0;vertical-align:top} table.kv td:first-child{color:#5b6470}
+           @page{margin:14mm}
+          </style></head><body>
+          {% set co = links.company or {} %}
+          {% set cur = (co._titles or {}).default_currency or currency %}
+          <div class="head">
+           {% if co.acc_logo is defined and co.acc_logo %}<img class="logo" src="{{ co.acc_logo }}" alt="">{% endif %}
+           <div>
+            <div class="co-name" dir="auto">{{ co.company_name }}</div>
+            {% for key in ['acc_address_line1', 'acc_address_line2', 'acc_city', 'acc_region', 'acc_postal_code', 'country'] %}{% if co[key] is defined and co[key] %}<div class="pre muted" dir="auto">{{ co[key] }}</div>{% endif %}{% endfor %}
+            {% for key in ['acc_phone', 'acc_email', 'acc_website'] %}{% if co[key] is defined and co[key] %}<span class="muted">{{ co[key] }}</span> {% endif %}{% endfor %}
+           </div>
+          </div>
+          <div class="meta"><div>Ref: <b>{{ values.serial }}</b></div><div>{{ now[:10]|date('long') }}</div></div>
+          <p>To<br><b dir="auto">{{ doc.applicant_name }}</b></p>
+          <h1>Offer of employment</h1>
+          <p>Dear <span dir="auto">{{ doc.applicant_name }}</span>,</p>
+          <p>We are pleased to offer you the position of <b dir="auto">{{ doc._titles.designation }}</b>{% if doc._titles.department %} in the {{ doc._titles.department }} department{% endif %} at {{ co.company_name }}{% if doc.expected_joining_date %}, to start on {{ doc.expected_joining_date|date('long') }}{% endif %}.</p>
+          {% if doc.ctc %}<p>Your annual compensation will be <b>{{ doc.ctc|amount(cur) }}</b> ({{ doc.ctc|words(cur) }}).</p>{% endif %}
+          {% if doc.terms %}<p class="pre" dir="auto">{{ doc.terms }}</p>{% endif %}
+          <p>Please sign and return a copy of this letter to confirm that you accept the offer. We look forward to working with you.</p>
+          <p>Yours sincerely,</p>
+          <div class="sign"><div class="line">Authorised signatory</div><div dir="auto">{{ co.company_name }}</div></div>
+          </body></html>
+  - key: hr.appointment_letter
+    label: Appointment letter
+    entity: Employee
+    output: page
+    roles: [HR Manager, HR User]
+    values: [serial]
+    languages:
+      en:
+        body: |
+          <!doctype html><html><head><meta charset="utf-8"><style>
+           body{margin:0;padding:28px 36px;font:13px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans","Noto Sans Arabic","Noto Sans Devanagari",Arial,sans-serif;color:#14171c}
+           .head{display:flex;gap:14px;align-items:flex-start;padding-bottom:10px;border-bottom:2px solid #1f3a5f;margin-bottom:22px}
+           .logo{max-height:60px;max-width:150px;object-fit:contain}
+           .co-name{font-size:16px;font-weight:700;color:#1f3a5f}
+           .muted{color:#5b6470} .pre{white-space:pre-line}
+           .meta{display:flex;justify-content:space-between;gap:16px;margin-bottom:18px}
+           h1{font-size:16px;margin:18px 0 12px;text-align:center;text-transform:uppercase;letter-spacing:.06em}
+           .sign{margin-top:56px} .line{display:inline-block;min-width:200px;border-top:1px solid #14171c;padding-top:4px}
+           table.kv{border-collapse:collapse;margin:10px 0} table.kv td{padding:3px 18px 3px 0;vertical-align:top} table.kv td:first-child{color:#5b6470}
+           @page{margin:14mm}
+          </style></head><body>
+          {% set co = links.company or {} %}
+          {% set cur = (co._titles or {}).default_currency or currency %}
+          <div class="head">
+           {% if co.acc_logo is defined and co.acc_logo %}<img class="logo" src="{{ co.acc_logo }}" alt="">{% endif %}
+           <div>
+            <div class="co-name" dir="auto">{{ co.company_name }}</div>
+            {% for key in ['acc_address_line1', 'acc_address_line2', 'acc_city', 'acc_region', 'acc_postal_code', 'country'] %}{% if co[key] is defined and co[key] %}<div class="pre muted" dir="auto">{{ co[key] }}</div>{% endif %}{% endfor %}
+            {% for key in ['acc_phone', 'acc_email', 'acc_website'] %}{% if co[key] is defined and co[key] %}<span class="muted">{{ co[key] }}</span> {% endif %}{% endfor %}
+           </div>
+          </div>
+          <div class="meta"><div>Ref: <b>{{ values.serial }}</b></div><div>{{ now[:10]|date('long') }}</div></div>
+          <p>To<br><b dir="auto">{{ doc.employee_name }}</b>{% if doc.number %} ({{ doc.number }}){% endif %}</p>
+          <h1>Letter of appointment</h1>
+          <p>Dear <span dir="auto">{{ doc.first_name }}</span>,</p>
+          <p>{{ co.company_name }} appoints you as <b dir="auto">{{ doc._titles.designation }}</b>{% if doc._titles.department %} in the {{ doc._titles.department }} department{% endif %}, with effect from {{ doc.date_of_joining|date('long') }}.</p>
+          <table class="kv">
+           {% if doc._titles.employment_type %}<tr><td>Employment type</td><td>{{ doc._titles.employment_type }}</td></tr>{% endif %}
+           {% if doc._titles.reports_to %}<tr><td>Reporting to</td><td dir="auto">{{ doc._titles.reports_to }}</td></tr>{% endif %}
+           {% if doc._titles.branch %}<tr><td>Place of work</td><td dir="auto">{{ doc._titles.branch }}</td></tr>{% endif %}
+           {% if doc.notice_period_days %}<tr><td>Notice period</td><td>{{ doc.notice_period_days }} days</td></tr>{% endif %}
+          </table>
+          <p>Your appointment is subject to the company's policies as they apply from time to time. Please sign and return a copy of this letter to confirm your acceptance.</p>
+          <p>Yours sincerely,</p>
+          <div class="sign"><div class="line">Authorised signatory</div><div dir="auto">{{ co.company_name }}</div></div>
+          </body></html>
+  - key: hr.employment_certificate
+    label: Employment certificate
+    entity: Employee
+    output: page
+    roles: [HR Manager, HR User]
+    values: [serial]
+    languages:
+      en:
+        body: |
+          <!doctype html><html><head><meta charset="utf-8"><style>
+           body{margin:0;padding:28px 36px;font:13px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans","Noto Sans Arabic","Noto Sans Devanagari",Arial,sans-serif;color:#14171c}
+           .head{display:flex;gap:14px;align-items:flex-start;padding-bottom:10px;border-bottom:2px solid #1f3a5f;margin-bottom:22px}
+           .logo{max-height:60px;max-width:150px;object-fit:contain}
+           .co-name{font-size:16px;font-weight:700;color:#1f3a5f}
+           .muted{color:#5b6470} .pre{white-space:pre-line}
+           .meta{display:flex;justify-content:space-between;gap:16px;margin-bottom:18px}
+           h1{font-size:16px;margin:18px 0 12px;text-align:center;text-transform:uppercase;letter-spacing:.06em}
+           .sign{margin-top:56px} .line{display:inline-block;min-width:200px;border-top:1px solid #14171c;padding-top:4px}
+           table.kv{border-collapse:collapse;margin:10px 0} table.kv td{padding:3px 18px 3px 0;vertical-align:top} table.kv td:first-child{color:#5b6470}
+           @page{margin:14mm}
+          </style></head><body>
+          {% set co = links.company or {} %}
+          {% set cur = (co._titles or {}).default_currency or currency %}
+          <div class="head">
+           {% if co.acc_logo is defined and co.acc_logo %}<img class="logo" src="{{ co.acc_logo }}" alt="">{% endif %}
+           <div>
+            <div class="co-name" dir="auto">{{ co.company_name }}</div>
+            {% for key in ['acc_address_line1', 'acc_address_line2', 'acc_city', 'acc_region', 'acc_postal_code', 'country'] %}{% if co[key] is defined and co[key] %}<div class="pre muted" dir="auto">{{ co[key] }}</div>{% endif %}{% endfor %}
+            {% for key in ['acc_phone', 'acc_email', 'acc_website'] %}{% if co[key] is defined and co[key] %}<span class="muted">{{ co[key] }}</span> {% endif %}{% endfor %}
+           </div>
+          </div>
+          <div class="meta"><div>Ref: <b>{{ values.serial }}</b></div><div>{{ now[:10]|date('long') }}</div></div>
+          <h1>Employment certificate</h1>
+          <p>This is to certify that <b dir="auto">{{ doc.employee_name }}</b>{% if doc.number %} (employee number {{ doc.number }}){% endif %}
+          {% if doc.status == 'Left' and doc.relieving_date %}was employed by {{ co.company_name }} as <b dir="auto">{{ doc._titles.designation }}</b> from {{ doc.date_of_joining|date('long') }} to {{ doc.relieving_date|date('long') }}.
+          {% else %}has been employed by {{ co.company_name }} since {{ doc.date_of_joining|date('long') }} and is currently working as <b dir="auto">{{ doc._titles.designation }}</b>{% if doc._titles.department %} in the {{ doc._titles.department }} department{% endif %}.{% endif %}</p>
+          <p>This certificate is issued at the employee's request and carries no obligation on the company.</p>
+          <div class="sign"><div class="line">Authorised signatory</div><div dir="auto">{{ co.company_name }}</div></div>
+          </body></html>
+  - key: hr.warning_letter
+    label: Warning letter
+    entity: Employee
+    output: page
+    roles: [HR Manager, HR User]
+    values: [serial, reason]
+    languages:
+      en:
+        body: |
+          <!doctype html><html><head><meta charset="utf-8"><style>
+           body{margin:0;padding:28px 36px;font:13px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans","Noto Sans Arabic","Noto Sans Devanagari",Arial,sans-serif;color:#14171c}
+           .head{display:flex;gap:14px;align-items:flex-start;padding-bottom:10px;border-bottom:2px solid #1f3a5f;margin-bottom:22px}
+           .logo{max-height:60px;max-width:150px;object-fit:contain}
+           .co-name{font-size:16px;font-weight:700;color:#1f3a5f}
+           .muted{color:#5b6470} .pre{white-space:pre-line}
+           .meta{display:flex;justify-content:space-between;gap:16px;margin-bottom:18px}
+           h1{font-size:16px;margin:18px 0 12px;text-align:center;text-transform:uppercase;letter-spacing:.06em}
+           .sign{margin-top:56px} .line{display:inline-block;min-width:200px;border-top:1px solid #14171c;padding-top:4px}
+           table.kv{border-collapse:collapse;margin:10px 0} table.kv td{padding:3px 18px 3px 0;vertical-align:top} table.kv td:first-child{color:#5b6470}
+           @page{margin:14mm}
+          </style></head><body>
+          {% set co = links.company or {} %}
+          {% set cur = (co._titles or {}).default_currency or currency %}
+          <div class="head">
+           {% if co.acc_logo is defined and co.acc_logo %}<img class="logo" src="{{ co.acc_logo }}" alt="">{% endif %}
+           <div>
+            <div class="co-name" dir="auto">{{ co.company_name }}</div>
+            {% for key in ['acc_address_line1', 'acc_address_line2', 'acc_city', 'acc_region', 'acc_postal_code', 'country'] %}{% if co[key] is defined and co[key] %}<div class="pre muted" dir="auto">{{ co[key] }}</div>{% endif %}{% endfor %}
+            {% for key in ['acc_phone', 'acc_email', 'acc_website'] %}{% if co[key] is defined and co[key] %}<span class="muted">{{ co[key] }}</span> {% endif %}{% endfor %}
+           </div>
+          </div>
+          <div class="meta"><div>Ref: <b>{{ values.serial }}</b></div><div>{{ now[:10]|date('long') }}</div></div>
+          <p>To<br><b dir="auto">{{ doc.employee_name }}</b>{% if doc._titles.designation %}, {{ doc._titles.designation }}{% endif %}</p>
+          <h1>Warning</h1>
+          <p>Dear <span dir="auto">{{ doc.first_name }}</span>,</p>
+          <p>This letter is a formal warning about the following matter:</p>
+          <p class="pre" dir="auto">{{ values.reason }}</p>
+          <p>You are expected to correct this at once. A repeat may lead to further action under the company's policies. If you wish to respond, please do so in writing to the human resources team.</p>
+          <p>Yours sincerely,</p>
+          <div class="sign"><div class="line">Authorised signatory</div><div dir="auto">{{ co.company_name }}</div></div>
+          </body></html>
+  - key: hr.relieving_letter
+    label: Relieving and experience letter
+    entity: EmployeeSeparation
+    output: page
+    roles: [HR Manager, HR User]
+    values: [serial]
+    languages:
+      en:
+        body: |
+          <!doctype html><html><head><meta charset="utf-8"><style>
+           body{margin:0;padding:28px 36px;font:13px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans","Noto Sans Arabic","Noto Sans Devanagari",Arial,sans-serif;color:#14171c}
+           .head{display:flex;gap:14px;align-items:flex-start;padding-bottom:10px;border-bottom:2px solid #1f3a5f;margin-bottom:22px}
+           .logo{max-height:60px;max-width:150px;object-fit:contain}
+           .co-name{font-size:16px;font-weight:700;color:#1f3a5f}
+           .muted{color:#5b6470} .pre{white-space:pre-line}
+           .meta{display:flex;justify-content:space-between;gap:16px;margin-bottom:18px}
+           h1{font-size:16px;margin:18px 0 12px;text-align:center;text-transform:uppercase;letter-spacing:.06em}
+           .sign{margin-top:56px} .line{display:inline-block;min-width:200px;border-top:1px solid #14171c;padding-top:4px}
+           table.kv{border-collapse:collapse;margin:10px 0} table.kv td{padding:3px 18px 3px 0;vertical-align:top} table.kv td:first-child{color:#5b6470}
+           @page{margin:14mm}
+          </style></head><body>
+          {% set co = links.company or {} %}
+          {% set cur = (co._titles or {}).default_currency or currency %}
+          <div class="head">
+           {% if co.acc_logo is defined and co.acc_logo %}<img class="logo" src="{{ co.acc_logo }}" alt="">{% endif %}
+           <div>
+            <div class="co-name" dir="auto">{{ co.company_name }}</div>
+            {% for key in ['acc_address_line1', 'acc_address_line2', 'acc_city', 'acc_region', 'acc_postal_code', 'country'] %}{% if co[key] is defined and co[key] %}<div class="pre muted" dir="auto">{{ co[key] }}</div>{% endif %}{% endfor %}
+            {% for key in ['acc_phone', 'acc_email', 'acc_website'] %}{% if co[key] is defined and co[key] %}<span class="muted">{{ co[key] }}</span> {% endif %}{% endfor %}
+           </div>
+          </div>
+          <div class="meta"><div>Ref: <b>{{ values.serial }}</b></div><div>{{ now[:10]|date('long') }}</div></div>
+          {% set em = links.employee or {} %}
+          <p>To<br><b dir="auto">{{ doc.employee_name }}</b></p>
+          <h1>Relieving and experience letter</h1>
+          <p>Dear <span dir="auto">{{ doc.employee_name }}</span>,</p>
+          <p>{% if doc.resignation_letter_date %}We acknowledge your notice dated {{ doc.resignation_letter_date|date('long') }}. {% endif %}You are relieved from your duties at {{ co.company_name }} at the close of business on <b>{{ doc.relieving_date|date('long') }}</b>.</p>
+          <p>You joined the company on {{ em.date_of_joining|date('long') }}{% if (em._titles or {}).designation %} and last served as <b dir="auto">{{ em._titles.designation }}</b>{% endif %}. We thank you for your service and wish you well.</p>
+          <p>Yours sincerely,</p>
+          <div class="sign"><div class="line">Authorised signatory</div><div dir="auto">{{ co.company_name }}</div></div>
+          </body></html>

@@ -1,0 +1,108 @@
+{
+ "format": "ferrum.pack/1",
+ "name": "payroll-file-examples-templates",
+ "label": "Payroll file examples, step 2: the file and statement templates (install step 1 first)",
+ "version": 1,
+ "requires": {
+  "packages": {
+   "payroll": "0.7.0"
+  }
+ },
+ "documents": [
+  {
+   "key": "payfile.contributions",
+   "label": "Example contributions file",
+   "entity": "SalarySlip",
+   "output": "text",
+   "encoding": "ascii",
+   "crlf": true,
+   "roles": [
+    "Payroll Manager"
+   ],
+   "values": [
+    "period"
+   ],
+   "query": {
+    "report": "Example contributions rows"
+   },
+   "languages": {
+    "en": {
+     "body": "{% set count = rows|length %}H{{ 'EXAMPLE'|pad(8) }}{{ values.period|pad(7) }}{{ count|pad(6, 'right', '0') }}\n{% for r in rows %}D{{ r['employee.number']|pad(12) }}{{ r.employee_name|pad(24) }}{{ r.gross_pay|fixed(2)|pad(14, 'right', '0') }}{{ r['deductions.amount']|fixed(2)|pad(12, 'right', '0') }}\n{% endfor %}T{{ count|pad(6, 'right', '0') }}{{ rows|total('deductions.amount')|fixed(2)|pad(14, 'right', '0') }}\n"
+    }
+   }
+  },
+  {
+   "key": "payfile.net_pay",
+   "label": "Example net pay file",
+   "entity": "SalarySlip",
+   "output": "csv",
+   "roles": [
+    "Payroll Manager"
+   ],
+   "query": {
+    "report": "Example net pay rows"
+   },
+   "languages": {
+    "en": {
+     "body": "employee_number,name,account_number,net_pay\n{% for r in rows %}{{ r['employee.number'] }},{{ r.employee_name }},{{ r['employee.bank_account_no'] }},{{ r.net_pay|fixed(2) }}\n{% endfor %}count,{{ rows|length }},,{{ rows|total('net_pay')|fixed(2) }}\n"
+    }
+   }
+  },
+  {
+   "key": "payfile.annual_statement",
+   "label": "Example annual statement",
+   "entity": "SalarySlip",
+   "output": "page",
+   "roles": [
+    "Payroll Manager"
+   ],
+   "values": [
+    "period"
+   ],
+   "query": {
+    "report": "Example slips of a year",
+    "group_by": "employee"
+   },
+   "languages": {
+    "en": {
+     "body": "<h1 dir=\"auto\">Statement of pay, {{ values.period }}</h1><p dir=\"auto\">{{ group.employee_name }} ({{ group.number }})</p><table><tr><th>From</th><th>To</th><th>Gross</th><th>Deductions</th><th>Net</th></tr>{% for r in rows %}<tr><td>{{ r.start_date|date('long') }}</td><td>{{ r.end_date|date('long') }}</td><td>{{ r.gross_pay|number(2) }}</td><td>{{ r.total_deduction|number(2) }}</td><td>{{ r.net_pay|number(2) }}</td></tr>{% endfor %}<tr><th colspan=\"2\">Total</th><th>{{ rows|total('gross_pay')|number(2) }}</th><th>{{ rows|total('total_deduction')|number(2) }}</th><th>{{ rows|total('net_pay')|number(2) }}</th></tr></table>"
+    }
+   }
+  }
+ ],
+ "customizations": [
+  {
+   "entity": "Employee",
+   "note": "Mails every employee their statement from the example report. The dates are written here: edit them (or save a copy of this button under another name) for the year you want.",
+   "op": {
+    "op": "add_action",
+    "action": {
+     "name": "x_send_pay_statements",
+     "label": "Send Pay Statements",
+     "permission": "write",
+     "group": "Pay statements",
+     "effects": [
+      {
+       "type": "report_documents",
+       "template": "payfile.annual_statement",
+       "params": {
+        "from": "2026-04-01",
+        "to": "2027-03-31"
+       },
+       "values": {
+        "period": "'2026-04-01 to 2027-03-31'"
+       },
+       "message": {
+        "template": "payfile.annual_statement_mail",
+        "to": "field:user",
+        "channels": [
+         "email"
+        ]
+       }
+      }
+     ]
+    }
+   }
+  }
+ ]
+}
