@@ -360,7 +360,37 @@ async fn work(k: &Kernel, user: &Ctx) -> Result<Value> {
             json!({"title": format!("{name}: {what}"), "subtitle": "Waiting for your approval", "url": "/people/approvals", "updated_at": i["waiting_since"]})
         })
         .collect();
+    let mut items = items;
+    items.extend(checklist_tasks(k, user).await?);
     Ok(json!({"items": items}))
+}
+
+/// Onboarding and offboarding tasks not done that are named for the person, or for a role they hold when no one
+/// is named; each opens its record.
+async fn checklist_tasks(k: &Kernel, user: &Ctx) -> Result<Vec<Value>> {
+    if user.schema.entity("EmployeeActivity").and_then(|e| e.field("assignee_role")).is_none() {
+        return Ok(vec![]);
+    }
+    let mut tx = k.db.tenant_tx(user.tenant).await?;
+    let mut out = Vec::new();
+    for (parent, child, entity) in [
+        ("e_employee_onboarding", "e_employee_onboarding__activities", "EmployeeOnboarding"),
+        ("e_employee_separation", "e_employee_separation__activities", "EmployeeSeparation"),
+    ] {
+        let sql = format!(
+            "select p.id, p.employee_name, a.activity_name, a.due_date from {child} a join {parent} p on p.tenant_id = a.tenant_id and p.id = a.parent_id \
+             where a.tenant_id = $1 and not coalesce(a.done, false) and coalesce(p.docstatus, 0) < 2 \
+             and (lower(a.assignee) = $2 or (a.assignee is null and a.assignee_role = any($3))) order by a.due_date nulls last limit 50"
+        );
+        let rows: Vec<(Uuid, Option<String>, Option<String>, Option<chrono::NaiveDate>)> =
+            sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(user.tenant).bind(user.email.to_lowercase()).bind(&user.roles).fetch_all(&mut *tx).await?;
+        for (id, name, task, due) in rows {
+            out.push(json!({"title": format!("{}: {}", name.unwrap_or_default(), task.unwrap_or_default()), "subtitle": due.map(|d| d.to_string()),
+                            "url": format!("/people/e/{entity}/{id}"), "updated_at": due}));
+        }
+    }
+    tx.rollback().await?;
+    Ok(out)
 }
 
 // ───────────────────────────── team calendar ─────────────────────────────

@@ -172,6 +172,23 @@ impl OfferHook {
             set(&mut e, "user", user);
         }
         let created = hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, "Employee", e).await?;
+        // Their onboarding, when a checklist template fits them: its tasks are copied in as it is made.
+        if let Some(template) = crate::people::choose_template(hc, "Onboarding", &created).await? {
+            let mut o = Doc::new();
+            for f in
+                ["employee", "company", "department", "designation", "date_of_joining", "job_applicant", "job_offer", "employee_name", "checklist_template"]
+            {
+                let v = match f {
+                    "employee" => created.get("id").cloned(),
+                    "job_applicant" => doc.get("job_applicant").cloned(),
+                    "job_offer" => doc.get("id").cloned(),
+                    "checklist_template" => Some(json!(template)),
+                    _ => created.get(f).cloned(),
+                };
+                o.insert(f.into(), v.unwrap_or_default());
+            }
+            hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, "EmployeeOnboarding", o).await?;
+        }
         let sctx = sys(hc.ctx);
         let mut v = Doc::new();
         v.insert("employee".into(), created.get("id").cloned().unwrap_or_default());
