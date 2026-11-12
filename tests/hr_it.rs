@@ -161,6 +161,11 @@ fn onboarding_and_offboarding_from_templates() {
 }
 
 #[test]
+fn statutory_formulas_as_configuration() {
+    run(statutory_scenario());
+}
+
+#[test]
 fn hr_and_payroll_without_erp() {
     run(alone_scenario());
 }
@@ -3877,4 +3882,108 @@ async fn checklist_scenario() {
     let sep = t.ins(&hr, "EmployeeSeparation", json!({"employee": asha["id"], "reason": "Resignation", "relieving_date": "2026-12-31"})).await;
     let sep = t.get("EmployeeSeparation", uid(&sep)).await;
     assert_eq!(task(&sep, "Return laptop")["due_date"], json!("2026-12-31"));
+}
+
+// ───────────────────────────── payroll formula context ─────────────────────────────
+
+/// Made-up statutory rules as configuration only: a fund at a percent of pay up to a ceiling that changes by
+/// year with the employer's share, a wage tax by bands on the projected year trued up to date less verified
+/// savings, a levy by region and month from a table, an exemption as the least of three; each a formula over
+/// the slip's context and the administrator's lookup tables.
+async fn statutory_scenario() {
+    let t = T::with("hrstat", &["payroll"]).await;
+    let pm = t.user("pm@hrstat.test", &["Payroll Manager"]).await;
+    let north = t.ins(&t.admin, "Branch", json!({"branch_name": "North Office", "region": "North"})).await;
+    let emp = t.employee("Nia", json!({"branch": north["id"], "date_of_joining": "2021-08-15"})).await;
+    t.ins(&t.admin, "PayrollPeriod", json!({"period_name": "2026-27", "company": t.c(), "start_date": "2026-04-01", "end_date": "2027-03-31"})).await;
+    let table = |name: &str, rows: Value| json!({"table_name": name, "rows": rows});
+    t.ins(
+        &pm,
+        "PayrollLookupTable",
+        table("fund_ceiling", json!([{"effective_from": "2025-04-01", "amount": "5000"}, {"effective_from": "2026-04-01", "amount": "6000"}])),
+    )
+    .await;
+    t.ins(
+        &pm,
+        "PayrollLookupTable",
+        table(
+            "wage_tax",
+            json!([{"effective_from": "2026-01-01", "from_amount": "0", "to_amount": "30000", "rate": "0"},
+                   {"effective_from": "2026-01-01", "from_amount": "30000", "to_amount": "60000", "rate": "10"},
+                   {"effective_from": "2026-01-01", "from_amount": "60000", "rate": "20"}]),
+        ),
+    )
+    .await;
+    t.ins(
+        &pm,
+        "PayrollLookupTable",
+        table(
+            "levy",
+            json!([{"effective_from": "2026-01-01", "key1": "North", "from_amount": "1000", "amount": "20"},
+                   {"effective_from": "2026-01-01", "key1": "North", "key2": "5", "from_amount": "1000", "amount": "30"}]),
+        ),
+    )
+    .await;
+    refused(t.try_ins(&pm, "PayrollLookupTable", table("bad name", json!([]))).await, "table_name");
+    let comp = |name: &str, abbr: &str, kind: &str, formula: &str, statistical: bool| {
+        json!({"component_name": name, "abbr": abbr, "component_type": kind, "amount_based_on_formula": true, "formula": formula,
+               "depends_on_payment_days": false, "statistical_component": statistical})
+    };
+    let ceiling = "min(PAY, lookup('fund_ceiling', 'amount', 0))";
+    let made = [
+        comp("Pay", "PAY", "Earning", "base", false),
+        comp("Fund", "FUND", "Deduction", &format!("{ceiling} * 0.10"), false),
+        comp("Levy", "LEVY", "Deduction", "lookup('levy', 'amount', gross, location.region, period.month)", false),
+        comp("Wage Tax", "WT", "Deduction", "max(banded('wage_tax', ytd_total.gross + gross * period.left - verified.SAVE) - ytd.WT, 0) / period.left", false),
+        comp("Last Wage Tax", "LWT", "Deduction", "previous.WT", true),
+        comp("Savings Relief", "RELIEF", "Deduction", "min(declared.SAVE, PAY * 0.5, 2500)", true),
+        comp("Long Service", "LONG", "Deduction", "years_between(employee.date_of_joining, period.end) >= 4 ? 1 : 0", true),
+        comp("Employer Fund", "EFUND", "Employer Contribution", &format!("{ceiling} * 0.12"), false),
+    ];
+    let mut ids = Vec::new();
+    for c in made {
+        ids.push(t.ins(&pm, "SalaryComponent", c).await);
+    }
+    refused(t.try_ins(&pm, "SalaryComponent", comp("Year", "ytd", "Earning", "base", false)).await, "reserved");
+    refused(t.try_ins(&pm, "SalaryComponent", comp("Odd", "ODD", "Earning", "nothing.here * 2", false)).await, "unknown name");
+    let line = |c: &Doc| json!({"salary_component": c["id"]});
+    let st = t
+        .ins_submit(
+            &pm,
+            "SalaryStructure",
+            json!({"structure_name": "Statutory", "company": t.c(), "payroll_frequency": "Monthly",
+                   "earnings": [line(&ids[0])], "deductions": ids[1..7].iter().map(line).collect::<Vec<_>>(), "employer_contributions": [line(&ids[7])]}),
+        )
+        .await;
+    t.ins_submit(&pm, "SalaryStructureAssignment", json!({"employee": emp["id"], "salary_structure": st["id"], "from_date": "2026-04-01", "base": "8000"}))
+        .await;
+    // The employee declares savings with a proof; HR verifies it.
+    let period = t.one("PayrollPeriod", json!({"period_name": "2026-27"})).await;
+    let save = t.ins(&pm, "EmployeeTaxExemptionCategory", json!({"category_name": "Savings", "code": "SAVE"})).await;
+    let decl = t
+        .ins_submit(
+            &pm,
+            "EmployeeTaxExemptionDeclaration",
+            json!({"employee": emp["id"], "payroll_period": period["id"], "declarations": [{"exemption_category": save["id"], "amount": "3000", "proof": "https://files.example.test/receipt.pdf"}]}),
+        )
+        .await;
+    assert_eq!(t.act(&pm, "EmployeeTaxExemptionDeclaration", uid(&decl), "verify_proofs", json!({})).await["verified"], json!(1));
+
+    let slip = |start: &'static str, end: &'static str| {
+        let (t, pm, e) = (&t, &pm, emp["id"].clone());
+        async move { t.ins_submit(pm, "SalarySlip", json!({"employee": e, "start_date": start, "end_date": end})).await }
+    };
+    // April: 10% and 12% of this year's 6000 ceiling; the levy's any-month row; the year projected at
+    // 8000 x 12 - 3000 = 93000 gives 3000 + 6600 of tax, a twelfth now.
+    let april = slip("2026-04-01", "2026-04-30").await;
+    let a = |s: &Doc, table: &str, abbr: &str| amount_of(s, table, abbr);
+    assert_eq!(
+        (a(&april, "deductions", "FUND"), a(&april, "employer_contributions", "EFUND"), a(&april, "deductions", "LEVY"), a(&april, "deductions", "WT")),
+        (n("600"), n("720"), n("20"), n("800"))
+    );
+    assert_eq!((a(&april, "deductions", "RELIEF"), a(&april, "deductions", "LONG"), a(&april, "deductions", "LWT")), (n("2500"), n("1"), n("0")));
+    // May: the month's own levy row; the tax trued up to what April took, over the 11 months left; the previous slip read.
+    let may = slip("2026-05-01", "2026-05-31").await;
+    assert_eq!((a(&may, "deductions", "LEVY"), a(&may, "deductions", "WT"), a(&may, "deductions", "LWT")), (n("30"), n("800"), n("800")));
+    assert_eq!(dec(&may["net_pay"]), n("8000") - n("600") - n("30") - n("800"));
 }
