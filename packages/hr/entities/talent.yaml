@@ -194,6 +194,20 @@
       params:
         - {name: date_of_joining, type: date, label: Date of Joining, description: "The offer's expected joining date when empty"}
         - {name: user, type: data, label: Sign-in Email, description: "The member who signs in as this employee (their own pages and approvals); none when empty"}
+    - name: issue_offer_letter
+      label: Issue Offer Letter
+      permission: read
+      docstatus: [1]
+      roles: [HR Manager, HR User]
+      group: Letters
+      params:
+        - {name: send_mail, type: select, options: ["Yes", "No"], label: Send It to the Person, description: "Yes mails the letter with its file attached, through the message template hr.letter_issued"}
+      effects:
+        - {type: find, entity: EmployeeDocumentType, by: {letter_code: "'offer'"}, create: {type_name: "'Offer letter'", letter_prefix: "'OFR'", category: "'General'", visible_to: "'HR only'"}}
+        - {type: create_document, entity: EmployeeLetter, values: {document_type: "results[0].id", company: "doc.company", recipient_name: "doc.applicant_name", recipient_email: "doc.applicant_email", issued_by: "user.email", source_number: "doc.number", employee: "doc.employee"}}
+        - {type: generate, template: hr.offer_letter, name: "'Offer letter ' + doc.applicant_name", values: {serial: "results[1].number"}}
+        - {type: find, entity: EmployeeLetter, by: {id: "results[1].id"}, update: {sent_to: "has(params.send_mail) && params.send_mail == 'Yes' ? doc.applicant_email : ''"}}
+        - {type: message, when: "has(params.send_mail) && params.send_mail == 'Yes'", template: hr.letter_issued, to: "field:applicant_email", channels: [email], values: {serial: "results[1].number"}, attachments: ["results[2]"]}
   list: {columns: [number, applicant_name, designation, offer_date, status], sort: offer_date desc}
 
 - name: AppraisalCycle

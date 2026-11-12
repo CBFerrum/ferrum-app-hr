@@ -1,0 +1,26 @@
+- name: EmployeeLetter
+  label: Letter
+  label_plural: Letters
+  kind: master
+  internal: true
+  reference: restricted
+  module: hr
+  company_scoped: true
+  owner_fields: [employee_user]
+  numbering: {template: "{field:series}-{FY}-{seq:4}", gapless: true, date_field: issued_on}
+  search_fields: [recipient_name, source_number]
+  description: "The register of letters and certificates the app wrote: its serial number (a series for each letter type, set on the Employee Document Type), who it went to, the record it was written from, and the Employee Document that holds its file. Written by the Issue buttons of the employee, the job offer, the separation and the salary structure assignment; not typed."
+  fields:
+    - {name: document_type, type: link, to: EmployeeDocumentType, required: true, in_list: true, in_filter: true, label: Letter Type}
+    - {name: series, type: data, fetch_from: document_type.letter_prefix, read_only: true, hidden: true}
+    - {name: employee, type: link, to: Employee, in_filter: true, description: "Empty for an offer made to someone who is not an employee yet"}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: recipient_name, type: data, in_list: true}
+    - {name: recipient_email, type: email}
+    - {name: company, type: link, to: Company, required: true, in_filter: true}
+    - {name: issued_on, type: date, default_expr: today, in_list: true}
+    - {name: issued_by, type: email, in_list: true}
+    - {name: source_number, type: data, label: Written From, description: "The number of the record the letter was written from"}
+    - {name: sent_to, type: email, description: "Set when the letter was mailed with its file attached"}
+    - {name: employee_document, type: link, to: EmployeeDocument, on_delete: set_null}
+  list: {columns: [number, document_type, recipient_name, issued_on, issued_by], sort: created_at desc}

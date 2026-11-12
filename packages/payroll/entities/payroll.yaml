@@ -88,6 +88,22 @@
     - {name: base, type: currency, currency: currency, required: true, min: "0", in_list: true}
     - {name: variable, type: currency, currency: currency, min: "0"}
     - {name: income_tax_slab, type: link, to: IncomeTaxSlab}
+  actions:
+    - name: issue_salary_certificate
+      label: Issue Salary Certificate
+      permission: read
+      docstatus: [1]
+      roles: [HR Manager, Payroll Manager]
+      group: Letters
+      params:
+        - {name: send_mail, type: select, options: ["Yes", "No"], label: Send It to the Person, description: "Yes mails the letter with its file attached, through the message template hr.letter_issued"}
+      effects:
+        - {type: find, entity: EmployeeDocumentType, by: {letter_code: "'salary'"}, create: {type_name: "'Salary certificate'", letter_prefix: "'SAL'", category: "'General'", visible_to: "'Employee'"}}
+        - {type: create_document, entity: EmployeeLetter, values: {document_type: "results[0].id", company: "doc.company", recipient_name: "doc.employee_name", recipient_email: "coalesce(links.employee.personal_email, links.employee.company_email)", issued_by: "user.email", source_number: "doc.number", employee: "doc.employee"}}
+        - {type: generate, template: payroll.salary_certificate, name: "'Salary certificate ' + doc.employee_name", values: {serial: "results[1].number"}}
+        - {type: create_document, entity: EmployeeDocument, values: {employee: "doc.employee", document_type: "results[0].id", document_number: "results[1].number", issue_date: "today", file: "results[2].url"}}
+        - {type: find, entity: EmployeeLetter, by: {id: "results[1].id"}, update: {employee_document: "results[3].id", sent_to: "has(params.send_mail) && params.send_mail == 'Yes' ? coalesce(links.employee.personal_email, links.employee.company_email) : ''"}}
+        - {type: message, when: "has(params.send_mail) && params.send_mail == 'Yes'", template: hr.letter_issued, to: "expr:coalesce(links.employee.personal_email, links.employee.company_email)", channels: [email], values: {serial: "results[1].number"}, attachments: ["results[2]"]}
   list: {columns: [number, employee_name, salary_structure, from_date, base], sort: from_date desc}
 
 - name: PayrollPeriod
@@ -430,6 +446,20 @@
     - {name: hold_salary, label: Hold Salary, docstatus: [1], permission: submit, condition: "doc.payroll_entry != null && !doc.held",
        params: [{name: reason, type: text, label: Reason, required: true}]}
     - {name: release_salary, label: Release Salary, docstatus: [1], permission: submit, condition: "doc.held"}
+    # The payslip as the template payroll.payslip (a workspace edits it): kept on the slip, filed among the employee's documents
+    # (once: mailing again replaces the file) and, when asked, mailed to them through the message template payroll.payslip_mail.
+    - name: mail_payslip
+      label: Send Payslip
+      docstatus: [1]
+      permission: submit
+      group: Payslip
+      params:
+        - {name: send_mail, type: select, options: ["Yes", "No"], label: Mail It to the Employee, description: "No only files it among their documents"}
+      effects:
+        - {type: find, entity: EmployeeDocumentType, by: {letter_code: "'payslip'"}, create: {type_name: "'Payslip'", letter_prefix: "'PAY'", category: "'General'", visible_to: "'Employee'"}}
+        - {type: generate, template: payroll.payslip, name: "'Payslip ' + doc.employee_name + ' ' + doc.number", replace: true, values: {mask: "true"}}
+        - {type: find, entity: EmployeeDocument, by: {employee: "doc.employee", document_type: "results[0].id", document_number: "doc.number"}, create: {issue_date: "today", file: "results[1].url"}, update: {file: "results[1].url"}}
+        - {type: message, when: "!has(params.send_mail) || params.send_mail != 'No'", template: payroll.payslip_mail, to: "expr:coalesce(links.employee.user, links.employee.company_email, links.employee.personal_email)", channels: [email], attachments: ["results[1]"]}
   list: {columns: [number, employee_name, start_date, end_date, net_pay, status], sort: start_date desc}
 
 - name: PayrollOpening

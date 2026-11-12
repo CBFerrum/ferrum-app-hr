@@ -112,6 +112,24 @@ flowchart LR
     class PE,SL,CS,OC app
 ```
 
+### Letters, payslips and payroll files
+
+Everything a person receives on paper is a Ferrum document template (Settings, Documents): a workspace edits the wording, sees the default beside it and resets it.
+
+| Template | About | Button |
+|---|---|---|
+| `hr.offer_letter` | a submitted Job Offer | Issue Offer Letter |
+| `hr.appointment_letter`, `hr.employment_certificate`, `hr.warning_letter` | an Employee | Issue Appointment Letter, Issue Employment Certificate, Issue Warning Letter |
+| `hr.relieving_letter` | a submitted Employee Separation | Issue Relieving Letter |
+| `payroll.salary_certificate` | a submitted Salary Structure Assignment | Issue Salary Certificate (HR and payroll managers) |
+| `payroll.payslip` | a Salary Slip | Send Payslip |
+
+Each template reads `values.serial` (the letter's number); the warning also `values.reason`, the payslip `values.mask`. A button makes the Letter register entry, whose number runs in the series set on the Employee Document Type for its Letter Code (`offer`, `appointment`, `employment`, `warning`, `relieving`, `salary`, `payslip`; the type is made on first use), keeps the file on the record, files it among the employee's documents and mails it when asked (message templates `hr.letter_issued`, `payroll.payslip_mail`, `hr.letter_requested`). The payslip template has the print format's content but is not the default: a salary slip prints with its print format (a workspace's customised one too) until a workspace saves a copy of `payroll.payslip` with Default ticked. To mail every payslip as payroll submits the slips, a workspace adds an automation on the slips' submission with a `generate` effect (`values: {mask: "true"}`) and a `message` effect that attaches it (tried in the tests).
+
+Payroll files are templates about a saved report over slips: `query: {report, group_by?}`. `packs/` holds a generic example (install `1-reports`, then `2-templates`, as packs): a fixed-width contributions file (a header, a line per employee, a trailer with the count and total), a CSV of net pay, and an annual statement per employee mailed by the Send Pay Statements button on the employee. The layouts are made up; a country's or a bank's format is a template of its own, and the employee fields a file names are columns of its report. A person makes one with `POST /api/documents/{key}/query {params: {filters, from, to}}` (needs the right to export slips; each download is on the audit trail).
+
+The bank file (ISO 20022 and CSV, the run's bank payment action) is still written in Rust: its payees are computed from what the bank entry pays (held salaries left out, what an earlier slip still owes added), which a template about the run cannot see, and the template of a run reads its lines' employees by title only, not their bank fields. Moving it needs the run to keep its payments as lines.
+
 ### Inside Ferrum
 
 ```mermaid
@@ -153,7 +171,7 @@ with them under the same rules as people.
 
 ## Data model
 
-The main records and how they connect (59 entities in all; `packages/` has every field).
+The main records and how they connect (60 entities in all; `packages/` has every field).
 
 ```mermaid
 erDiagram
@@ -307,6 +325,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.13.0** | Letters, certificates and the payslip as templates a workspace edits, each issued by a button with its own numbering series, filed among the employee's documents and mailed; payroll files from a report over slips; names in Arabic and Hindi. |
 | **0.12.0** | Employee documents with expiry warnings, onboarding and offboarding from templates, recruiting stages, requisitions and scorecards, payroll formulas over lookup tables and year-to-date figures, check-ins with a place. |
 | **0.11.3** | Rebuilt on the tuned design system: better menu icons, a lighter first page, a visible scroll cue, cleaner print. |
 | **0.11.2** | The redesigned interface: the upgraded design system, shaped loading, told-apart states. |
