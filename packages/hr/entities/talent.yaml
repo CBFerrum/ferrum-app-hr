@@ -43,7 +43,7 @@
   company_scoped: true
   title_field: job_title
   numbering: {template: "HR-REQ-{YYYY}-{seq:4}"}
-  description: "A request to hire. Submitted (after the approval a workspace sets on it, if any), it opens the job opening."
+  description: "A request to hire. Submitted after its approval (the package's default: the hiring manager's manager when the request names a hiring manager who has one, else an HR Manager; a workspace switches it off or replaces it), it opens the job opening."
   fields:
     - {name: job_title, type: data, required: true, in_list: true}
     - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
@@ -57,8 +57,23 @@
     - {name: expected_by, type: date, label: Needed By}
     - {name: reason, type: text}
     - {name: requested_by, type: email, default_expr: "user.email", read_only: true}
+    - {name: hiring_manager, type: link, to: Employee, description: "Who the new hire reports to; their manager approves the request when they have one with a sign-in, else an HR Manager does"}
+    - {name: manager_approver, type: email, read_only: true, no_copy: true, label: Approving Manager, description: "The sign-in of the hiring manager's manager, worked out when the request is saved"}
     - {name: job_opening, type: link, to: JobOpening, read_only: true, no_copy: true, in_list: true}
   list: {columns: [number, job_title, designation, vacancies, job_opening], sort: created_at desc}
+
+- name: RecruitmentSettings
+  label: Recruitment Settings
+  kind: settings
+  module: recruitment
+  description: "Who approves a job offer besides an HR Manager, by salary band. Both bands empty: an offer is approved by an HR Manager alone. A band applies to an offer whose CTC is above its limit, and asks the person it names (a sign-in email) as well."
+  fields:
+    - {name: offer_band_1_above, type: decimal, precision: 2, min: "0", label: Band 1 Applies Above (CTC), description: "Empty or 0: no band"}
+    - {name: offer_band_1_approver, type: email, label: Band 1 Approver}
+    - {name: offer_band_2_above, type: decimal, precision: 2, min: "0", label: Band 2 Applies Above (CTC), description: "Empty or 0: no band"}
+    - {name: offer_band_2_approver, type: email, label: Band 2 Approver}
+  form:
+    - {label: Offer approval, fields: [offer_band_1_above, offer_band_1_approver, offer_band_2_above, offer_band_2_approver]}
 
 - name: JobStage
   label: Recruitment Stage

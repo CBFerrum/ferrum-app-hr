@@ -172,6 +172,11 @@ fn check_ins_with_place_and_proof() {
 }
 
 #[test]
+fn recruiting_approvals_ship_with_the_package() {
+    run(shipped_approvals());
+}
+
+#[test]
 fn recruiting_pipeline() {
     run(pipeline_scenario());
 }
@@ -305,6 +310,17 @@ impl T {
             .expect("tenant");
         let session = k.login(slug, &format!("admin@{slug}.test"), PW).await.expect("login");
         let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx");
+        // The package's default approvals are switched off here: these suites submit requisitions and offers straight away.
+        let admin = if slug == "hrdefaults" {
+            admin
+        } else {
+            let off: Vec<ferrum_kernel::customize::NewCustomization> = ["JobRequisition", "JobOffer"]
+                .iter()
+                .map(|e| serde_json::from_value(json!({"entity": e, "op": {"op": "set_approval", "on": "submit", "approval": null}})).unwrap())
+                .collect();
+            k.batch_customizations(&admin, off, false).await.map_err(|e| e.1).expect("approvals off");
+            k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx")
+        };
         let mut t = T { k, tenant, admin, company: Uuid::nil() };
         let inr = t.one("Currency", json!({"code": "INR"})).await;
         let co = t
@@ -4113,4 +4129,90 @@ async fn pipeline_scenario() {
     t.act(&hr, "JobOffer", uid(&offer), "make_employee", json!({})).await;
     let app = t.get("JobApplicant", uid(&app)).await;
     assert_eq!((app["stage"].clone(), app["status"].clone()), (mine[3]["id"].clone(), json!("Accepted")));
+}
+
+// ───────────────────────────── approvals the package ships ─────────────────────────────
+
+/// A requisition asks the hiring manager's manager (an HR Manager when there is none); an offer an HR Manager and, by
+/// salary band, whom Recruitment Settings names; a workspace that set its own policy keeps it. No customization applied.
+async fn shipped_approvals() {
+    let t = T::new("hrdefaults").await;
+    let hr = t.user("hr@hrdefaults.test", &["HR Manager"]).await;
+    let hr2 = t.user("hr2@hrdefaults.test", &["HR Manager"]).await;
+    let clerk = t.user("clerk@hrdefaults.test", &["HR User"]).await;
+    let director = t.user("director@hrdefaults.test", &["HR User"]).await;
+    let boss_user = t.user("boss@hrdefaults.test", &[]).await;
+    let boss = t.employee("Boss", json!({"user": "boss@hrdefaults.test"})).await;
+    let lead = t.employee("Lead", json!({"reports_to": boss["id"]})).await;
+    let loner = t.employee("Loner", json!({})).await;
+    let designation = t.ins(&hr, "Designation", json!({"designation_name": "Analyst"})).await;
+    let request = |manager: &Doc| json!({"job_title": "Analyst", "company": t.c(), "designation": designation["id"], "hiring_manager": manager["id"]});
+    let steps = |d: &Doc| {
+        d["_approval"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["state"] != json!("skipped"))
+            .map(|s| s["label"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+
+    // The hiring manager has a manager with a sign-in: they decide, an HR Manager does not.
+    let req = t.ins(&clerk, "JobRequisition", request(&lead)).await;
+    assert_eq!(req["manager_approver"], json!("boss@hrdefaults.test"));
+    let asked = t.k.submit(&clerk, "JobRequisition", uid(&req), None).await.unwrap();
+    assert_eq!((asked["_approval"]["status"].clone(), steps(&asked)), (json!("pending"), vec!["Hiring manager's manager".to_string()]), "{asked:?}");
+    assert!(t.k.decide_approval(&hr, "JobRequisition", uid(&req), true, None).await.is_err(), "not an HR Manager's to decide");
+    t.k.decide_approval(&boss_user, "JobRequisition", uid(&req), true, None).await.unwrap();
+    assert!(t.get("JobRequisition", uid(&req)).await["job_opening"].is_string(), "approved: the job opens");
+
+    // No manager above the hiring manager: an HR Manager.
+    for manager in [&loner, &boss] {
+        let req = t.ins(&clerk, "JobRequisition", request(manager)).await;
+        assert_eq!(req["manager_approver"], Value::Null);
+        let asked = t.k.submit(&clerk, "JobRequisition", uid(&req), None).await.unwrap();
+        assert_eq!(steps(&asked), vec!["HR Manager".to_string()]);
+        t.k.decide_approval(&hr2, "JobRequisition", uid(&req), true, None).await.unwrap();
+        assert!(t.get("JobRequisition", uid(&req)).await["job_opening"].is_string());
+    }
+
+    // An offer: no bands, one HR Manager step.
+    let applicant = t.ins(&hr, "JobApplicant", json!({"applicant_name": "Ravi Kumar", "email_id": "ravi@mail.test"})).await;
+    let offer = |ctc: &str| json!({"job_applicant": applicant["id"], "designation": designation["id"], "company": t.c(), "offer_date": "2026-11-25", "expected_joining_date": "2026-12-01", "ctc": ctc});
+    let o1 = t.ins(&clerk, "JobOffer", offer("1800000")).await;
+    let asked = t.k.submit(&clerk, "JobOffer", uid(&o1), None).await.unwrap();
+    assert_eq!(steps(&asked), vec!["HR Manager".to_string()], "empty bands");
+    t.k.decide_approval(&hr, "JobOffer", uid(&o1), true, None).await.unwrap();
+    assert_eq!(t.get("JobOffer", uid(&o1)).await["docstatus"], json!(1));
+
+    // Bands: above the limit the person Recruitment Settings names decides too.
+    t.ins(
+        &hr,
+        "RecruitmentSettings",
+        json!({"offer_band_1_above": "1000000", "offer_band_1_approver": "boss@hrdefaults.test", "offer_band_2_above": "2500000", "offer_band_2_approver": "director@hrdefaults.test"}),
+    )
+    .await;
+    let small = t.ins(&clerk, "JobOffer", offer("900000")).await;
+    assert_eq!(steps(&t.k.submit(&clerk, "JobOffer", uid(&small), None).await.unwrap()), vec!["HR Manager".to_string()], "under the first band");
+    t.k.decide_approval(&hr, "JobOffer", uid(&small), true, None).await.unwrap();
+    let mid = t.ins(&clerk, "JobOffer", offer("1800000")).await;
+    assert_eq!(steps(&t.k.submit(&clerk, "JobOffer", uid(&mid), None).await.unwrap()), vec!["HR Manager".to_string(), "Offer band 1".to_string()]);
+    t.k.decide_approval(&hr, "JobOffer", uid(&mid), true, None).await.unwrap();
+    assert_eq!(t.get("JobOffer", uid(&mid)).await["docstatus"], json!(0), "the band's approver is still to decide");
+    assert!(t.k.decide_approval(&director, "JobOffer", uid(&mid), true, None).await.is_err(), "not this band's");
+    t.k.decide_approval(&boss_user, "JobOffer", uid(&mid), true, None).await.unwrap();
+    assert_eq!(t.get("JobOffer", uid(&mid)).await["docstatus"], json!(1));
+    let big = t.ins(&clerk, "JobOffer", offer("3000000")).await;
+    assert_eq!(steps(&t.k.submit(&clerk, "JobOffer", uid(&big), None).await.unwrap()).len(), 3, "both bands");
+
+    // A workspace that set its own policy keeps it when the app is installed again.
+    let mine = json!({"steps": [{"label": "Mine", "approvers": {"role": "HR User"}}]});
+    let own: ferrum_kernel::customize::NewCustomization =
+        serde_json::from_value(json!({"entity": "JobRequisition", "op": {"op": "set_approval", "on": "submit", "approval": mine}})).unwrap();
+    t.k.batch_customizations(&t.admin, vec![own], false).await.map_err(|(_, e)| describe(&e)).expect("its own policy");
+    t.k.install_packages(t.tenant, &["hr".into()]).await.expect("installed again");
+    let (clerk, director) = (t.user("clerk2@hrdefaults.test", &["HR User"]).await, director);
+    let req = t.ins(&clerk, "JobRequisition", request(&lead)).await;
+    assert_eq!(steps(&t.k.submit(&clerk, "JobRequisition", uid(&req), None).await.unwrap()), vec!["Mine".to_string()], "its own, not the package's");
+    let _ = director;
 }

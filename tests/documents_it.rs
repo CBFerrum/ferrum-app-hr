@@ -125,6 +125,17 @@ impl T {
             .expect("tenant");
         let session = k.login(slug, &format!("admin@{slug}.test"), PW).await.expect("login");
         let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx");
+        // The package's default approvals are switched off here: these suites submit requisitions and offers straight away.
+        let admin = if slug == "hrdefaults" {
+            admin
+        } else {
+            let off: Vec<ferrum_kernel::customize::NewCustomization> = ["JobRequisition", "JobOffer"]
+                .iter()
+                .map(|e| serde_json::from_value(json!({"entity": e, "op": {"op": "set_approval", "on": "submit", "approval": null}})).unwrap())
+                .collect();
+            k.batch_customizations(&admin, off, false).await.map_err(|e| e.1).expect("approvals off");
+            k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx")
+        };
         let mut t = T { k, tenant, admin, company: Uuid::nil() };
         let inr = t.one("Currency", json!({"code": "INR"})).await;
         t.k.update(&t.admin, "Currency", uid(&inr), obj(json!({"symbol": "₹", "precision": 2})), None).await.unwrap();
