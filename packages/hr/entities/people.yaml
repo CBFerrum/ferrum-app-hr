@@ -118,6 +118,59 @@
     - {name: joining_after_birth, check: "doc.date_of_birth == null || doc.date_of_joining == null || doc.date_of_joining > doc.date_of_birth", message: "Date of joining must be after the date of birth"}
     - {name: relieving_after_joining, check: "doc.relieving_date == null || doc.date_of_joining == null || doc.relieving_date >= doc.date_of_joining", message: "Relieving date cannot be before the date of joining"}
     - {name: left_needs_relieving_date, check: "doc.status != 'Left' || doc.relieving_date != null", message: "Set the relieving date of an employee who left"}
+  actions:
+    - name: issue_appointment_letter
+      label: Issue Appointment Letter
+      permission: read
+      roles: [HR Manager, HR User]
+      group: Letters
+      params:
+        - {name: send_mail, type: select, options: ["Yes", "No"], label: Send It to the Person, description: "Yes mails the letter with its file attached, through the message template hr.letter_issued"}
+      effects:
+        - {type: find, entity: EmployeeDocumentType, by: {letter_code: "'appointment'"}, create: {type_name: "'Appointment letter'", letter_prefix: "'APT'", category: "'General'", visible_to: "'Employee'"}}
+        - {type: create_document, entity: EmployeeLetter, values: {document_type: "results[0].id", company: "doc.company", recipient_name: "doc.employee_name", recipient_email: "coalesce(doc.personal_email, doc.company_email)", issued_by: "user.email", source_number: "doc.number", employee: "doc.id"}}
+        - {type: generate, template: hr.appointment_letter, name: "'Appointment letter ' + doc.employee_name", values: {serial: "results[1].number"}}
+        - {type: create_document, entity: EmployeeDocument, values: {employee: "doc.id", document_type: "results[0].id", document_number: "results[1].number", issue_date: "today", file: "results[2].url"}}
+        - {type: find, entity: EmployeeLetter, by: {id: "results[1].id"}, update: {employee_document: "results[3].id", sent_to: "has(params.send_mail) && params.send_mail == 'Yes' ? coalesce(doc.personal_email, doc.company_email) : ''"}}
+        - {type: message, when: "has(params.send_mail) && params.send_mail == 'Yes'", template: hr.letter_issued, to: "expr:coalesce(doc.personal_email, doc.company_email)", channels: [email], values: {serial: "results[1].number"}, attachments: ["results[2]"]}
+    - name: issue_employment_certificate
+      label: Issue Employment Certificate
+      permission: read
+      roles: [HR Manager, HR User]
+      group: Letters
+      params:
+        - {name: send_mail, type: select, options: ["Yes", "No"], label: Send It to the Person, description: "Yes mails the letter with its file attached, through the message template hr.letter_issued"}
+      effects:
+        - {type: find, entity: EmployeeDocumentType, by: {letter_code: "'employment'"}, create: {type_name: "'Employment certificate'", letter_prefix: "'EMC'", category: "'General'", visible_to: "'Employee'"}}
+        - {type: create_document, entity: EmployeeLetter, values: {document_type: "results[0].id", company: "doc.company", recipient_name: "doc.employee_name", recipient_email: "coalesce(doc.personal_email, doc.company_email)", issued_by: "user.email", source_number: "doc.number", employee: "doc.id"}}
+        - {type: generate, template: hr.employment_certificate, name: "'Employment certificate ' + doc.employee_name", values: {serial: "results[1].number"}}
+        - {type: create_document, entity: EmployeeDocument, values: {employee: "doc.id", document_type: "results[0].id", document_number: "results[1].number", issue_date: "today", file: "results[2].url"}}
+        - {type: find, entity: EmployeeLetter, by: {id: "results[1].id"}, update: {employee_document: "results[3].id", sent_to: "has(params.send_mail) && params.send_mail == 'Yes' ? coalesce(doc.personal_email, doc.company_email) : ''"}}
+        - {type: message, when: "has(params.send_mail) && params.send_mail == 'Yes'", template: hr.letter_issued, to: "expr:coalesce(doc.personal_email, doc.company_email)", channels: [email], values: {serial: "results[1].number"}, attachments: ["results[2]"]}
+    - name: issue_warning_letter
+      label: Issue Warning Letter
+      permission: read
+      roles: [HR Manager, HR User]
+      group: Letters
+      params:
+        - {name: reason, type: text, required: true, label: What the Warning Is About}
+        - {name: send_mail, type: select, options: ["Yes", "No"], label: Send It to the Person, description: "Yes mails the letter with its file attached, through the message template hr.letter_issued"}
+      effects:
+        - {type: find, entity: EmployeeDocumentType, by: {letter_code: "'warning'"}, create: {type_name: "'Warning letter'", letter_prefix: "'WRN'", category: "'General'", visible_to: "'HR only'"}}
+        - {type: create_document, entity: EmployeeLetter, values: {document_type: "results[0].id", company: "doc.company", recipient_name: "doc.employee_name", recipient_email: "coalesce(doc.personal_email, doc.company_email)", issued_by: "user.email", source_number: "doc.number", employee: "doc.id"}}
+        - {type: generate, template: hr.warning_letter, name: "'Warning letter ' + doc.employee_name", values: {serial: "results[1].number", reason: "params.reason"}}
+        - {type: create_document, entity: EmployeeDocument, values: {employee: "doc.id", document_type: "results[0].id", document_number: "results[1].number", issue_date: "today", file: "results[2].url"}}
+        - {type: find, entity: EmployeeLetter, by: {id: "results[1].id"}, update: {employee_document: "results[3].id", sent_to: "has(params.send_mail) && params.send_mail == 'Yes' ? coalesce(doc.personal_email, doc.company_email) : ''"}}
+        - {type: message, when: "has(params.send_mail) && params.send_mail == 'Yes'", template: hr.letter_issued, to: "expr:coalesce(doc.personal_email, doc.company_email)", channels: [email], values: {serial: "results[1].number"}, attachments: ["results[2]"]}
+    - name: request_letter
+      label: Request a Letter
+      permission: read
+      group: Letters
+      params:
+        - {name: letter, type: select, required: true, label: Which, options: [Employment certificate, Salary certificate, Appointment letter, Other]}
+        - {name: note, type: text, label: Note to HR}
+      effects:
+        - {type: message, template: hr.letter_requested, to: "role:HR Manager", channels: [inapp, email], values: {letter: "params.letter", note: "params.note"}}
   form:
     - {label: Employee, fields: [first_name, middle_name, last_name, employee_name, company, status, user, gender, date_of_birth]}
     - {label: Employment, fields: [date_of_joining, relieving_date, notice_period_days, department, designation, grade, branch, employment_type, reports_to, leave_approver, expense_approver]}
@@ -218,6 +271,21 @@
         - {type: copy_lines, table: activities, link: checklist_template, from_table: tasks,
            values: {activity_name: item.task, assignee_role: item.assignee_role, assignee_field: item.assignee_field, due_date: "addDays(doc.relieving_date, item.due_days)",
                     document_type: item.document_type, required: item.required, requires_approval: item.requires_approval}}
+    - name: issue_relieving_letter
+      label: Issue Relieving Letter
+      permission: read
+      docstatus: [1]
+      roles: [HR Manager, HR User]
+      group: Letters
+      params:
+        - {name: send_mail, type: select, options: ["Yes", "No"], label: Send It to the Person, description: "Yes mails the letter with its file attached, through the message template hr.letter_issued"}
+      effects:
+        - {type: find, entity: EmployeeDocumentType, by: {letter_code: "'relieving'"}, create: {type_name: "'Relieving and experience letter'", letter_prefix: "'REL'", category: "'General'", visible_to: "'Employee'"}}
+        - {type: create_document, entity: EmployeeLetter, values: {document_type: "results[0].id", company: "doc.company", recipient_name: "doc.employee_name", recipient_email: "coalesce(links.employee.personal_email, links.employee.company_email)", issued_by: "user.email", source_number: "doc.number", employee: "doc.employee"}}
+        - {type: generate, template: hr.relieving_letter, name: "'Relieving letter ' + doc.employee_name", values: {serial: "results[1].number"}}
+        - {type: create_document, entity: EmployeeDocument, values: {employee: "doc.employee", document_type: "results[0].id", document_number: "results[1].number", issue_date: "today", file: "results[2].url"}}
+        - {type: find, entity: EmployeeLetter, by: {id: "results[1].id"}, update: {employee_document: "results[3].id", sent_to: "has(params.send_mail) && params.send_mail == 'Yes' ? coalesce(links.employee.personal_email, links.employee.company_email) : ''"}}
+        - {type: message, when: "has(params.send_mail) && params.send_mail == 'Yes'", template: hr.letter_issued, to: "expr:coalesce(links.employee.personal_email, links.employee.company_email)", channels: [email], values: {serial: "results[1].number"}, attachments: ["results[2]"]}
   list: {columns: [number, employee_name, relieving_date, status], sort: created_at desc}
 
 - name: EmployeePromotion

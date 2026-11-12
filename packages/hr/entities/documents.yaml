@@ -19,8 +19,11 @@
     - {name: required_designation, type: link, to: Designation, visible_if: "doc.required", label: Required for Designation}
     - {name: required_employment_type, type: link, to: EmploymentType, visible_if: "doc.required", label: Required for Employment Type}
     - {name: required_branch, type: link, to: Branch, visible_if: "doc.required", label: Required at Branch}
+    - {name: letter_code, type: data, max_length: 40, label: Letter Code, description: "Set on the type a letter the app writes is filed under (offer, appointment, employment, warning, relieving, salary): the letter's button finds this type by it, so renaming the type changes nothing. Empty for any other type"}
+    - {name: letter_prefix, type: data, max_length: 12, label: Letter Number Prefix, visible_if: "!isEmpty(doc.letter_code)", description: "The series of the letters filed under this type: their serial numbers run PREFIX-YEAR-0001 and so on, one series per type"}
     - {name: description, type: text}
     - {name: disabled, type: check, in_filter: true}
+  unique: [[letter_code]]
   list: {columns: [type_name, category, visible_to, expires, required], sort: type_name asc}
 
 - name: EmployeeDocument

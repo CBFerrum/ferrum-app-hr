@@ -85,3 +85,44 @@ personal_data:
   - {entity: EmployeeTaxExemptionDeclaration, match: employee_user, retain: "Payroll and tax records"}
   - {entity: LeaveEncashment, match: employee_user, retain: "Payroll and tax records"}
   - {entity: PayrollOpening, match: employee_user, retain: "Payroll and tax records"}
+
+documents:
+  - key: payroll.salary_certificate
+    label: Salary certificate
+    entity: SalaryStructureAssignment
+    output: page
+    roles: [HR Manager, Payroll Manager]
+    values: [serial]
+    languages:
+      en:
+        body: |
+          <!doctype html><html><head><meta charset="utf-8"><style>
+           body{margin:0;padding:28px 36px;font:13px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans","Noto Sans Arabic","Noto Sans Devanagari",Arial,sans-serif;color:#14171c}
+           .head{display:flex;gap:14px;align-items:flex-start;padding-bottom:10px;border-bottom:2px solid #1f3a5f;margin-bottom:22px}
+           .logo{max-height:60px;max-width:150px;object-fit:contain}
+           .co-name{font-size:16px;font-weight:700;color:#1f3a5f}
+           .muted{color:#5b6470} .pre{white-space:pre-line}
+           .meta{display:flex;justify-content:space-between;gap:16px;margin-bottom:18px}
+           h1{font-size:16px;margin:18px 0 12px;text-align:center;text-transform:uppercase;letter-spacing:.06em}
+           .sign{margin-top:56px} .line{display:inline-block;min-width:200px;border-top:1px solid #14171c;padding-top:4px}
+           table.kv{border-collapse:collapse;margin:10px 0} table.kv td{padding:3px 18px 3px 0;vertical-align:top} table.kv td:first-child{color:#5b6470}
+           @page{margin:14mm}
+          </style></head><body>
+          {% set co = links.company or {} %}
+          {% set cur = (co._titles or {}).default_currency or currency %}
+          <div class="head">
+           {% if co.acc_logo is defined and co.acc_logo %}<img class="logo" src="{{ co.acc_logo }}" alt="">{% endif %}
+           <div>
+            <div class="co-name" dir="auto">{{ co.company_name }}</div>
+            {% for key in ['acc_address_line1', 'acc_address_line2', 'acc_city', 'acc_region', 'acc_postal_code', 'country'] %}{% if co[key] is defined and co[key] %}<div class="pre muted" dir="auto">{{ co[key] }}</div>{% endif %}{% endfor %}
+            {% for key in ['acc_phone', 'acc_email', 'acc_website'] %}{% if co[key] is defined and co[key] %}<span class="muted">{{ co[key] }}</span> {% endif %}{% endfor %}
+           </div>
+          </div>
+          <div class="meta"><div>Ref: <b>{{ values.serial }}</b></div><div>{{ now[:10]|date('long') }}</div></div>
+          {% set em = links.employee or {} %}
+          {% set money_cur = currency or cur %}
+          <h1>Salary certificate</h1>
+          <p>This is to certify that <b dir="auto">{{ doc.employee_name }}</b>{% if em.number %} (employee number {{ em.number }}){% endif %}{% if (em._titles or {}).designation %}, <span dir="auto">{{ em._titles.designation }}</span>,{% endif %} is employed by {{ co.company_name }} and, from {{ doc.from_date|date('long') }}, has a base salary of <b>{{ doc.base|amount(money_cur) }}</b> ({{ doc.base|words(money_cur) }}) paid {{ ((links.salary_structure or {}).payroll_frequency or 'Monthly')|lower }}{% if doc.variable %}, together with variable pay of up to {{ doc.variable|amount(money_cur) }}{% endif %}.</p>
+          <p>This certificate is issued at the employee's request and carries no obligation on the company.</p>
+          <div class="sign"><div class="line">Authorised signatory</div><div dir="auto">{{ co.company_name }}</div></div>
+          </body></html>
