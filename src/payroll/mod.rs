@@ -117,10 +117,14 @@ pub(crate) fn check_formula(src: &str, known: &[String], condition: bool) -> std
     let unknown = f.unknown(known);
     if !unknown.is_empty() {
         return Err(format!(
-            "unknown name{} {} (use base, variable, gross, payment_days, working_days, lwp_days, absent_days or the abbreviation of a component above)",
+            "unknown name{} {} (use base, variable, gross, payment_days, working_days, lwp_days, absent_days, employee, location, period, ytd, ytd_total, previous, declared, verified or the abbreviation of a component above)",
             if unknown.len() > 1 { "s" } else { "" },
             unknown.join(", ")
         ));
+    }
+    // What the context holds is known only on payroll day: such a formula is checked by its names alone.
+    if f.uses_context(known) {
+        return Ok(());
     }
     let sample = Vars::sample(known);
     if condition { f.holds(&sample).map(|_| ()) } else { f.amount(&sample).map(|_| ()) }
@@ -338,6 +342,31 @@ impl DocHook for DeclarationHook {
             return Err(Error::field("payroll_period", format!("declaration {n} already covers this payroll period")));
         }
         Ok(())
+    }
+
+    /// HR marks the declared amounts that carry a proof verified; payroll formulas read them as `verified.<code>`.
+    /// Never the employee themselves.
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, _params: &Value) -> Result<Option<Value>> {
+        if name != "verify_proofs" {
+            return Ok(None);
+        }
+        if s(doc, "employee_user").is_some_and(|u| u.eq_ignore_ascii_case(&hc.ctx.email)) {
+            return Err(Error::Forbidden("HR verifies a declaration, never the person who made it".into()));
+        }
+        let me = id(doc, "id").ok_or_else(|| Error::internal("declaration without id"))?;
+        let n = sqlx::query(
+            "update e_employee_tax_exemption_declaration__declarations set verified = true where tenant_id = $1 and parent_id = $2 and proof is not null and not coalesce(verified, false)",
+        )
+        .bind(hc.ctx.tenant)
+        .bind(me)
+        .execute(&mut **hc.tx)
+        .await?
+        .rows_affected();
+        let mut v = Doc::new();
+        set(&mut v, "verified_by", hc.ctx.email.as_str());
+        set(&mut v, "verified_on", crate::local_today(hc.tx, hc.ctx.tenant).await?.to_string());
+        hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "EmployeeTaxExemptionDeclaration", me, v).await?;
+        Ok(Some(json!({"verified": n})))
     }
 }
 

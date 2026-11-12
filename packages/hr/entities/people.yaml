@@ -32,6 +32,8 @@
   fields:
     - {name: branch_name, type: data, required: true, unique: true, in_list: true}
     - {name: address, type: text}
+    - {name: region, type: data, in_list: true, in_filter: true, description: "The state, province or region its rules follow; payroll formulas read it as location.region"}
+    - {name: country, type: data, in_filter: true, description: "Payroll formulas read it as location.country"}
   list: {sort: branch_name asc}
 
 - name: EmployeeGrade
