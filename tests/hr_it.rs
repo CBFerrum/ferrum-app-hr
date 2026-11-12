@@ -166,6 +166,11 @@ fn statutory_formulas_as_configuration() {
 }
 
 #[test]
+fn check_ins_with_place_and_proof() {
+    run(place_scenario());
+}
+
+#[test]
 fn hr_and_payroll_without_erp() {
     run(alone_scenario());
 }
@@ -3986,4 +3991,37 @@ async fn statutory_scenario() {
     let may = slip("2026-05-01", "2026-05-31").await;
     assert_eq!((a(&may, "deductions", "LEVY"), a(&may, "deductions", "WT"), a(&may, "deductions", "LWT")), (n("30"), n("800"), n("800")));
     assert_eq!(dec(&may["net_pay"]), n("8000") - n("600") - n("30") - n("800"));
+}
+
+// ───────────────────────────── check-ins with a place ─────────────────────────────
+
+/// An employee's own check-in carries a position, its accuracy, a photo and a device mark; the work location's
+/// point and radius and its rule (or the shift's) decide: refused outside or without a position, marked when
+/// the rule only warns; HR's own entries are not held to it.
+async fn place_scenario() {
+    let t = T::new("hrgeo").await;
+    let me = t.user("geo@hrgeo.test", &["Employee"]).await;
+    let site = t
+        .ins(&t.admin, "Branch", json!({"branch_name": "Plant", "latitude": "10.5", "longitude": "20.25", "radius": 200, "check_in_place_rule": "Refuse"}))
+        .await;
+    let emp = t.employee("Geo", json!({"user": "geo@hrgeo.test", "branch": site["id"]})).await;
+    let punch = |time: &str, extra: Value| {
+        let mut v = obj(json!({"employee": emp["id"], "log_type": "IN", "log_time": time}));
+        v.extend(obj(extra));
+        Value::Object(v)
+    };
+    let inside = t
+        .ins(&me, "EmployeeCheckin", punch("2026-11-02T09:00:00Z", json!({"latitude": "10.5009", "longitude": "20.25", "accuracy": "15", "photo": "https://files.example.test/selfie.jpg", "device_mark": "browser"})))
+        .await;
+    assert_eq!((inside["place_check"].clone(), dec(&inside["distance"])), (json!("Inside"), n("85")), "100 m less 15 m of accuracy");
+    refused(t.try_ins(&me, "EmployeeCheckin", punch("2026-11-03T09:00:00Z", json!({"latitude": "10.51", "longitude": "20.25"}))).await, "1112 metres away");
+    refused(t.try_ins(&me, "EmployeeCheckin", punch("2026-11-04T09:00:00Z", json!({}))).await, "without a position");
+    // HR records a punch without a position.
+    let by_hr = t.ins(&t.admin, "EmployeeCheckin", punch("2026-11-04T09:05:00Z", json!({}))).await;
+    assert!(by_hr["place_check"].is_null());
+    // The shift only warns: outside is kept and marked.
+    let shift = t.ins(&t.admin, "ShiftType", json!({"shift_name": "Field", "start_time": "09:00", "end_time": "18:00", "check_in_place_rule": "Warn"})).await;
+    t.k.update(&t.admin, "Employee", uid(&emp), obj(json!({"default_shift": shift["id"]})), None).await.unwrap();
+    let outside = t.ins(&me, "EmployeeCheckin", punch("2026-11-05T09:00:00Z", json!({"latitude": "10.51", "longitude": "20.25"}))).await;
+    assert_eq!(outside["place_check"], json!("Outside"));
 }

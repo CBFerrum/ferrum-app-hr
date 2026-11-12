@@ -4,7 +4,7 @@
 //! present, half day and absent, and late entry / early exit are flagged against the grace periods.
 
 use crate::calendar::{days, employee_holidays, weekday, weekday_name, working_days};
-use crate::{default_approver, employee_of, lookup, notify, opt_date, require_approver, stamp_company};
+use crate::{default_approver, employee_of, lookup, notify, opt_date, require_approver, stamp_company, stored};
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use ferrum_domain::util::{b, d, find, get, id, money, rows, s, set, sys};
@@ -473,7 +473,10 @@ impl DocHook for CheckinHook {
                 None => return Err(Error::field("employee_device_id", format!("no employee has attendance device id '{dev}'"))),
             }
         }
-        stamp_company(hc, doc).await?;
+        let emp = stamp_company(hc, doc).await?;
+        if let Some(emp) = emp {
+            place_check(hc, doc, &emp).await?;
+        }
         Ok(())
     }
 
@@ -485,6 +488,48 @@ impl DocHook for CheckinHook {
         }
         Ok(())
     }
+}
+
+/// Metres between two points on the earth (haversine, mean radius).
+pub(crate) fn metres_between(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (la1, la2) = (a.0.to_radians(), b.0.to_radians());
+    let (dla, dlo) = ((b.0 - a.0).to_radians(), (b.1 - a.1).to_radians());
+    let h = (dla / 2.0).sin().powi(2) + la1.cos() * la2.cos() * (dlo / 2.0).sin().powi(2);
+    2.0 * 6_371_008.8 * h.sqrt().asin()
+}
+
+/// An employee's own new check-in, where the work location (their branch) asks for a place: its distance from
+/// the place's point less the position's accuracy, whether that is inside the radius, and the rule (the shift's,
+/// else the branch's) the entity's rule refuses by. Check-ins HR or a device record are not held to it.
+async fn place_check(hc: &mut HookCtx<'_>, doc: &mut Doc, emp: &Doc) -> Result<()> {
+    if hc.entity.field("place_check").is_none() || stored(hc, doc).await?.is_some() || !s(emp, "user").is_some_and(|u| u.eq_ignore_ascii_case(&hc.ctx.email)) {
+        return Ok(());
+    }
+    let Some(branch) = lookup(hc, "Branch", id(emp, "branch")).await? else { return Ok(()) };
+    let shift_rule = lookup(hc, "ShiftType", id(emp, "default_shift")).await?.and_then(|sh| s(&sh, "check_in_place_rule").map(str::to_string));
+    let rule = shift_rule.or_else(|| s(&branch, "check_in_place_rule").map(str::to_string)).unwrap_or_else(|| "Off".into());
+    if rule == "Off" {
+        return Ok(());
+    }
+    let num = |d: &Doc, f: &str| match d.get(f) {
+        Some(Value::Number(n)) => n.as_f64(),
+        Some(Value::String(x)) => x.trim().parse::<f64>().ok(),
+        _ => None,
+    };
+    let (here, place) = ((num(doc, "latitude"), num(doc, "longitude")), (num(&branch, "latitude"), num(&branch, "longitude")));
+    let check = match (here, place) {
+        ((Some(la), Some(lo)), (Some(pla), Some(plo))) => {
+            let away = (metres_between((la, lo), (pla, plo)) - num(doc, "accuracy").unwrap_or(0.0)).max(0.0).round();
+            set(doc, "distance", away.to_string());
+            if away <= num(&branch, "radius").unwrap_or(0.0) { "Inside" } else { "Outside" }
+        }
+        // A place with no point set cannot be checked: its rule waits for one.
+        (_, (None, _) | (_, None)) => return Ok(()),
+        _ => "No Position",
+    };
+    set(doc, "place_check", check);
+    set(doc, "place_rule", rule);
+    Ok(())
 }
 
 struct AttendanceHook;
