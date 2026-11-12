@@ -5,6 +5,7 @@
 //! Users sign in with real roles (HR manager, leave/expense approver, employee, payroll manager,
 //! accountant, attendance device) and drive the documents through the kernel API.
 
+use ferrum_kernel::customize::NewCustomization;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery};
 use ferrum_meta::Catalog;
@@ -168,6 +169,11 @@ fn statutory_formulas_as_configuration() {
 #[test]
 fn check_ins_with_place_and_proof() {
     run(place_scenario());
+}
+
+#[test]
+fn recruiting_pipeline() {
+    run(pipeline_scenario());
 }
 
 #[test]
@@ -4024,4 +4030,87 @@ async fn place_scenario() {
     t.k.update(&t.admin, "Employee", uid(&emp), obj(json!({"default_shift": shift["id"]})), None).await.unwrap();
     let outside = t.ins(&me, "EmployeeCheckin", punch("2026-11-05T09:00:00Z", json!({"latitude": "10.51", "longitude": "20.25"}))).await;
     assert_eq!(outside["place_check"], json!("Outside"));
+}
+
+// ───────────────────────────── recruiting as a pipeline ─────────────────────────────
+
+/// A requisition approved through a policy the workspace sets opens the job; applicants move through the
+/// workspace's stages (the job's own, else the defaults), each move kept, a Rejected stage needing a reason;
+/// interviewers score the job's weighted criteria; an offer approved the same way, accepted, makes the employee
+/// and moves the applicant to the Hired stage.
+async fn pipeline_scenario() {
+    let t = T::new("hrpipe").await;
+    let policy = json!({"steps": [{"label": "HR manager", "approvers": {"role": "HR Manager"}}]});
+    let op = |entity: &str| -> NewCustomization {
+        serde_json::from_value(json!({"entity": entity, "op": {"op": "set_approval", "on": "submit", "approval": policy}})).unwrap()
+    };
+    t.k.batch_customizations(&t.admin, vec![op("JobRequisition"), op("JobOffer")], false).await.map_err(|(_, e)| describe(&e)).expect("the approval policies");
+    // Signed in after the workspace set its policies.
+    let hr = t.user("hr@hrpipe.test", &["HR Manager"]).await;
+    let clerk = t.user("clerk@hrpipe.test", &["HR User"]).await;
+
+    let designation = t.ins(&hr, "Designation", json!({"designation_name": "Analyst"})).await;
+    let req = t
+        .ins(
+            &clerk,
+            "JobRequisition",
+            json!({"job_title": "Data Analyst", "company": t.c(), "designation": designation["id"], "vacancies": 2, "reason": "Growth"}),
+        )
+        .await;
+    let asked = t.k.submit(&clerk, "JobRequisition", uid(&req), None).await.unwrap();
+    assert_eq!(asked.get("_approval").map(|a| a["status"].clone()), Some(json!("pending")), "{asked:?}");
+    assert!(t.list(&hr, "JobOpening", json!({})).await.is_empty(), "nothing opens before it is approved");
+    t.k.decide_approval(&hr, "JobRequisition", uid(&req), true, None).await.unwrap();
+    let req = t.get("JobRequisition", uid(&req)).await;
+    let job = t.get("JobOpening", req["job_opening"].as_str().unwrap().parse().unwrap()).await;
+    assert_eq!((job["job_title"].clone(), job["vacancies"].clone(), job["requisition"].clone()), (json!("Data Analyst"), json!(2), req["id"].clone()));
+    t.k.update(&hr, "JobOpening", uid(&job), obj(json!({"criteria": [{"criterion": "Design", "weight": "2"}, {"criterion": "Coding", "weight": "1"}]})), None)
+        .await
+        .unwrap();
+
+    // Default stages, and the job's own (which replace them for it).
+    let stage = |name: &str, seq: i64, category: &str, job: Value| json!({"stage_name": name, "sequence": seq, "category": category, "job_opening": job});
+    t.ins(&hr, "JobStage", stage("New", 1, "Screening", Value::Null)).await;
+    let mine: Vec<Doc> = {
+        let mut v = Vec::new();
+        for (name, seq, cat) in
+            [("Phone screen", 1, "Screening"), ("Case study", 2, "Interview"), ("Offer", 3, "Offer"), ("Hired", 4, "Hired"), ("Declined", 5, "Rejected")]
+        {
+            v.push(t.ins(&hr, "JobStage", stage(name, seq, cat, job["id"].clone())).await);
+        }
+        v
+    };
+    let other_job = t.ins(&hr, "JobOpening", json!({"job_title": "Other", "company": t.c(), "designation": designation["id"]})).await;
+    let elsewhere = t.ins(&hr, "JobStage", stage("Elsewhere", 1, "Interview", other_job["id"].clone())).await;
+    let app = t.ins(&hr, "JobApplicant", json!({"applicant_name": "Ravi Kumar", "email_id": "ravi@mail.test", "job_opening": job["id"]})).await;
+    assert_eq!((app["stage"].clone(), app["stage_history"].as_array().unwrap().len()), (mine[0]["id"].clone(), 1), "the job's first stage");
+    let app = t.k.update(&hr, "JobApplicant", uid(&app), obj(json!({"stage": mine[1]["id"]})), None).await.unwrap();
+    assert_eq!(app["stage_history"].as_array().unwrap().len(), 2);
+    refused(t.k.update(&hr, "JobApplicant", uid(&app), obj(json!({"stage": elsewhere["id"]})), None).await, "another job");
+    refused(t.k.update(&hr, "JobApplicant", uid(&app), obj(json!({"stage": mine[4]["id"]})), None).await, "say why");
+
+    // The scorecard: two interviewers on the job's weighted criteria.
+    let panel = json!([{"interviewer": "a@hrpipe.test"}, {"interviewer": "b@hrpipe.test"}]);
+    let iv = |scores: Value| json!({"job_applicant": app["id"], "interview_round": "Case", "scheduled_on": "2026-11-20T10:00:00Z", "interviewers": panel, "scores": scores});
+    refused(t.try_ins(&hr, "Interview", iv(json!([{"interviewer": "a@hrpipe.test", "criterion": "Charm", "rating": 5}]))).await, "criteria");
+    let done = t
+        .ins(
+            &hr,
+            "Interview",
+            iv(json!([{"interviewer": "a@hrpipe.test", "criterion": "Design", "rating": 4}, {"interviewer": "a@hrpipe.test", "criterion": "Coding", "rating": 5},
+                      {"interviewer": "b@hrpipe.test", "criterion": "Design", "rating": 3}, {"interviewer": "b@hrpipe.test", "criterion": "Coding", "rating": 2}])),
+        )
+        .await;
+    assert_eq!(dec(&done["weighted_score"]), n("3.5"), "(8 + 5 + 6 + 2) / 6");
+
+    // The offer, approved, accepted: the employee, and the applicant at the Hired stage.
+    let offer = t
+        .ins(&clerk, "JobOffer", json!({"job_applicant": app["id"], "company": t.c(), "offer_date": "2026-11-25", "expected_joining_date": "2026-12-01"}))
+        .await;
+    assert_eq!(t.k.submit(&clerk, "JobOffer", uid(&offer), None).await.unwrap()["_approval"]["status"], json!("pending"));
+    t.k.decide_approval(&hr, "JobOffer", uid(&offer), true, None).await.unwrap();
+    t.act(&hr, "JobOffer", uid(&offer), "accept", json!({})).await;
+    t.act(&hr, "JobOffer", uid(&offer), "make_employee", json!({})).await;
+    let app = t.get("JobApplicant", uid(&app)).await;
+    assert_eq!((app["stage"].clone(), app["status"].clone()), (mine[3]["id"].clone(), json!("Accepted")));
 }

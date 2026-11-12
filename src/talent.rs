@@ -1,7 +1,7 @@
 //! Recruitment (openings, applicants, interviews, offers that become employees) and appraisals.
 
 use crate::people::{person_name, same_company};
-use crate::{lookup, opt_date, stamp_company, today};
+use crate::{lookup, opt_date, stamp_company, stored, today};
 use async_trait::async_trait;
 use ferrum_domain::util::{d, elevated, get, id, money, rows, s, set, sys};
 use ferrum_kernel::{Action, Ctx, Doc, DocHook, Error, FieldError, HookCtx, HookRegistry, Kernel, Result};
@@ -9,9 +9,12 @@ use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub(crate) fn register(h: &mut HookRegistry) {
     h.register("JobOpening", Arc::new(OpeningHook))
+        .register("JobRequisition", Arc::new(RequisitionHook))
+        .register("JobApplicant", Arc::new(ApplicantHook))
         .register("Interview", Arc::new(InterviewHook))
         .register("JobOffer", Arc::new(OfferHook))
         .register("AppraisalTemplate", Arc::new(TemplateHook))
@@ -91,11 +94,98 @@ impl DocHook for OpeningHook {
     }
 }
 
+/// A requisition, once submitted (after whatever approval the workspace set on it), opens its job.
+struct RequisitionHook;
+
+#[async_trait]
+impl DocHook for RequisitionHook {
+    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        same_company(hc, doc, "department", "Department").await
+    }
+
+    async fn on_submit(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let mut o = Doc::new();
+        for f in ["job_title", "company", "designation", "department", "employment_type", "branch", "vacancies", "lower_range", "upper_range"] {
+            o.insert(f.into(), doc.get(f).cloned().unwrap_or_default());
+        }
+        set(&mut o, "requisition", doc.get("id").cloned().unwrap_or_default());
+        let opening = hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, "JobOpening", o).await?;
+        let mut v = Doc::new();
+        v.insert("job_opening".into(), opening.get("id").cloned().unwrap_or_default());
+        hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "JobRequisition", id(doc, "id").unwrap_or_default(), v).await?;
+        Ok(())
+    }
+
+    async fn before_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        if let Some(o) = lookup(hc, "JobOpening", id(doc, "job_opening")).await? {
+            return Err(Error::invalid(format!("it opened job opening {}; close that instead", s(&o, "number").unwrap_or_default())));
+        }
+        Ok(())
+    }
+}
+
+/// The first stage of `job` of `category` (any category when `None`): the job's own stages, else those for no job.
+pub(crate) async fn first_stage(hc: &mut HookCtx<'_>, job: Option<Uuid>, category: Option<&str>) -> Result<Option<Uuid>> {
+    if hc.ctx.schema.entity("JobStage").is_none() {
+        return Ok(None);
+    }
+    Ok(sqlx::query_scalar(
+        "select id from e_job_stage where tenant_id = $1 and ($3::text is null or category = $3) \
+         and (job_opening = $2 or (job_opening is null and not exists (select 1 from e_job_stage o where o.tenant_id = $1 and o.job_opening = $2))) \
+         order by coalesce(sequence, 0), stage_name limit 1",
+    )
+    .bind(hc.ctx.tenant)
+    .bind(job)
+    .bind(category)
+    .fetch_optional(&mut **hc.tx)
+    .await?)
+}
+
+/// An applicant starts at their job's first stage; each move is kept in their stage history, and a Rejected or
+/// Hired stage (by category, never by name) rejects or accepts them.
+struct ApplicantHook;
+
+#[async_trait]
+impl DocHook for ApplicantHook {
+    async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        if hc.entity.field("stage").is_none() {
+            return Ok(());
+        }
+        let old = stored(hc, doc).await?;
+        if old.is_none()
+            && id(doc, "stage").is_none()
+            && let Some(first) = first_stage(hc, id(doc, "job_opening"), None).await?
+        {
+            set(doc, "stage", first.to_string());
+        }
+        let mut history = old.as_ref().map(|o| rows(o, "stage_history")).unwrap_or_default();
+        let moved = old.as_ref().is_none_or(|o| id(o, "stage") != id(doc, "stage"));
+        if moved && let Some(stage) = lookup(hc, "JobStage", id(doc, "stage")).await? {
+            let category = s(&stage, "category").unwrap_or_default().to_string();
+            match category.as_str() {
+                "Rejected" => set(doc, "status", "Rejected"),
+                "Hired" => set(doc, "status", "Accepted"),
+                _ => {}
+            }
+            let now = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>("select now()").fetch_one(&mut **hc.tx).await?;
+            history.push(
+                json!({"id": uuid::Uuid::now_v7().to_string(), "idx": history.len(), "stage": stage.get("id"), "category": category,
+                       "entered_on": now.to_rfc3339(), "moved_by": hc.ctx.email})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            );
+        }
+        set(doc, "stage_history", Value::Array(history.into_iter().map(Value::Object).collect()));
+        Ok(())
+    }
+}
+
 struct InterviewHook;
 
 #[async_trait]
 impl DocHook for InterviewHook {
-    async fn before_validate(&self, _hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+    async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
         let feedback = rows(doc, "feedback");
         let ratings: Vec<i64> = feedback.iter().filter_map(|f| f.get("rating").and_then(Value::as_i64)).collect();
         let average = (!ratings.is_empty()).then(|| (Decimal::from(ratings.iter().sum::<i64>()) / Decimal::from(ratings.len() as u64)).round_dp(2));
@@ -103,10 +193,34 @@ impl DocHook for InterviewHook {
         if !feedback.is_empty() && s(doc, "status") == Some("Pending") {
             set(doc, "status", "Under Review");
         }
+        // The scorecard weighted by the job's criteria (each 1 when the job names none).
+        let scores = rows(doc, "scores");
+        if hc.entity.field("weighted_score").is_some() {
+            let job = match id(doc, "job_opening") {
+                Some(j) => lookup(hc, "JobOpening", Some(j)).await?,
+                None => match lookup(hc, "JobApplicant", id(doc, "job_applicant")).await? {
+                    Some(a) => lookup(hc, "JobOpening", id(&a, "job_opening")).await?,
+                    None => None,
+                },
+            };
+            let weights: std::collections::HashMap<String, Decimal> = job
+                .map(|j| rows(&j, "criteria"))
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|c| Some((s(c, "criterion")?.to_lowercase(), d(c, "weight"))))
+                .collect();
+            let (mut sum, mut total) = (Decimal::ZERO, Decimal::ZERO);
+            for r in &scores {
+                let w = weights.get(&s(r, "criterion").unwrap_or_default().to_lowercase()).copied().unwrap_or(Decimal::ONE);
+                sum += d(r, "rating") * w;
+                total += w;
+            }
+            set(doc, "weighted_score", if total.is_zero() { Value::Null } else { json!(money((sum / total).round_dp(2))) });
+        }
         Ok(())
     }
 
-    async fn validate(&self, _hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let panel: HashSet<String> = rows(doc, "interviewers").iter().filter_map(|r| s(r, "interviewer").map(str::to_lowercase)).collect();
         let mut seen = HashSet::new();
         let mut errors = Vec::new();
@@ -117,6 +231,22 @@ impl DocHook for InterviewHook {
                 errors.push(FieldError::new("interviewer", "is not on this interview's panel").in_row("feedback", i));
             } else if !seen.insert(who) {
                 errors.push(FieldError::new("interviewer", "already gave feedback").in_row("feedback", i));
+            }
+        }
+        // Scores: from the panel, on the job's criteria when it names some, one per interviewer and criterion.
+        let job = lookup(hc, "JobOpening", id(doc, "job_opening")).await?;
+        let criteria: HashSet<String> =
+            job.map(|j| rows(&j, "criteria")).unwrap_or_default().iter().filter_map(|c| s(c, "criterion").map(str::to_lowercase)).collect();
+        let mut scored = HashSet::new();
+        for (i, r) in rows(doc, "scores").iter().enumerate() {
+            let who = s(r, "interviewer").unwrap_or_default().to_lowercase();
+            let what = s(r, "criterion").unwrap_or_default().to_lowercase();
+            if !panel.contains(&who) {
+                errors.push(FieldError::new("interviewer", "is not on this interview's panel").in_row("scores", i));
+            } else if !criteria.is_empty() && !criteria.contains(&what) {
+                errors.push(FieldError::new("criterion", "is not one of the job's criteria").in_row("scores", i));
+            } else if !scored.insert((who, what)) {
+                errors.push(FieldError::new("criterion", "was already scored by this interviewer").in_row("scores", i));
             }
         }
         if feedback.is_empty() && matches!(s(doc, "status"), Some("Cleared" | "Rejected")) {
@@ -172,6 +302,12 @@ impl OfferHook {
             set(&mut e, "user", user);
         }
         let created = hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, "Employee", e).await?;
+        // The applicant moves to their job's Hired stage, when it has one.
+        if let Some(hired) = first_stage(hc, id(doc, "job_opening"), Some("Hired")).await? {
+            let mut v = Doc::new();
+            set(&mut v, "stage", hired.to_string());
+            hc.kernel.update_tx(&elevated(hc.ctx), hc.tx, "JobApplicant", id(&app, "id").unwrap_or_default(), v, None).await?;
+        }
         // Their onboarding, when a checklist template fits them: its tasks are copied in as it is made.
         if let Some(template) = crate::people::choose_template(hc, "Onboarding", &created).await? {
             let mut o = Doc::new();
