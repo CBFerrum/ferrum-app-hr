@@ -53,6 +53,7 @@
     - {name: working_hours_threshold_for_half_day, type: decimal, default: 0, min: "0", max: "24", description: Fewer working hours mark a half day (0 = off)}
     - {name: working_hours_threshold_for_absent, type: decimal, default: 0, min: "0", max: "24", description: Fewer working hours mark the employee absent (0 = off)}
     - {name: mark_absent_without_checkins, type: check, default: true, description: Employees without any check-in on a working day are marked absent}
+    - {name: check_in_place_rule, type: select, options: [Off, Warn, Refuse], label: Check-ins Outside, description: "For employees on this shift, instead of their branch's rule; empty: the branch's"}
   rules:
     - {name: start_format, check: "doc.start_time == null || doc.start_time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')", message: "Start time must look like 09:00"}
     - {name: end_format, check: "doc.end_time == null || doc.end_time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')", message: "End time must look like 18:00"}
@@ -107,6 +108,17 @@
     - {name: skip_auto_attendance, type: check}
     - {name: shift, type: link, to: ShiftType, read_only: true}
     - {name: attendance, type: link, to: Attendance, read_only: true, on_delete: set_null}
+    - {name: latitude, type: decimal, description: "Where the phone or browser said it was"}
+    - {name: longitude, type: decimal}
+    - {name: accuracy, type: decimal, min: "0", label: Accuracy (metres)}
+    - {name: photo, type: attach}
+    - {name: device_mark, type: data, description: "What the phone or browser says it is"}
+    - {name: distance, type: decimal, read_only: true, label: Distance (metres), description: "From the work location's point, less the position's accuracy"}
+    - {name: place_check, type: select, options: [Inside, Outside, No Position], read_only: true, in_list: true, in_filter: true, label: Place}
+    - {name: place_rule, type: data, read_only: true, hidden: true}
+  rules:
+    - {name: check_in_place, check: "doc.place_rule != 'Refuse' || doc.place_check == 'Inside'", field: latitude,
+       message: "Check in at your work location: this one is {% if doc.place_check == 'No Position' %}without a position{% else %}{{ doc.distance }} metres away{% endif %}"}
   unique: [[employee, log_time]]
   list: {columns: [employee_name, log_type, log_time, device_id], sort: log_time desc}
 
