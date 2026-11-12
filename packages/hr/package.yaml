@@ -17,8 +17,8 @@ modules:
     icon: users
     order: 70
     # The full and final statement comes with the connector to ERP (hr_erp); without it the item drops out.
-    items: [Employee, Department, Designation, Branch, EmployeeGrade, EmploymentType, EmployeeOnboarding, EmployeeSeparation, FullAndFinalStatement,
-            EmployeePromotion, EmployeeTransfer, report:employee_directory, report:headcount, report:employee_events]
+    items: [Employee, EmployeeDocument, EmployeeDocumentType, Department, Designation, Branch, EmployeeGrade, EmploymentType, EmployeeOnboarding, EmployeeSeparation, FullAndFinalStatement,
+            EmployeePromotion, EmployeeTransfer, report:employee_directory, report:headcount, report:employee_events, report:expiring_documents]
   - name: attendance
     label: Attendance & Leave
     icon: calendar
@@ -82,6 +82,7 @@ personal_data:
   - {entity: EmployeePromotion, match: employee_user, retain: "Employment records"}
   - {entity: EmployeeTransfer, match: employee_user, retain: "Employment records"}
   - {entity: Appraisal, match: employee_user, retain: "Employment records"}
+  - {entity: EmployeeDocument, match: employee_user, retain: "Employment records"}
 roles:
   - name: HR Manager
     description: Everything in HR, including bank and identity details.
@@ -90,6 +91,8 @@ roles:
       - {entity: TrainingEvent, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: TrainingRecord, read: true, export: true}
       - {entity: Employee, read: true, write: true, create: true, delete: true, export: true, import: true, read_groups: [bank, identity, personal], write_groups: [bank, identity, personal]}
+      - {entity: EmployeeDocumentType, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: EmployeeDocument, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Department, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Designation, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Branch, read: true, write: true, create: true, delete: true, export: true, import: true}
@@ -124,6 +127,9 @@ roles:
     description: Day-to-day HR work; no bank details and no approvals.
     permissions:
       - {entity: Employee, read: true, write: true, create: true, export: true, read_groups: [identity, personal], write_groups: [identity, personal]}
+      - {entity: EmployeeDocumentType, read: true}
+      # Documents of the categories whose employee details they see: general and identity, not bank.
+      - {entity: EmployeeDocument, read: true, write: true, create: true, delete: true, where: {category: [General, Identity]}}
       - {entity: Department, read: true, write: true, create: true}
       - {entity: Designation, read: true, write: true, create: true}
       - {entity: Branch, read: true, write: true, create: true}
@@ -157,6 +163,11 @@ roles:
     description: Self-service; sees and creates only their own records (the employee whose user is the signed-in user).
     permissions:
       - {entity: Employee, read: true, if_owner: true, read_groups: [bank, identity, personal]}
+      - {entity: EmployeeDocumentType, read: true}
+      # Their own documents of the types they may see (uploading only those the type lets them, checked on save),
+      # and as a manager, the general documents of those reporting to them whose type shows them to managers.
+      - {entity: EmployeeDocument, read: true, write: true, create: true, if_owner: true, where: {visible_to: [Employee, Employee and Manager]}}
+      - {entity: EmployeeDocument, read: true, via: employee.reports_to.user, where: {visible_to: Employee and Manager, category: General}}
       - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: EmployeeCheckin, read: true, create: true, if_owner: true}
       - {entity: Attendance, read: true, if_owner: true}
@@ -221,3 +232,18 @@ handover:
   - {entity: Employee, field: expense_approver}
   - {entity: LeaveApplication, field: leave_approver, where: {status: Open}}
   - {entity: AttendanceRequest, field: approver, where: {status: Open}}
+
+# What the app sends; a workspace edits the wording under Settings.
+messages:
+  - key: hr.document_expiring
+    label: Employee document about to expire
+    entity: EmployeeDocument
+    values: [document_type]
+    languages:
+      en:
+        email:
+          subject: "{{ values.document_type }} of {{ doc.employee_name }} expires on {{ doc.expiry_date }}"
+          body: "<p>The {{ values.document_type }} of {{ doc.employee_name }}{% if doc.document_number %} (number {{ doc.document_number }}){% endif %} expires on {{ doc.expiry_date }}.</p><p>Please renew it and add the new one to the employee's documents.</p>"
+        inapp:
+          title: "{{ values.document_type }} of {{ doc.employee_name }} expires on {{ doc.expiry_date }}"
+          text: "Renew it and add the new one to the employee's documents."

@@ -151,6 +151,11 @@ fn changes_after_payroll() {
 }
 
 #[test]
+fn employee_documents_with_expiry() {
+    run(documents_scenario());
+}
+
+#[test]
 fn hr_and_payroll_without_erp() {
     run(alone_scenario());
 }
@@ -3633,4 +3638,122 @@ async fn payslip_print_scenario() {
         let shown = ferrum_kernel::print::format_money(&s1[f], 2);
         assert!(page.contains(&shown), "{f} {shown} in {page}");
     }
+}
+
+// ───────────────────────────── employee documents ─────────────────────────────
+
+/// Sends of a template in the workspace.
+async fn sends(t: &T, template: &str) -> i64 {
+    let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+    sqlx::query_scalar("select count(*) from message_send where tenant_id = $1 and template = $2")
+        .bind(t.tenant)
+        .bind(template)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap()
+}
+
+/// Documents on employees: types say who uploads and sees them; HR verifies; the upkeep warns the employee and
+/// HR once before expiry (also when two runs race); the report lists what expires and what is missing.
+async fn documents_scenario() {
+    let t = T::new("hrdocs").await;
+    let hr = t.user("hr@hrdocs.test", &["HR Manager"]).await;
+    let clerk = t.user("clerk@hrdocs.test", &["HR User"]).await;
+    let asha_ctx = t.user("asha@hrdocs.test", &["Employee"]).await;
+    let mira_ctx = t.user("mira@hrdocs.test", &["Employee"]).await;
+    let ravi_ctx = t.user("ravi@hrdocs.test", &["Employee"]).await;
+    let mira = t.employee("Mira", json!({"user": "mira@hrdocs.test"})).await;
+    let asha = t.employee("Asha", json!({"user": "asha@hrdocs.test", "reports_to": mira["id"]})).await;
+    let _ravi = t.employee("Ravi", json!({"user": "ravi@hrdocs.test"})).await;
+    let kind = |name: &str, extra: Value| {
+        let mut v = obj(json!({"type_name": name}));
+        v.extend(obj(extra));
+        Value::Object(v)
+    };
+    let permit = t
+        .ins(
+            &hr,
+            "EmployeeDocumentType",
+            kind("Work Permit", json!({"visible_to": "Employee and Manager", "expires": true, "warn_days_before": 30, "required": true})),
+        )
+        .await;
+    let passport = t.ins(&hr, "EmployeeDocumentType", kind("Passport", json!({"category": "Identity", "self_upload": true, "expires": true}))).await;
+    let bank = t.ins(&hr, "EmployeeDocumentType", kind("Bank Proof", json!({"category": "Bank", "visible_to": "HR only"}))).await;
+    let today = chrono::Utc::now().date_naive();
+    let in_10 = (today + chrono::Duration::days(10)).to_string();
+
+    // The employee uploads their own passport; not a bank proof, not for a colleague, and an expiring type needs its date.
+    let pass = t
+        .ins(
+            &asha_ctx,
+            "EmployeeDocument",
+            json!({"employee": asha["id"], "document_type": passport["id"], "document_number": "P1234567", "expiry_date": "2031-01-31"}),
+        )
+        .await;
+    forbidden(t.try_ins(&asha_ctx, "EmployeeDocument", json!({"employee": asha["id"], "document_type": bank["id"]})).await);
+    forbidden(t.try_ins(&asha_ctx, "EmployeeDocument", json!({"employee": mira["id"], "document_type": passport["id"], "expiry_date": "2031-01-31"})).await);
+    refused(t.try_ins(&hr, "EmployeeDocument", json!({"employee": asha["id"], "document_type": permit["id"]})).await, "expiry_date");
+    let work =
+        t.ins(&hr, "EmployeeDocument", json!({"employee": asha["id"], "document_type": permit["id"], "document_number": "WP-1", "expiry_date": in_10})).await;
+    let proof = t.ins(&hr, "EmployeeDocument", json!({"employee": asha["id"], "document_type": bank["id"]})).await;
+    assert_eq!(work["category"], json!("General"));
+
+    // Who sees what: the employee their own (not the HR-only bank proof), their manager the general permit only,
+    // a colleague nothing, an HR user no bank document.
+    let seen = |docs: Vec<Doc>| {
+        let mut v: Vec<String> = docs.iter().map(|d| d["id"].as_str().unwrap().to_string()).collect();
+        v.sort();
+        v
+    };
+    let ids = |docs: &[&Doc]| {
+        let mut v: Vec<String> = docs.iter().map(|d| d["id"].as_str().unwrap().to_string()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(seen(t.list(&asha_ctx, "EmployeeDocument", json!({})).await), ids(&[&pass, &work]));
+    assert_eq!(seen(t.list(&mira_ctx, "EmployeeDocument", json!({})).await), ids(&[&work]));
+    assert!(t.list(&ravi_ctx, "EmployeeDocument", json!({})).await.is_empty());
+    assert_eq!(seen(t.list(&clerk, "EmployeeDocument", json!({})).await), ids(&[&pass, &work]));
+    assert_eq!(seen(t.list(&hr, "EmployeeDocument", json!({})).await), ids(&[&pass, &work, &proof]));
+    assert!(matches!(t.k.get(&mira_ctx, "EmployeeDocument", uid(&proof), false).await, Err(Error::NotFound(_))));
+
+    // HR verifies; the employee cannot, nor change it once verified; a changed number takes the verification away.
+    forbidden(t.k.run_action(&asha_ctx, "EmployeeDocument", uid(&pass), "verify", json!({})).await);
+    let v = t.act(&clerk, "EmployeeDocument", uid(&pass), "verify", json!({})).await;
+    assert_eq!(v["verified_by"], json!("clerk@hrdocs.test"));
+    forbidden(t.k.update(&asha_ctx, "EmployeeDocument", uid(&pass), obj(json!({"document_number": "P7654321"})), None).await);
+    let changed = t.k.update(&hr, "EmployeeDocument", uid(&pass), obj(json!({"document_number": "P7654321"})), None).await.unwrap();
+    assert!(changed["verified_on"].is_null() && changed["verified_by"].is_null());
+
+    // The permit enters its 30-day window: one warning, to Asha and the HR manager, however many runs race.
+    let (a, b) = tokio::join!(ferrum_app_hr::upkeep(&t.k, t.tenant), ferrum_app_hr::upkeep(&t.k, t.tenant));
+    a.unwrap();
+    b.unwrap();
+    assert_eq!(sends(&t, "hr.document_expiring").await, 2, "Asha and the HR manager, once");
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+    assert_eq!(sends(&t, "hr.document_expiring").await, 2, "nothing twice");
+    assert_eq!(t.get("EmployeeDocument", uid(&work)).await["expiry_warned_on"], json!(today.to_string()));
+    // Renewed with a later date, it is warned about again when that one nears.
+    let renewed =
+        t.k.update(&hr, "EmployeeDocument", uid(&work), obj(json!({"expiry_date": (today + chrono::Duration::days(20)).to_string()})), None).await.unwrap();
+    assert!(renewed["expiry_warned_on"].is_null());
+    ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+    assert_eq!(sends(&t, "hr.document_expiring").await, 4);
+
+    // The report: Asha's permit expiring, Mira's and Ravi's missing; the passport is years away.
+    let r = t.report(&hr, "expiring_documents", &[("company", &t.c())]).await.unwrap();
+    let rows: Vec<(String, String)> =
+        r["rows"].as_array().unwrap().iter().map(|r| (r["employee_name"].as_str().unwrap().to_string(), r["state"].as_str().unwrap().to_string())).collect();
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert!(
+        rows.contains(&("Asha Test".into(), "Expiring".into()))
+            && rows.contains(&("Mira Test".into(), "Missing".into()))
+            && rows.contains(&("Ravi Test".into(), "Missing".into()))
+    );
+    // Looking a long way ahead brings the passport; an employee sees only their own rows.
+    let far = t.report(&hr, "expiring_documents", &[("company", &t.c()), ("days", "3650")]).await.unwrap();
+    assert_eq!(far["rows"].as_array().unwrap().len(), 4);
+    let mine = t.report(&ravi_ctx, "expiring_documents", &[("company", &t.c())]).await.unwrap();
+    assert_eq!(mine["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(mine["rows"][0]["employee_name"], json!("Ravi Test"));
 }

@@ -9,6 +9,7 @@
 
 mod attendance;
 mod calendar;
+mod documents;
 mod expense;
 mod leave;
 mod payroll;
@@ -40,6 +41,7 @@ pub fn register(h: &mut HookRegistry) {
     leave::register(h);
     expense::register(h);
     talent::register(h);
+    h.register("EmployeeDocument", Arc::new(documents::DocumentHook));
     payroll::register(h);
     h.add_site("hr", Arc::new(site::HrSite));
 }
@@ -87,6 +89,7 @@ pub async fn upkeep(k: &Kernel, tenant: Uuid) -> Result<()> {
         ("leave accrual", leave::accrue_leaves(k, &ctx).await),
         ("job openings", talent::close_openings(k, &ctx).await),
         ("leavers", people::offboard_leavers(k, &ctx).await),
+        ("document expiry", documents::warn_expiring(k, &ctx).await),
     ];
     for (what, r) in results {
         if let Err(e) = r {
