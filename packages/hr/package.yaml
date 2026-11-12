@@ -1,5 +1,5 @@
 package: hr
-version: 0.5.0
+version: 0.6.0
 label: Human Resources
 description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
 depends: [core]
@@ -29,7 +29,7 @@ modules:
     label: Recruitment
     icon: user-plus
     order: 73
-    items: [JobRequisition, JobOpening, JobApplicant, Interview, JobOffer, JobStage, report:recruitment_pipeline]
+    items: [JobRequisition, JobOpening, JobApplicant, Interview, JobOffer, JobStage, RecruitmentSettings, report:recruitment_pipeline]
   - name: performance
     label: Performance
     icon: target
@@ -67,6 +67,31 @@ workflows:
 # What a personal-data request exports and erases for a person (their email). An employee keeps
 # their name and employment dates, which payroll and tax records need; their private contact,
 # family and bank details go. Applicants lose everything that names them.
+# What a workspace used to add by hand, shipped as defaults it may switch off, replace or edit: a requisition asks the
+# hiring manager's manager (an HR Manager when it names none), an offer an HR Manager and, by salary band, the people
+# Recruitment Settings names. A workspace that configured its own policy keeps it.
+approvals:
+  - entity: JobRequisition
+    on: submit
+    policy:
+      steps:
+        - {label: Hiring manager's manager, approvers: {field: manager_approver}, when: "!isEmpty(doc.manager_approver)"}
+        - {label: HR Manager, approvers: {role: HR Manager}, when: "isEmpty(doc.manager_approver)"}
+      reset_on: [hiring_manager, designation, vacancies]
+  - entity: JobOffer
+    on: submit
+    policy:
+      steps:
+        - {label: HR Manager, approvers: {role: HR Manager}}
+        - label: Offer band 1
+          approvers: {expr: "settings.RecruitmentSettings.offer_band_1_approver"}
+          when: "coalesce(settings.RecruitmentSettings.offer_band_1_above, 0) > 0 && !isEmpty(settings.RecruitmentSettings.offer_band_1_approver) && coalesce(doc.ctc, 0) > settings.RecruitmentSettings.offer_band_1_above"
+          not_earlier_deciders: true
+        - label: Offer band 2
+          approvers: {expr: "settings.RecruitmentSettings.offer_band_2_approver"}
+          when: "coalesce(settings.RecruitmentSettings.offer_band_2_above, 0) > 0 && !isEmpty(settings.RecruitmentSettings.offer_band_2_approver) && coalesce(doc.ctc, 0) > settings.RecruitmentSettings.offer_band_2_above"
+          not_earlier_deciders: true
+      reset_on: [ctc, job_applicant]
 personal_data:
   - {entity: Employee, match: personal_email, phone: cell_number, name: employee_name, erase: [personal_email, cell_number, current_address, permanent_address, date_of_birth, emergency_contact_name, emergency_phone, emergency_relation, bank_name, bank_account_no, ifsc_code, iban]}
   - {entity: JobApplicant, match: email_id, phone: phone_number, name: applicant_name, erase: [applicant_name, email_id, phone_number]}
@@ -88,6 +113,7 @@ roles:
   - name: HR Manager
     description: Everything in HR, including bank and identity details.
     permissions:
+      - {entity: RecruitmentSettings, read: true, write: true, create: true}
       - {entity: TrainingProgram, read: true, write: true, create: true, delete: true, export: true}
       - {entity: TrainingEvent, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: TrainingRecord, read: true, export: true}

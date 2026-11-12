@@ -62,7 +62,7 @@ Types and policies, allocations, approvals, a leave ledger, encashment (while em
 <td width="50%" valign="top">
 
 ### 🤝 Recruitment to separation
-Requisitions, openings, applicants through stages per job, scorecards and offers; employee documents with expiry warnings; onboarding and offboarding from templates, appraisals, promotions, transfers and exits with their notice served (at work until the last working day, a shortfall recovered, paid in lieu or waived), a leaver's sign-in ended after it, and their full and final statement (last pay, leave encashed, notice, gratuity by the company's rule, claims and advances) settled by one journal entry.
+Requisitions and offers that ask for approval first (the hiring manager's manager or an HR Manager; offers also by salary band, from Recruitment Settings), openings, applicants through stages per job, scorecards; employee documents with expiry warnings; onboarding and offboarding from templates, appraisals, promotions, transfers and exits with their notice served (at work until the last working day, a shortfall recovered, paid in lieu or waived), a leaver's sign-in ended after it, and their full and final statement (last pay, leave encashed, notice, gratuity by the company's rule, claims and advances) settled by one journal entry.
 
 </td>
 </tr>
@@ -325,6 +325,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.14.0** | Job requisitions and offers ask for approval before they are submitted, as package defaults: the hiring manager's manager (else an HR Manager), and an HR Manager plus, by salary band, the people Recruitment Settings names. |
 | **0.13.0** | Letters, certificates and the payslip as templates a workspace edits, each issued by a button with its own numbering series, filed among the employee's documents and mailed; payroll files from a report over slips; names in Arabic and Hindi. |
 | **0.12.0** | Employee documents with expiry warnings, onboarding and offboarding from templates, recruiting stages, requisitions and scorecards, payroll formulas over lookup tables and year-to-date figures, check-ins with a place. |
 | **0.11.3** | Rebuilt on the tuned design system: better menu icons, a lighter first page, a visible scroll cue, cleaner print. |

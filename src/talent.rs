@@ -99,6 +99,16 @@ struct RequisitionHook;
 
 #[async_trait]
 impl DocHook for RequisitionHook {
+    /// The sign-in of the hiring manager's manager, which the package's approval policy asks (none: an HR Manager does).
+    async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        let boss = match lookup(hc, "Employee", id(doc, "hiring_manager")).await? {
+            Some(m) => lookup(hc, "Employee", id(&m, "reports_to")).await?.and_then(|b| s(&b, "user").map(str::to_string)),
+            None => None,
+        };
+        set(doc, "manager_approver", boss.map(Value::String).unwrap_or_default());
+        Ok(())
+    }
+
     async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         same_company(hc, doc, "department", "Department").await
     }
