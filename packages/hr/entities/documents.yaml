@@ -1,0 +1,59 @@
+- name: EmployeeDocumentType
+  label: Employee Document Type
+  kind: master
+  module: hr
+  title_field: type_name
+  description: "A kind of document kept on employees (a contract, a work permit, an identity card, a certificate): whether it expires and how long before to warn, whether employees upload it themselves, who sees it, and whether everyone (or a group) must have one."
+  fields:
+    - {name: type_name, type: data, required: true, unique: true, in_list: true}
+    - {name: category, type: select, options: [General, Identity, Bank], default: General, required: true, in_list: true, in_filter: true,
+       description: "Identity and bank documents are seen only by those who see employees' identity or bank details"}
+    - {name: visible_to, type: select, options: [HR only, Employee, Employee and Manager], default: Employee, required: true, in_list: true, label: Who Sees It,
+       description: "Besides HR: the employee it is about, and their manager (general documents only)"}
+    - {name: self_upload, type: check, label: Employee May Upload, description: "Employees add their own; HR verifies them"}
+    - {name: expires, type: check, in_list: true, description: "A document of this type needs an expiry date"}
+    - {name: warn_days_before, type: int, min: "0", default: 30, visible_if: "doc.expires", label: Warn Days Before Expiry,
+       description: "The employee and HR are told this many days before a document expires, once"}
+    - {name: required, type: check, in_list: true, in_filter: true, description: "Every active employee (in the group below, when one is set) must have one; the Expiring and Missing Documents report lists who has not"}
+    - {name: required_department, type: link, to: Department, visible_if: "doc.required", label: Required in Department}
+    - {name: required_designation, type: link, to: Designation, visible_if: "doc.required", label: Required for Designation}
+    - {name: required_employment_type, type: link, to: EmploymentType, visible_if: "doc.required", label: Required for Employment Type}
+    - {name: required_branch, type: link, to: Branch, visible_if: "doc.required", label: Required at Branch}
+    - {name: description, type: text}
+    - {name: disabled, type: check, in_filter: true}
+  list: {columns: [type_name, category, visible_to, expires, required], sort: type_name asc}
+
+- name: EmployeeDocument
+  label: Employee Document
+  kind: master
+  internal: true
+  reference: restricted
+  module: hr
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-DOC-{YYYY}-{seq:5}"}
+  search_fields: [document_number]
+  description: "A document on an employee: the file, its number, when it was issued and expires, and who verified it. The employee sees their own when the type lets them, their manager a general one when the type says so; identity and bank documents stay with those who see those details."
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_list: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: document_type, type: link, to: EmployeeDocumentType, required: true, in_list: true, in_filter: true}
+    - {name: category, type: data, fetch_from: document_type.category, read_only: true, in_filter: true}
+    - {name: visible_to, type: data, fetch_from: document_type.visible_to, read_only: true, hidden: true}
+    - {name: warn_days_before, type: int, fetch_from: document_type.warn_days_before, read_only: true, hidden: true}
+    - {name: file, type: attach}
+    - {name: document_number, type: data, label: Number}
+    - {name: issue_date, type: date}
+    - {name: expiry_date, type: date, in_list: true, in_filter: true}
+    - {name: expiry_warned_on, type: date, read_only: true, no_copy: true, label: Expiry Warning Sent On}
+    - {name: verified_by, type: email, read_only: true, no_copy: true, in_list: true}
+    - {name: verified_on, type: date, read_only: true, no_copy: true}
+    - {name: notes, type: text}
+  rules:
+    - {name: expiry_after_issue, check: "doc.issue_date == null || doc.expiry_date == null || doc.expiry_date >= doc.issue_date", field: expiry_date, message: "cannot be before the issue date"}
+  actions:
+    - {name: verify, label: Verify, permission: write, condition: "doc.verified_on == null"}
+  list: {columns: [number, employee_name, document_type, document_number, expiry_date, verified_by], sort: created_at desc}

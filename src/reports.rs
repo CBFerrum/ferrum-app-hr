@@ -106,6 +106,17 @@ impl ReportSource for HrReports {
                 ],
             ),
             entry(
+                "expiring_documents",
+                "Expiring and Missing Documents",
+                "hr",
+                "EmployeeDocument",
+                vec![
+                    company(),
+                    link("document_type", "Document Type", "EmployeeDocumentType"),
+                    json!({"name": "days", "label": "Days Ahead", "type": "int", "description": "Each type's warning days when empty"}),
+                ],
+            ),
+            entry(
                 "monthly_attendance_sheet",
                 "Monthly Attendance Sheet",
                 "attendance",
@@ -182,6 +193,7 @@ impl ReportSource for HrReports {
             "employee_directory" => directory(&mut tx, ctx, co.id, &p).await?,
             "headcount" => headcount(&mut tx, ctx, co.id, &p, &co).await?,
             "employee_events" => events(&mut tx, ctx, co.id, &p).await?,
+            "expiring_documents" => expiring_documents(&mut tx, ctx, co.id, &p).await?,
             "monthly_attendance_sheet" => attendance_sheet(&mut tx, ctx, co.id, &p).await?,
             "leave_balance" => leave_balance(&mut tx, ctx, co.id, &p).await?,
             "expense_claim_summary" => {
@@ -321,6 +333,62 @@ async fn headcount(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>, co: &f
 /// the report, whether the workspace lets it go to the AI provider.
 fn sees(ctx: &Ctx, field: &str) -> bool {
     ctx.schema.entity("Employee").is_some_and(|e| ferrum_kernel::query::readable(ctx, e, field))
+}
+
+/// Each active employee's documents that are expired or expire within the type's warning days (or `days`), and
+/// those a required type lacks. Identity and bank documents are listed only to those who see employees' identity
+/// or bank details; someone limited to their own records sees their own, of types shown to them.
+async fn expiring_documents(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result<Value> {
+    let today = crate::local_today(tx, ctx.tenant).await?;
+    let days: Option<i32> = p.str("days").map(|d| d.parse().map_err(|_| Error::field("days", "must be a whole number"))).transpose()?;
+    let mut categories = vec!["General".to_string()];
+    if sees(ctx, "national_id") {
+        categories.push("Identity".into());
+    }
+    if sees(ctx, "bank_account_no") {
+        categories.push("Bank".into());
+    }
+    let own = own_only(ctx, "EmployeeDocument");
+    #[allow(clippy::type_complexity)]
+    let data: Vec<(Option<String>, Option<String>, String, String, Option<NaiveDate>)> = sqlx::query_as(
+        "with docs as (select employee, document_type, bool_or(expiry_date is null) open_ended, max(expiry_date) expiry, max(warn_days_before) warn \
+           from e_employee_document where tenant_id = $1 and company = $2 group by 1, 2), \
+         req as (select e.id employee, t.id document_type from e_employee e join e_employee_document_type t on t.tenant_id = e.tenant_id \
+           where e.tenant_id = $1 and e.company = $2 and t.required and not coalesce(t.disabled, false) \
+           and (t.required_department is null or t.required_department = e.department) and (t.required_designation is null or t.required_designation = e.designation) \
+           and (t.required_employment_type is null or t.required_employment_type = e.employment_type) and (t.required_branch is null or t.required_branch = e.branch)), \
+         due as (select employee, document_type from req union select employee, document_type from docs where not open_ended) \
+         select e.number, e.employee_name, t.type_name, case when d.employee is null then 'Missing' when d.expiry < $3 then 'Expired' else 'Expiring' end, d.expiry \
+         from due x left join docs d on d.employee = x.employee and d.document_type = x.document_type \
+         join e_employee e on e.tenant_id = $1 and e.id = x.employee join e_employee_document_type t on t.tenant_id = $1 and t.id = x.document_type \
+         where e.status = 'Active' and t.category = any($4) and ($5::uuid is null or t.id = $5) \
+         and ($6::text is null or (lower(e.\"user\") = $6 and t.visible_to <> 'HR only')) \
+         and (d.employee is null or (not d.open_ended and d.expiry <= $3 + coalesce($7, d.warn::int, 30))) \
+         order by 4 desc, 5 nulls first, 2, 3 limit 10001",
+    )
+    .bind(ctx.tenant)
+    .bind(company)
+    .bind(today)
+    .bind(&categories)
+    .bind(p.uuid("document_type")?)
+    .bind(own)
+    .bind(days)
+    .fetch_all(&mut **tx)
+    .await?;
+    let truncated = data.len() > MAX_ROWS;
+    let rows: Vec<Value> = data
+        .into_iter()
+        .take(MAX_ROWS)
+        .map(|(no, name, kind, state, expiry)| json!({"employee": no, "employee_name": name, "document_type": kind, "state": state, "expiry_date": expiry}))
+        .collect();
+    let count = rows.len();
+    Ok(json!({
+        "columns": [col("employee", "Employee", "data"), col("employee_name", "Name", "data"), col("document_type", "Document Type", "data"),
+            col("state", "State", "data"), col("expiry_date", "Expires", "date")],
+        "rows": rows,
+        "totals": {"count": count},
+        "meta": {"truncated": truncated, "as_of": today},
+    }))
 }
 
 async fn events(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result<Value> {

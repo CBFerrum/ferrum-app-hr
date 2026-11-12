@@ -31,6 +31,10 @@ pub(crate) const OWNED: &[&str] = &[
     "EmployeeTaxExemptionDeclaration",
 ];
 
+/// Entities about one employee whose `employee_user` follows the employee's sign-in, whose own checks say who
+/// may write them (an HR user reaches others' documents by a condition, so the self-service check does not fit).
+const FOLLOWS_SIGN_IN: &[&str] = &["EmployeeDocument"];
+
 pub(crate) fn register(h: &mut HookRegistry) {
     // The company's HR and payroll accounts come with the connectors to ERP.
     h.scoped(&[crate::HR_ERP.to_string(), crate::PAYROLL_ERP.to_string()], |h| {
@@ -223,7 +227,7 @@ impl DocHook for EmployeeHook {
             return Ok(());
         }
         let emp = id(doc, "id").ok_or_else(|| Error::internal("employee without id"))?;
-        for entity in OWNED {
+        for entity in OWNED.iter().chain(FOLLOWS_SIGN_IN) {
             let Some(ent) = hc.ctx.schema.entity(entity) else { continue };
             let sql = format!(
                 "update {} set employee_user = $3 where tenant_id = $1 and employee = $2 and employee_user is distinct from $3",
