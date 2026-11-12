@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.0
+
+HR 0.6.0. Approvals a workspace had to add by hand now ship with the package (Ferrum's package approval policies).
+
+- **A job requisition asks before it is submitted**: the hiring manager's manager when the request names a hiring manager (new field) whose manager has a sign-in (Approving Manager is worked out when it is saved), otherwise an HR Manager; the requester never approves their own. Approval opens the job as before.
+- **A job offer asks before it is submitted**: an HR Manager and, by salary band, the people Recruitment Settings (new, HR Manager) names: an offer whose CTC is above Band 1 (Band 2) also asks that person. With the bands empty, which is how it ships, one HR Manager step.
+- **Upgrading**: a workspace that already set its own approval on either document keeps it; one that set none now has the package's, which it can switch off or replace in Studio like any customization. Requisitions and offers waiting to be submitted ask on their next submit.
+
 ## 0.13.0
 
 Letters, certificates, the payslip and payroll files as document templates a workspace edits (Ferrum's document and message templates). HR 0.5.0, payroll 0.7.0. Nothing names a country; an upgraded workspace keeps working as before with no administrator action (a letter's document type and its numbering series are made the first time the button is pressed).
