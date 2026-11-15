@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.14.0-0e7490?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.14.1-0e7490?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -37,7 +37,7 @@ People (HR and Payroll) is the employee lifecycle for Ferrum: employees and orga
 
 | | |
 |---|---|
-| **Version** | 0.14.0 (packages `hr` 0.6.0, `payroll` 0.7.0, `hr_erp` 0.5.0, `payroll_erp` 0.4.0) |
+| **Version** | 0.14.1 (packages `hr` 0.6.1, `payroll` 0.7.0, `hr_erp` 0.5.0, `payroll_erp` 0.4.0) |
 | **Kind** | Its own interface at `/people/` (your space, approvals, team calendar, directory and org chart, public careers page) with Ferrum's records screens for everything else |
 | **What it adds** | 85 entities (56 records and 29 small tables), 7 roles, 6 modules (HR, Attendance and Leave, Recruitment, Performance, Expenses, Payroll), 3 approval workflows and 2 package approval policies, 12 reports, 1 print format, 7 document templates, 5 message templates, 6 notification kinds, 7 upkeep jobs, 2 example packs |
 | **Depends on** | Ferrum platform `>=0.3.2, <0.4`. The connector **HR and ERP** (expenses and payroll posting) needs ERP `>=0.1` and ships with this app |
@@ -144,7 +144,7 @@ People (HR and Payroll) is the employee lifecycle for Ferrum: employees and orga
 ### 🌴 Leave
 
 - **Leave Types:** maximum per year, applicable after, maximum continuous days, leave without pay, include holidays, allow negative balance, carry forward with a cap, encashment with a threshold.
-- **Leave Policies** list a type and its annual allocation, granted all at once or by **Monthly**, **Quarterly** or **Half-yearly** accrual. A policy chosen on the employee drives their allocation; the upkeep accrues each share when it is due.
+- **Leave Policies** list a type and its annual allocation, granted all at once or by **Monthly**, **Quarterly** or **Half-yearly** accrual. A policy chosen on the employee drives their allocation; the upkeep accrues each share when it is due, once a day whichever server runs it (the policy records the day).
 - **Allocations** with carry forward of unused leaves, and expiry of carried leaves by the upkeep.
 - **Leave Applications** are approved by the leave approver (or an HR manager) through a workflow: Open, Approved, Rejected, Cancelled. Half days on a chosen date. The balance is shown on the form.
 - **A ledger, not a counter.** Every change to a balance is an append-only ledger entry (allocation adds, application, encashment and expiry subtract), tied to the allocation it draws on. A balance is a sum; cancelling posts reversing entries.
@@ -419,6 +419,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 
 ### ✅ Recently shipped
 
+- [x] **0.14.1** Leave accrual's daily run is recorded on the policy, so it is done once a day whichever server runs the upkeep.
 - [x] **0.14.0** Job requisitions and offers ask for approval before they are submitted, as package defaults: the hiring manager's manager (else an HR Manager), and an HR Manager plus, by salary band, the people Recruitment Settings names.
 - [x] **0.13.0** Letters, certificates and the payslip as templates a workspace edits, each issued by a button with its own numbering series, filed among the employee's documents and mailed; payroll files from a report over slips; names in Arabic and Hindi.
 - [x] **0.12.0** Employee documents with expiry warnings, onboarding and offboarding from templates, recruiting stages, requisitions and scorecards, payroll formulas over lookup tables and year-to-date figures, check-ins with a place.

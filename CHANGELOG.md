@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.14.1
+
+HR 0.6.1. Nothing a server keeps in its memory decides what leave accrual does.
+
+- **Leave accrual runs once a day, whichever server runs the upkeep.** Each server remembered in its own memory which
+  policies it had accrued that day, so every server that took a turn at the upkeep (and every restart) did the day's
+  work again: it changed nothing, since what was granted is counted first, but it was the whole work each time. The
+  policy now records the day and how many active employees had it (`accrued_on`, `accrued_people`, hidden), every
+  server reads that, and the run takes it with an update only one run can win, in the transaction that grants the
+  leaves: of two runs at the same moment the second waits, then finds it done. A run that fails is undone with its
+  record and tried again on the next round. Someone given the policy or taken off it still runs it again that day.
+- **Upgrading.** Nothing to do: the first upkeep after the upgrade accrues each policy once more, which grants nothing
+  new, and records it. A server of the release before, still running during the upgrade, keeps its own memory as it
+  did.
+
 ## 0.14.0
 
 HR 0.6.0. Approvals a workspace had to add by hand now ship with the package (Ferrum's package approval policies).
