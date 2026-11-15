@@ -803,6 +803,51 @@ async fn accrual_scenario() {
     );
     ferrum_app_hr::upkeep(&t.k, t.tenant).await.expect("maintenance again");
     assert_eq!(t.list(&t.admin, "LeaveAllocation", json!({"employee": ann["id"], "leave_type": casual, "from_date": format!("{year}-01-01")})).await.len(), 1);
+    // That today's run is done is a fact on the policy, where every replica reads it: the day and how many had it.
+    let marked = t.get("LeavePolicy", uid(&policy)).await;
+    assert_eq!((marked.get("accrued_on").cloned(), marked.get("accrued_people").cloned()), (Some(json!(today)), Some(json!(3))), "{marked:?}");
+
+    // When a run is due (here Ann's shares taken off her ledger, and the mark cleared), two replicas at once run it
+    // once: the second waits for the first's mark, finds it, and the shares are granted again once.
+    let ann_now = uid(&now[0]);
+    let granted = |t: &T| {
+        let (k, tenant) = (t.k.clone(), t.tenant);
+        async move {
+            let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+            let sum: Decimal = sqlx::query_scalar("select coalesce(sum(leaves), 0) from e_leave_ledger_entry where tenant_id = $1 and allocation = $2")
+                .bind(tenant)
+                .bind(ann_now)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            sum
+        }
+    };
+    let before = granted(&t).await;
+    {
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        sqlx::query(
+            "delete from e_leave_ledger_entry where tenant_id = $1 and allocation = $2 and transaction_type = 'Leave Allocation' and not is_carry_forward",
+        )
+        .bind(t.tenant)
+        .bind(ann_now)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query("update e_leave_policy set accrued_on = null where tenant_id = $1 and id = $2")
+            .bind(t.tenant)
+            .bind(uid(&policy))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert!(granted(&t).await < before, "shares are due again");
+    let (a, b) = tokio::join!(ferrum_app_hr::upkeep(&t.k, t.tenant), ferrum_app_hr::upkeep(&t.k, t.tenant));
+    a.expect("one replica");
+    b.expect("another");
+    assert_eq!(granted(&t).await, before, "granted once, by one of them");
+    assert_eq!(t.get("LeavePolicy", uid(&policy)).await.get("accrued_on"), Some(&json!(today)));
 }
 
 // ───────────────────────────── the screens' endpoints ─────────────────────────────

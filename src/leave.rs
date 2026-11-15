@@ -12,9 +12,7 @@ use ferrum_domain::util::{b, d, elevated, find, get, id, money, round, rows, s, 
 use ferrum_kernel::{Action, Ctx, Doc, DocHook, Error, Filter, HookCtx, HookRegistry, Kernel, Result, Tx};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 use uuid::Uuid;
 
 pub(crate) fn register(h: &mut HookRegistry) {
@@ -575,14 +573,13 @@ pub(crate) async fn accrue_policy(hc: &mut HookCtx<'_>, policy: &Doc, on: NaiveD
     Ok((granted, left_alone))
 }
 
-/// What each policy's accrual last ran for: the day (the tenant's) and how many employees had the
-/// policy then. The minute-by-minute upkeep does the work once a day, and again when someone is
-/// given or loses the policy. A restart runs it once more, which changes nothing.
-static ACCRUED_FOR: Mutex<BTreeMap<(Uuid, Uuid), (NaiveDate, i64)>> = Mutex::new(BTreeMap::new());
-
-/// Maintenance: grants the accrued leaves of every policy that has accruing lines, each policy in
-/// a transaction of its own. A policy that fails is logged and does not stop the rest; it is tried
-/// again on the next round.
+/// Maintenance: grants the accrued leaves of every policy that has accruing lines, once a day (the
+/// tenant's) and again when someone is given or loses the policy. What a policy last ran for, the
+/// day and how many employees had it, is kept on the policy (`accrued_on`, `accrued_people`), where
+/// every replica reads it. Each policy runs in a transaction of its own that first takes that mark
+/// with an update only one run can win, and does the work under it: of two replicas at once, the
+/// second waits, then finds it done. A policy that fails is logged, its mark undone with its work,
+/// and tried again on the next round; it does not stop the rest.
 pub(crate) async fn accrue_leaves(k: &Kernel, ctx: &Ctx) -> Result<()> {
     let Some(ent) = ctx.schema.entity("LeaveAllocation").cloned() else { return Ok(()) };
     // A workspace that has not taken the upgrade that brought accrual has nothing to accrue.
@@ -592,39 +589,47 @@ pub(crate) async fn accrue_leaves(k: &Kernel, ctx: &Ctx) -> Result<()> {
     }
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let on = local_today(&mut tx, ctx.tenant).await?;
-    let policies: Vec<(Uuid, i64)> = sqlx::query_as(
-        "select p.parent_id, (select count(*) from e_employee e where e.tenant_id = $1 and e.leave_policy = p.parent_id and e.status = 'Active') \
-         from (select distinct parent_id from e_leave_policy__leave_policy_details where tenant_id = $1 and accrual is not null) p",
+    let policies: Vec<(Uuid, i64, Option<NaiveDate>, Option<i64>)> = sqlx::query_as(
+        "select p.parent_id, (select count(*) from e_employee e where e.tenant_id = $1 and e.leave_policy = p.parent_id and e.status = 'Active'), \
+         l.accrued_on, l.accrued_people \
+         from (select distinct parent_id from e_leave_policy__leave_policy_details where tenant_id = $1 and accrual is not null) p \
+         join e_leave_policy l on l.tenant_id = $1 and l.id = p.parent_id",
     )
     .bind(ctx.tenant)
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
     let mut first_error = None;
-    for (policy, people) in policies {
-        let key = (ctx.tenant, policy);
-        if ACCRUED_FOR.lock().is_ok_and(|m| m.get(&key) == Some(&(on, people))) {
+    for (policy, people, accrued_on, accrued_people) in policies {
+        if (accrued_on, accrued_people) == (Some(on), Some(people)) {
             continue;
         }
         let done = async {
             let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+            let mine: Option<Uuid> = sqlx::query_scalar(
+                "update e_leave_policy set accrued_on = $3, accrued_people = $4 where tenant_id = $1 and id = $2 \
+                 and (accrued_on is distinct from $3 or accrued_people is distinct from $4) returning id",
+            )
+            .bind(ctx.tenant)
+            .bind(policy)
+            .bind(on)
+            .bind(people)
+            .fetch_optional(&mut *tx)
+            .await?;
+            // Another replica ran it meanwhile.
+            if mine.is_none() {
+                return Ok::<_, Error>(());
+            }
             let doc = k.get_tx(&sys(ctx), &mut tx, "LeavePolicy", policy, false).await?;
             let mut hc = HookCtx { kernel: k, ctx, tx: &mut tx, entity: &ent };
             accrue_policy(&mut hc, &doc, on).await?;
             tx.commit().await?;
-            Ok::<_, Error>(())
+            Ok(())
         }
         .await;
-        match done {
-            Ok(()) => {
-                if let Ok(mut m) = ACCRUED_FOR.lock() {
-                    m.insert(key, (on, people));
-                }
-            }
-            Err(e) => {
-                tracing::warn!(tenant = %ctx.tenant, %policy, "leave accrual failed: {e}");
-                first_error.get_or_insert(e);
-            }
+        if let Err(e) = done {
+            tracing::warn!(tenant = %ctx.tenant, %policy, "leave accrual failed: {e}");
+            first_error.get_or_insert(e);
         }
     }
     first_error.map_or(Ok(()), Err)
