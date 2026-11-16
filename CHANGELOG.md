@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.15.2
+
+Payroll 0.8.1. Needs the same platform as 0.15.1, and ERP 0.30 for the suite. No interface change.
+
+- **Payroll's package has one SQL file.** `002_payroll_opening.sql` and `003_payroll_corrections.sql` are folded into
+  `001_payroll_keys.sql` (the schema they make is unchanged). **Upgrading:** a development database that applied the
+  old files is reset (a new database is made afresh); nothing else changes.
+- The end-to-end suite looks the salary component's liability account up as "Withholding Tax Payable", the name ERP
+  0.30 gives the chart account that was "TDS Payable".
+
 ## 0.15.1
 
 Needs the same platform as 0.15.0. No database change. Interface only, `ui/dist` rebuilt with Ferrum-Frontend `06bd1a2`.
