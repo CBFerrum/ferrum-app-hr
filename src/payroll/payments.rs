@@ -11,7 +11,7 @@
 //! leaving out held salaries. The bank file lists the same, so their totals agree.
 
 use ferrum_domain::util::{money, set, sys};
-use ferrum_kernel::{Doc, HookCtx, Result};
+use ferrum_kernel::{Doc, Error, HookCtx, Result};
 use rust_decimal::Decimal;
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -45,7 +45,9 @@ pub(crate) async fn due(hc: &mut HookCtx<'_>, run: Uuid) -> Result<Vec<Due>> {
     Ok(rows.into_iter().map(|(slip, employee, number, name, amount, own)| Due { slip, employee, number, name, amount, own }).collect())
 }
 
-/// Records what `source` paid each slip, then their paid amounts.
+/// Records what `source` paid each slip, then their paid amounts. A payment settles what a slip owes and no more,
+/// either way: one that read a slip as owed while another paid it (two runs that list a carried slip, a run and a
+/// payment recorded elsewhere or a statement) finds it settled here, and is refused.
 pub(crate) async fn allocate(hc: &mut HookCtx<'_>, source: Uuid, items: &[(Uuid, Decimal)]) -> Result<()> {
     for (slip, amount) in items.iter().filter(|i| !i.1.is_zero()) {
         sqlx::query(
@@ -60,7 +62,20 @@ pub(crate) async fn allocate(hc: &mut HookCtx<'_>, source: Uuid, items: &[(Uuid,
         .await?;
     }
     let slips: Vec<Uuid> = items.iter().map(|i| i.0).collect();
-    refresh(hc, &slips).await
+    refresh(hc, &slips).await?;
+    for (slip, amount) in items.iter().filter(|i| !i.1.is_zero()) {
+        let (number, owed): (String, Decimal) = sqlx::query_as(
+            "select coalesce(number, id::text), coalesce(net_pay, 0) - coalesce(paid_amount, 0) from e_salary_slip where tenant_id = $1 and id = $2",
+        )
+        .bind(hc.ctx.tenant)
+        .bind(slip)
+        .fetch_one(&mut **hc.tx)
+        .await?;
+        if (*amount > Decimal::ZERO && owed < Decimal::ZERO) || (*amount < Decimal::ZERO && owed > Decimal::ZERO) {
+            return Err(Error::invalid(format!("salary slip {number} was settled meanwhile; try again")));
+        }
+    }
+    Ok(())
 }
 
 /// Undoes everything `source` paid, then the paid amounts of the slips it paid.
@@ -120,9 +135,16 @@ pub(crate) async fn open_for_leaver(
 /// The paid amounts of `slips` from their rows, and the status of the runs they belong to: Paid
 /// once every slip of the run is paid.
 pub(crate) async fn refresh(hc: &mut HookCtx<'_>, slips: &[Uuid]) -> Result<()> {
+    let slips: BTreeSet<Uuid> = slips.iter().copied().collect();
+    // Held before their rows are summed: what another payment wrote meanwhile is counted, never written over.
+    sqlx::query("select 1 from e_salary_slip where tenant_id = $1 and id = any($2) order by id for no key update")
+        .bind(hc.ctx.tenant)
+        .bind(slips.iter().copied().collect::<Vec<_>>())
+        .execute(&mut **hc.tx)
+        .await?;
     let sctx = sys(hc.ctx);
     let mut runs = BTreeSet::new();
-    for slip in slips.iter().collect::<BTreeSet<_>>() {
+    for slip in &slips {
         let (paid, run): (Decimal, Option<Uuid>) = sqlx::query_as(
             "select coalesce((select sum(amount) from pay_salary_payment p where p.tenant_id = s.tenant_id and p.salary_slip = s.id), 0), s.payroll_entry \
              from e_salary_slip s where s.tenant_id = $1 and s.id = $2",
