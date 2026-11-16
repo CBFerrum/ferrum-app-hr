@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.15.0
+
+Payroll 0.8.0, Payroll and ERP 0.5.0. Needs the same platform as 0.14.2. No interface change. The packages' SQL reads
+as their final schema, and a database is made afresh.
+
+- **No upgrade history in the package SQL.** `payroll_erp/001_salary_payments.sql` shared out the bank entries made
+  before 0.10.0, which paid a run as a whole, over its slips. Every bank entry Payroll makes records what it pays each
+  slip, so the file is gone, and Payroll and ERP has no SQL of its own.
+- **One definition of a slip's period.** `payroll/001_payroll_keys.sql` makes the constraint that keeps one regular
+  slip per employee and period, with off-cycle slips beside it; `003_payroll_corrections.sql` no longer drops and
+  makes it again, and only makes the table of what each slip was paid.
+
+Tests: the end-to-end suite no longer runs that file over a paid run, nor the scenario of a run paid in part twice the
+old way; a payroll bank entry for less than what is due is still refused.
+
 ## 0.14.2
 
 A salary is paid once, however its payments meet. No package changes.
