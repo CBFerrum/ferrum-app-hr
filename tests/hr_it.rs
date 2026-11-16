@@ -1322,7 +1322,7 @@ async fn payroll_scenario() {
     let pf_acc = t.ins(&t.admin, "Account", liability("Provident Fund Payable")).await;
     let pt_acc = t.ins(&t.admin, "Account", liability("Professional Tax Payable")).await;
     t.k.update(&pm, "SalaryComponent", uid(&pf), obj(json!({"accounts": [{"company": t.c(), "account": pf_acc["id"]}]})), None).await.unwrap();
-    t.k.update(&pm, "SalaryComponent", uid(&it), obj(json!({"accounts": [{"company": t.c(), "account": t.account("TDS Payable").await}]})), None)
+    t.k.update(&pm, "SalaryComponent", uid(&it), obj(json!({"accounts": [{"company": t.c(), "account": t.account("Withholding Tax Payable").await}]})), None)
         .await
         .unwrap();
     let pt = t
@@ -1441,7 +1441,7 @@ async fn payroll_scenario() {
     assert_eq!(t.gl("Salaries").await, n("201500"));
     assert_eq!(t.gl("Provident Fund Payable").await, n("-4290"));
     assert_eq!(t.gl("Professional Tax Payable").await, n("-600"));
-    assert_eq!(t.gl("TDS Payable").await, n("-4462.86"));
+    assert_eq!(t.gl("Withholding Tax Payable").await, n("-4462.86"));
     assert_eq!(t.gl("Payroll Payable").await, n("-192147.14"));
     refused(t.k.cancel(&pm, "SalarySlip", uid(&s1), None).await, "cancel the payroll entry instead");
     refused(t.k.cancel(&pm, "SalaryStructureAssignment", uid(&ssa1), None).await, "computed from this assignment");
@@ -2483,7 +2483,7 @@ async fn corrections_scenario() {
     let epf_cost = t.ins(&t.admin, "Account", account("Employer PF Cost", "Expense")).await;
     let ops = t.ins(&t.admin, "CostCenter", json!({"cost_center_name": "Operations", "company": t.c()})).await;
     t.k.update(&pm, "SalaryComponent", uid(&pf), obj(json!({"accounts": [{"company": t.c(), "account": pf_acc["id"]}]})), None).await.unwrap();
-    t.k.update(&pm, "SalaryComponent", uid(&it), obj(json!({"accounts": [{"company": t.c(), "account": t.account("TDS Payable").await}]})), None)
+    t.k.update(&pm, "SalaryComponent", uid(&it), obj(json!({"accounts": [{"company": t.c(), "account": t.account("Withholding Tax Payable").await}]})), None)
         .await
         .unwrap();
     let epf = t
@@ -2764,7 +2764,7 @@ async fn corrections_scenario() {
     // ───────────── a whole run with a corrected slip, cancelled ─────────────
     let before: Vec<Decimal> = {
         let mut v = Vec::new();
-        for a in ["Salaries", "Provident Fund Payable", "TDS Payable", "Employer PF Payable", "Employer PF Cost", "Payroll Payable"] {
+        for a in ["Salaries", "Provident Fund Payable", "Withholding Tax Payable", "Employer PF Payable", "Employer PF Cost", "Payroll Payable"] {
             v.push(t.gl(a).await);
         }
         v
@@ -2792,7 +2792,7 @@ async fn corrections_scenario() {
     let hers: Decimal = t.list(&t.admin, "SalarySlip", json!({"employee": asha["id"], "docstatus": 1})).await.iter().map(|s| dec(&s["gross_pay"])).sum();
     assert_eq!(on_ops, hers);
     t.k.cancel(&pm, "PayrollEntry", jan, None).await.expect("cancel January");
-    for (a, was) in ["Salaries", "Provident Fund Payable", "TDS Payable", "Employer PF Payable", "Employer PF Cost", "Payroll Payable"].iter().zip(before) {
+    for (a, was) in ["Salaries", "Provident Fund Payable", "Withholding Tax Payable", "Employer PF Payable", "Employer PF Cost", "Payroll Payable"].iter().zip(before) {
         assert_eq!(t.gl(a).await, was, "{a}");
     }
     assert!(t.list(&t.admin, "SalarySlip", json!({"payroll_entry": jan.to_string(), "docstatus": 1})).await.is_empty());
@@ -2974,7 +2974,7 @@ async fn arrears_scenario() {
     let account = |name: &str, root: &str| json!({"account_name": name, "company": t.c(), "root_type": root});
     let pf_acc = t.ins(&t.admin, "Account", account("Provident Fund Payable", "Liability")).await;
     let epf_acc = t.ins(&t.admin, "Account", account("Employer PF Payable", "Liability")).await;
-    t.k.update(&pm, "SalaryComponent", uid(&it), obj(json!({"accounts": [{"company": t.c(), "account": t.account("TDS Payable").await}]})), None)
+    t.k.update(&pm, "SalaryComponent", uid(&it), obj(json!({"accounts": [{"company": t.c(), "account": t.account("Withholding Tax Payable").await}]})), None)
         .await
         .unwrap();
     let pf = t
@@ -3196,7 +3196,7 @@ impl P {
             )
             .await;
         let it = t.one("SalaryComponent", json!({"abbr": "IT"})).await;
-        t.k.update(&pm, "SalaryComponent", uid(&it), obj(json!({"accounts": [{"company": t.c(), "account": t.account("TDS Payable").await}]})), None)
+        t.k.update(&pm, "SalaryComponent", uid(&it), obj(json!({"accounts": [{"company": t.c(), "account": t.account("Withholding Tax Payable").await}]})), None)
             .await
             .unwrap();
         let st = t
