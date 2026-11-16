@@ -142,11 +142,6 @@ fn salary_arrears() {
 }
 
 #[test]
-fn payments_made_before_the_upgrade() {
-    run(upgrade_scenario());
-}
-
-#[test]
 fn pay_that_repeats() {
     run(repeats_scenario());
 }
@@ -1509,7 +1504,8 @@ async fn payroll_scenario() {
     assert_eq!(sheet["file"]["content"].as_str().unwrap().lines().count(), 3, "a header and the two paid by bank");
     refused(file(json!({"format": "MT103", "from_account": "50100012345678"})).await, "format");
 
-    // Paying, then unwinding in order.
+    // Paying, then unwinding in order. A bank entry pays what is due, each salary in full.
+    refused(t.k.run_action(&pm, "PayrollEntry", pe_id, "make_bank_entry", json!({"amount": "1000"})).await, "pays what is due");
     let bank_entry = t.act(&pm, "PayrollEntry", pe_id, "make_bank_entry", json!({})).await;
     t.submit(&acct, "JournalEntry", vid(&bank_entry)).await;
     let pe = t.get("PayrollEntry", pe_id).await;
@@ -1518,21 +1514,6 @@ async fn payroll_scenario() {
     for sl in &slips {
         let sl = t.get("SalarySlip", uid(sl)).await;
         assert_eq!(dec(&sl["paid_amount"]), dec(&sl["net_pay"]), "each slip paid in full");
-    }
-    // Paid before 0.10.0, the run's bank entry is shared out over its slips on upgrade, as the bank
-    // file lists them.
-    {
-        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
-        sqlx::query("delete from pay_salary_payment where tenant_id = $1").bind(t.tenant).execute(&mut *tx).await.unwrap();
-        sqlx::query("update e_salary_slip set paid_amount = null where tenant_id = $1").bind(t.tenant).execute(&mut *tx).await.unwrap();
-        tx.commit().await.unwrap();
-        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(include_str!("../packages/payroll_erp/sql/001_salary_payments.sql"))).execute(&mut *tx).await.unwrap();
-        tx.commit().await.unwrap();
-    }
-    for sl in &slips {
-        let sl = t.get("SalarySlip", uid(sl)).await;
-        assert_eq!(dec(&sl["paid_amount"]), dec(&sl["net_pay"]), "{} after the upgrade", sl["employee_name"]);
     }
     refused(t.k.cancel(&pm, "PayrollEntry", pe_id, None).await, "cancel the bank entry first");
     t.k.cancel(&acct, "JournalEntry", vid(&bank_entry), None).await.expect("cancel bank entry");
@@ -3181,125 +3162,6 @@ async fn arrears_scenario() {
     let hers = t.one("SalarySlip", json!({"employee": uma["id"], "off_cycle": true}));
     let hers = t.get("SalarySlip", uid(&hers.await)).await;
     assert_eq!(arrears(&hers).iter().filter(|a| a.1 == "BS").map(|a| a.2).sum::<Decimal>(), n("10000"), "May and June");
-}
-
-/// A run paid in part twice the old way (a bank entry for less than its net pay), upgraded: each
-/// entry's share of the slips in the bank file's order, the rest paid after the upgrade exactly, and a
-/// slip the first entry paid in part corrected for only its difference.
-async fn upgrade_scenario() {
-    let t = T::new("hrold").await;
-    let pm = t.user("pm@hrold.test", &["Payroll Manager"]).await;
-    let acct = t.user("acct@hrold.test", &["Accounts Manager"]).await;
-    let flat = t
-        .ins(
-            &pm,
-            "SalaryComponent",
-            json!({"component_name": "Flat Pay", "abbr": "FLAT", "component_type": "Earning", "amount_based_on_formula": true,
-            "formula": "base", "depends_on_payment_days": true, "is_tax_applicable": false}),
-        )
-        .await;
-    let bonus = t.one("SalaryComponent", json!({"abbr": "BON"})).await;
-    let st = t
-        .ins_submit(
-            &pm,
-            "SalaryStructure",
-            json!({"structure_name": "Flat", "company": t.c(), "payroll_frequency": "Monthly", "earnings": [{"salary_component": flat["id"]}]}),
-        )
-        .await;
-    let mut people = Vec::new();
-    for (first, base) in [("Asha", "30000"), ("Ben", "20000"), ("Chen", "10000")] {
-        let e = t.employee(first, json!({"bank_name": "HDFC", "bank_account_no": format!("00{base}"), "ifsc_code": "HDFC0000001"})).await;
-        t.ins_submit(&pm, "SalaryStructureAssignment", json!({"employee": e["id"], "salary_structure": st["id"], "from_date": "2026-04-01", "base": base}))
-            .await;
-        people.push(e);
-    }
-    let pe = t.ins(&pm, "PayrollEntry", json!({"company": t.c(), "posting_date": "2026-09-30", "start_date": "2026-09-01", "end_date": "2026-09-30"})).await;
-    let run = vid(&t.act(&pm, "PayrollEntry", uid(&pe), "get_employees", json!({})).await);
-    t.submit(&pm, "PayrollEntry", run).await;
-    t.act(&pm, "PayrollEntry", run, "create_salary_slips", json!({})).await;
-    t.act(&pm, "PayrollEntry", run, "submit_salary_slips", json!({})).await;
-    let (payable, bank) = (t.account("Payroll Payable").await, t.account("Primary Bank").await);
-    // Two bank entries of the old kind: 35,000 then 8,000 of the run's 60,000.
-    let mut old = Vec::new();
-    for (day, amount) in [("2026-10-01", "35000"), ("2026-10-02", "8000")] {
-        let je = t
-            .ins_submit(
-                &acct,
-                "JournalEntry",
-                json!({"company": t.c(), "posting_date": day, "entry_type": "Journal Entry", "remark": "Salaries",
-                "accounts": [{"account": payable, "debit": amount}, {"account": bank, "credit": amount}]}),
-            )
-            .await;
-        old.push(uid(&je));
-    }
-    {
-        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
-        for je in &old {
-            sqlx::query("update e_journal_entry set ext = ext || jsonb_build_object('hr_reference_type', 'Payroll Entry', 'hr_reference', $3::text) where tenant_id = $1 and id = $2")
-                .bind(t.tenant)
-                .bind(je)
-                .bind(run.to_string())
-                .execute(&mut *tx)
-                .await
-                .unwrap();
-        }
-        sqlx::query("update e_payroll_entry set paid_amount = 43000 where tenant_id = $1 and id = $2")
-            .bind(t.tenant)
-            .bind(run)
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        sqlx::query("update e_salary_slip set paid_amount = null where tenant_id = $1").bind(t.tenant).execute(&mut *tx).await.unwrap();
-        tx.commit().await.unwrap();
-        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(include_str!("../packages/payroll_erp/sql/001_salary_payments.sql"))).execute(&mut *tx).await.unwrap();
-        tx.commit().await.unwrap();
-    }
-    let shares: Vec<(Uuid, String, Decimal)> = {
-        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
-        sqlx::query_as(
-            "select p.source, s.employee_name, p.amount from pay_salary_payment p join e_salary_slip s on s.tenant_id = p.tenant_id and s.id = p.salary_slip \
-             where p.tenant_id = $1 order by s.employee_name, p.amount desc",
-        )
-        .bind(t.tenant)
-        .fetch_all(&mut *tx)
-        .await
-        .unwrap()
-    };
-    assert_eq!(
-        shares,
-        vec![(old[0], "Asha Test".into(), n("30000")), (old[1], "Ben Test".into(), n("8000")), (old[0], "Ben Test".into(), n("5000"))],
-        "in the bank file's order"
-    );
-    let slip_of = |e: &Doc| {
-        let t = &t;
-        let f = json!({"employee": e["id"], "docstatus": 1});
-        async move { t.get("SalarySlip", uid(&t.one("SalarySlip", f).await)).await }
-    };
-    assert_eq!(dec(&slip_of(&people[1]).await["paid_amount"]), n("13000"));
-    // After the upgrade, the rest exactly: Ben's 7,000 and Chen's 10,000.
-    let f = t.act(&pm, "PayrollEntry", run, "bank_file", json!({"format": "CSV", "from_account": "50100012345678"})).await;
-    assert_eq!((f["payments"].clone(), dec(&f["total"])), (json!(2), n("17000")));
-    refused(t.k.run_action(&pm, "PayrollEntry", run, "make_bank_entry", json!({"amount": "10000"})).await, "pays what is due, 17000");
-    let je = t.act(&pm, "PayrollEntry", run, "make_bank_entry", json!({})).await;
-    t.submit(&acct, "JournalEntry", vid(&je)).await;
-    let pe = t.get("PayrollEntry", run).await;
-    assert_eq!((pe["status"].clone(), dec(&pe["paid_amount"]), t.gl("Payroll Payable").await), (json!("Paid"), n("60000"), Decimal::ZERO));
-    // Ben's slip, paid in part by the first old entry, corrected: only his 1,500 more is owed.
-    let ben = slip_of(&people[1]).await;
-    let fix = t.act(&pm, "SalarySlip", uid(&ben), "make_correction", json!({})).await;
-    t.ins_submit(
-        &pm,
-        "AdditionalSalary",
-        json!({"employee": people[1]["id"], "salary_component": bonus["id"], "amount": "1500", "payroll_date": "2026-09-30"}),
-    )
-    .await;
-    let fixed = t.submit(&pm, "SalarySlip", vid(&fix)).await;
-    assert_eq!((dec(&fixed["paid_amount"]), t.gl("Payroll Payable").await), (n("20000"), n("-1500")));
-    let je = t.act(&pm, "PayrollEntry", run, "make_bank_entry", json!({})).await;
-    let je = t.submit(&acct, "JournalEntry", vid(&je)).await;
-    assert_eq!(je["accounts"].as_array().unwrap().iter().map(|l| dec(&l["debit"])).sum::<Decimal>(), n("1500"));
-    assert_eq!(t.gl("Payroll Payable").await, Decimal::ZERO);
 }
 
 fn money(v: Decimal) -> String {

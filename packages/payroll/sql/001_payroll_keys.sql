@@ -2,8 +2,10 @@
 -- which would block amending a cancelled document). The hooks check the same rules with friendlier
 -- messages; these constraints close the race between two concurrent saves.
 
+-- One regular salary slip per employee and period, and beside it off-cycle slips: one per employee and day.
 alter table e_salary_slip add constraint ex_salary_slip_employee_period
-  exclude using gist (tenant_id with =, employee with =, daterange(start_date, end_date, '[]') with &&) where (docstatus < 2);
+  exclude using gist (tenant_id with =, employee with =, (coalesce(off_cycle, false)) with =, daterange(start_date, end_date, '[]') with &&)
+  where (docstatus < 2);
 
 create unique index uq_salary_structure_assignment_day on e_salary_structure_assignment (tenant_id, employee, from_date) where docstatus = 1;
 
