@@ -35,7 +35,7 @@ async fn kernel() -> Arc<Kernel> {
             let catalog = Catalog::from_packages(packages).expect("catalog");
             let mut hooks = HookRegistry::default();
             ferrum_domain::register(&mut hooks);
-            ferrum_app_erp::register(&mut hooks);
+            hooks.app("erp", &[], ferrum_app_erp::register);
             for source in ferrum_app_erp::reports() {
                 ferrum_domain::reports::add_source(source);
             }
