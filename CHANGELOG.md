@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.14.2
+
+A salary is paid once, however its payments meet. No package changes.
+
+- **Two payments that list the same salary at the same moment pay it once.** A salary carried into later runs (a
+  correction, or one held and released) is listed by the bank entry of every run that lists its employee, and by its
+  own run's payment recorded elsewhere or a leaver's statement. Each read what was still owed without holding the slip,
+  so two of them submitted at the same moment both paid it: a bank entry beside a payment recorded elsewhere at any
+  time, or two bank entries numbered from different series (dated in two fiscal years, say; entries of one series
+  waited for each other's number first). The slip even showed it paid once, since the second wrote its total over the
+  first's. Now the slip is held while what was paid of it is added up, and a payment that would take it past what it
+  owes is refused (salary slip … was settled meanwhile; try again): made again, a bank entry pays what is still due.
+- **Upgrading.** Nothing to do.
+
 ## 0.14.1
 
 HR 0.6.1. Nothing a server keeps in its memory decides what leave accrual does.
