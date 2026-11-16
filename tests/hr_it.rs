@@ -127,6 +127,16 @@ fn payroll_corrections_off_cycle_and_held_salaries() {
 }
 
 #[test]
+fn carried_salary_paid_once_by_two_bank_entries_at_once() {
+    run(carried_scenario(false));
+}
+
+#[test]
+fn carried_salary_paid_once_when_recorded_paid_elsewhere_meanwhile() {
+    run(carried_scenario(true));
+}
+
+#[test]
 fn salary_arrears() {
     run(arrears_scenario());
 }
@@ -2872,6 +2882,97 @@ async fn corrections_scenario() {
     let (ben_year, dev_year) = (year(&ben).await, year(&dev).await);
     assert_eq!(ben_year, dev_year, "the same pay, the same year's tax, to the cent");
     assert!(ben_year.1 > Decimal::ZERO);
+}
+
+/// Asha's March salary, held and released, is owed by March's run and carried into April's, so both
+/// runs' payments list it. March's (its bank entry, or with `elsewhere` a payment recorded as made
+/// elsewhere) is made in a transaction left open; April's bank entry is submitted meanwhile, reads the
+/// salary as owed and waits on March's; March's commits. The salary is paid once and April's entry is
+/// refused. Two bank entries numbered from one counter wait for each other's number before they read
+/// what they pay, so March's is dated in the fiscal year before April's.
+async fn carried_scenario(elsewhere: bool) {
+    let slug = if elsewhere { "hrcarry2" } else { "hrcarry1" };
+    let t = T::new(slug).await;
+    let pm = t.user(&format!("pm@{slug}.test"), &["Payroll Manager"]).await;
+    let acct = t.user(&format!("acct@{slug}.test"), &["Accounts Manager"]).await;
+    let flat = t
+        .ins(
+            &pm,
+            "SalaryComponent",
+            json!({"component_name": "Flat Pay", "abbr": "FLAT", "component_type": "Earning", "amount": "30000", "depends_on_payment_days": false}),
+        )
+        .await;
+    let st = t
+        .ins_submit(
+            &pm,
+            "SalaryStructure",
+            json!({"structure_name": "Flat", "company": t.c(), "payroll_frequency": "Monthly", "earnings": [{"salary_component": flat["id"]}]}),
+        )
+        .await;
+    let asha = t.employee("Asha", json!({})).await;
+    t.ins_submit(&pm, "SalaryStructureAssignment", json!({"employee": asha["id"], "salary_structure": st["id"], "from_date": "2026-04-01", "base": "30000"}))
+        .await;
+    let make_run = |start: &'static str, end: &'static str| {
+        let (t, pm) = (&t, &pm);
+        async move {
+            let pe = t.ins(pm, "PayrollEntry", json!({"company": t.c(), "posting_date": end, "start_date": start, "end_date": end})).await;
+            let id = vid(&t.act(pm, "PayrollEntry", uid(&pe), "get_employees", json!({})).await);
+            t.submit(pm, "PayrollEntry", id).await;
+            t.act(pm, "PayrollEntry", id, "create_salary_slips", json!({})).await;
+            t.act(pm, "PayrollEntry", id, "submit_salary_slips", json!({})).await;
+            id
+        }
+    };
+    let bank_entry = |pe: Uuid, on: &'static str| {
+        let (t, pm) = (&t, &pm);
+        async move { vid(&t.act(pm, "PayrollEntry", pe, "make_bank_entry", json!({"posting_date": on})).await) }
+    };
+    let march = make_run("2027-03-01", "2027-03-31").await;
+    let salary = uid(&t.one("SalarySlip", json!({"payroll_entry": march.to_string()})).await);
+    t.act(&pm, "SalarySlip", salary, "hold_salary", json!({"reason": "Bank account being changed"})).await;
+    t.act(&pm, "SalarySlip", salary, "release_salary", json!({})).await;
+    let april = make_run("2027-04-01", "2027-04-30").await;
+    let april_entry = bank_entry(april, "2027-04-30").await;
+    let march_entry = if elsewhere { None } else { Some(bank_entry(march, "2027-03-31").await) };
+
+    let mut first = t.k.db.tenant_tx(t.tenant).await.unwrap();
+    let pid: i32 = sqlx::query_scalar("select pg_backend_pid()").fetch_one(&mut *first).await.unwrap();
+    if let Some(je) = march_entry {
+        t.k.submit_tx(&acct, &mut first, "JournalEntry", je, None).await.expect("March's bank entry");
+    } else {
+        let on = json!({"posting_date": "2027-03-31", "reference": "Bank statement, 31 March"});
+        t.k.run_action_tx(&pm, &mut first, "PayrollEntry", march, "record_payment_elsewhere", &on).await.expect("March paid elsewhere");
+    }
+    let (k, who) = (t.k.clone(), acct.clone());
+    let second = tokio::spawn(async move { k.submit(&who, "JournalEntry", april_entry, None).await });
+    // Once it waits on a lock March's payment holds, April's entry has read what it pays.
+    let mut polls = 0;
+    while !sqlx::query_scalar::<_, bool>("select exists (select 1 from pg_stat_activity where $1 = any(pg_blocking_pids(pid)))")
+        .bind(pid)
+        .fetch_one(&t.k.db.pool)
+        .await
+        .unwrap()
+    {
+        polls += 1;
+        assert!(polls < 500, "April's bank entry never waited on March's payment");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    first.commit().await.unwrap();
+    let second = second.await.unwrap();
+    let paid: Decimal = {
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        sqlx::query_scalar("select coalesce(sum(amount), 0) from pay_salary_payment where tenant_id = $1 and salary_slip = $2")
+            .bind(t.tenant)
+            .bind(salary)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap()
+    };
+    assert_eq!(paid, n("30000"), "Asha's March salary is paid once");
+    refused(second, "settled meanwhile");
+    let again = t.submit(&acct, "JournalEntry", bank_entry(april, "2027-04-30").await).await;
+    let pays: Decimal = again["accounts"].as_array().unwrap().iter().map(|l| dec(&l["debit"])).sum();
+    assert_eq!(pays, n("30000"), "made again, April's bank entry pays April's salary alone");
 }
 
 // ───────────────────────────── arrears ─────────────────────────────
