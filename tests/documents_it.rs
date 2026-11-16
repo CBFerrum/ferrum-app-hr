@@ -14,7 +14,8 @@ const PW: &str = "Correct-Horse-9";
 static RT: LazyLock<tokio::runtime::Runtime> =
     LazyLock::new(|| tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap());
 static KERNEL: tokio::sync::OnceCell<Arc<Kernel>> = tokio::sync::OnceCell::const_new();
-/// Mail sent: its recipient, its subject and each file attached (name, bytes).
+/// Mail sent: its recipient, its subject and each file attached (name, bytes). Assert on what was read from it once the
+/// lock is let go: a scenario that panics holding it would poison it for the scenarios running beside it.
 static MAILED: Mutex<Vec<(String, String, Vec<(String, Vec<u8>)>)>> = Mutex::new(Vec::new());
 static FILES: LazyLock<Arc<MemFiles>> = LazyLock::new(Default::default);
 
@@ -190,8 +191,29 @@ impl T {
         String::from_utf8(FILES.0.lock().unwrap().get(&key).cloned().unwrap_or_else(|| panic!("no file {key}"))).unwrap()
     }
 
+    /// Dispatches what is queued until none of this workspace's events is left. A dispatcher takes any workspace's
+    /// events, as each of a server's replicas does, so the scenarios running beside this one may be handling some of
+    /// this one's: those are waited for, not taken for done.
     async fn drain(&self) {
-        while self.k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            let claimed = self.k.dispatch_outbox_once().await.unwrap_or(0);
+            let mut tx = self.k.db.tenant_tx(self.tenant).await.unwrap();
+            let left: Option<String> = sqlx::query_scalar(
+                "select string_agg(topic || coalesce(' (' || last_error || ')', ''), ', ' order by id) from outbox \
+                 where tenant_id = $1 and processed_at is null and not dead",
+            )
+            .bind(self.tenant)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            let Some(left) = left else { return };
+            assert!(std::time::Instant::now() < deadline, "not dispatched in two minutes: {left}");
+            if claimed == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
     }
 }
 
@@ -531,11 +553,8 @@ async fn payslip_scenario() {
     t.drain().await;
     let docs = t.list(&me, "EmployeeDocument", json!({})).await;
     assert_eq!(docs.len(), 1, "mailing again does not file it twice");
-    assert_eq!(
-        mailed.iter().filter(|m| m.0 == "asha@hrpayslip.test").count(),
-        MAILED.lock().unwrap().iter().filter(|m| m.0 == "asha@hrpayslip.test").count(),
-        "No: filed, not mailed"
-    );
+    let now = MAILED.lock().unwrap().iter().filter(|m| m.0 == "asha@hrpayslip.test").count();
+    assert_eq!(mailed.iter().filter(|m| m.0 == "asha@hrpayslip.test").count(), now, "No: filed, not mailed");
     assert!(t.file_text(docs[0]["file"].as_str().unwrap()).contains("Asha Test"));
     // The employee sees the file they were mailed.
     assert!(t.k.read_file(&me, docs[0]["file"].as_str().unwrap().strip_prefix("/files/").unwrap().parse().unwrap()).await.is_ok());
@@ -556,7 +575,8 @@ async fn payslip_scenario() {
     t.drain().await;
     assert!(!later.is_empty());
     assert!(MAILED.lock().unwrap().len() > before, "released slips were mailed by the automation");
-    let cy = MAILED.lock().unwrap().iter().find(|m| m.0 == "cy@hrpayslip.test").cloned().expect("mailed to Cy");
+    let cy = MAILED.lock().unwrap().iter().find(|m| m.0 == "cy@hrpayslip.test").cloned();
+    let cy = cy.expect("mailed to Cy");
     assert!(cy.2.len() == 1 && String::from_utf8_lossy(&cy.2[0].1).contains("Cy Test") && !cy.1.is_empty());
 }
 
