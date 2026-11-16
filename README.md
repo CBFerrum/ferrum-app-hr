@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.15.0-0e7490?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.15.1-0e7490?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -419,6 +419,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 
 ### ✅ Recently shipped
 
+- [x] **0.15.1** Check-ins and waiting days on the workspace's clock; rebuilt on Ferrum-Frontend 06bd1a2 with `mountApp`.
 - [x] **0.15.0** No upgrade history in the package SQL: the backfill of bank entries made before 0.10.0 is gone, and a slip's period constraint is made once.
 - [x] **0.14.2** A salary carried into later runs is paid once when two of its payments are made at the same moment.
 - [x] **0.14.1** Leave accrual's daily run is recorded on the policy, so it is done once a day whichever server runs the upkeep.

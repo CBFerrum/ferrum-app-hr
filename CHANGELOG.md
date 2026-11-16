@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.15.1
+
+Needs the same platform as 0.15.0. No database change. Interface only, `ui/dist` rebuilt with Ferrum-Frontend `06bd1a2`.
+
+- Whether the next check-in is in or out, and how long a request has waited, are counted on the workspace's clock (or
+  the person's own); they were the browser's. "today" and "yesterday" are in the page's language.
+- The two routes to the screens apps no longer have (`apps/:app/settings`, `x/:app/:page`) are gone.
+- The page starts through the frontend's `mountApp`; the
+  interface lint has no baseline file any more.
+
 ## 0.15.0
 
 Payroll 0.8.0, Payroll and ERP 0.5.0. Needs the same platform as 0.14.2. No interface change. The packages' SQL reads
