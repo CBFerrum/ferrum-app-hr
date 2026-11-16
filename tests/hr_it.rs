@@ -2792,7 +2792,9 @@ async fn corrections_scenario() {
     let hers: Decimal = t.list(&t.admin, "SalarySlip", json!({"employee": asha["id"], "docstatus": 1})).await.iter().map(|s| dec(&s["gross_pay"])).sum();
     assert_eq!(on_ops, hers);
     t.k.cancel(&pm, "PayrollEntry", jan, None).await.expect("cancel January");
-    for (a, was) in ["Salaries", "Provident Fund Payable", "Withholding Tax Payable", "Employer PF Payable", "Employer PF Cost", "Payroll Payable"].iter().zip(before) {
+    for (a, was) in
+        ["Salaries", "Provident Fund Payable", "Withholding Tax Payable", "Employer PF Payable", "Employer PF Cost", "Payroll Payable"].iter().zip(before)
+    {
         assert_eq!(t.gl(a).await, was, "{a}");
     }
     assert!(t.list(&t.admin, "SalarySlip", json!({"payroll_entry": jan.to_string(), "docstatus": 1})).await.is_empty());
@@ -3196,9 +3198,15 @@ impl P {
             )
             .await;
         let it = t.one("SalaryComponent", json!({"abbr": "IT"})).await;
-        t.k.update(&pm, "SalaryComponent", uid(&it), obj(json!({"accounts": [{"company": t.c(), "account": t.account("Withholding Tax Payable").await}]})), None)
-            .await
-            .unwrap();
+        t.k.update(
+            &pm,
+            "SalaryComponent",
+            uid(&it),
+            obj(json!({"accounts": [{"company": t.c(), "account": t.account("Withholding Tax Payable").await}]})),
+            None,
+        )
+        .await
+        .unwrap();
         let st = t
             .ins_submit(
                 &pm,
@@ -3724,7 +3732,9 @@ async fn documents_scenario() {
         .await;
     let passport = t.ins(&hr, "EmployeeDocumentType", kind("Passport", json!({"category": "Identity", "self_upload": true, "expires": true}))).await;
     let bank = t.ins(&hr, "EmployeeDocumentType", kind("Bank Proof", json!({"category": "Bank", "visible_to": "HR only"}))).await;
-    let today = chrono::Utc::now().date_naive();
+    // The workspace's day (Asia/Kolkata, +05:30 all year), which is what HR stamps a warning with: UTC's date is the day
+    // before for the first five and a half hours of each day there.
+    let today = (chrono::Utc::now() + chrono::Duration::minutes(330)).date_naive();
     let in_10 = (today + chrono::Duration::days(10)).to_string();
 
     // The employee uploads their own passport; not a bank proof, not for a colleague, and an expiring type needs its date.
