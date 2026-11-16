@@ -507,7 +507,11 @@ async fn payslip_scenario() {
     def.default = true;
     t.k.save_document_template(&t.admin, &def).await.unwrap();
     assert_eq!(t.k.default_document(&pm, "SalarySlip").await.unwrap(), Some("payroll.payslip".into()));
+    // Resetting puts the package's text back; the workspace's choice of the template stays (the template is still there).
+    // Taking the choice away is its own step.
     t.k.reset_document_template(&t.admin, "payroll.payslip").await.unwrap();
+    assert_eq!(t.k.default_document(&pm, "SalarySlip").await.unwrap(), Some("payroll.payslip".into()));
+    t.k.set_document_default(&t.admin, "SalarySlip", None).await.unwrap();
     assert_eq!(t.k.default_document(&pm, "SalarySlip").await.unwrap(), None);
 
     // Mailed and filed: the file on the slip, one document among the employee's, the account number masked in what leaves.
