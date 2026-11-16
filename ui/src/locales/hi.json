@@ -251,5 +251,7 @@
   "· late": "· देर से",
   "Your tax declarations": "आपकी कर घोषणाएँ",
   "what you invest or spend that lowers the tax on your pay": "आप जो निवेश या खर्च करते हैं जिससे आपके वेतन पर कर घटता है",
-  "Serving notice until {date}": "{date} तक नोटिस अवधि में"
+  "Serving notice until {date}": "{date} तक नोटिस अवधि में",
+  "today": "आज",
+  "yesterday": "कल"
 }

@@ -12,21 +12,16 @@ import { useMe } from "@ferrum/records";
 import type { Holiday } from "./calendar";
 import { f, rows } from "./data";
 import { Failed } from "./Nav";
-import { addDays, addMonths, endOfMonth, monthName, startOfMonth, startOfWeek, weekdayName } from "./dates";
+import { addDays, addMonths, endOfMonth, longDay, monthName, startOfMonth, startOfWeek, weekdayName } from "./dates";
 import type { Employee } from "./people";
 import { type Attended, attendanceMonth, type Mark, MARKS, type MonthDay, monthCounts } from "./space";
-
-const LONG = (day: string) => {
-  const [y, m, d] = day.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
-};
 
 const clockTime = (iso: string | null | undefined, zone?: string) =>
   iso ? new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZone: zone }) : "";
 
 function dayWords(d: MonthDay): string {
   const what = d.mark ?? (d.off ? d.off : d.future ? "" : t("nothing marked"));
-  return [LONG(d.day), what].filter(Boolean).join(": ");
+  return [longDay(d.day), what].filter(Boolean).join(": ");
 }
 
 function DayDialog({ day, mark, zone, onClose, onFix }: { day: MonthDay; mark: Attended | undefined; zone?: string; onClose: () => void; onFix: () => void }) {
@@ -34,7 +29,7 @@ function DayDialog({ day, mark, zone, onClose, onFix }: { day: MonthDay; mark: A
     <Dialog
       open
       onClose={onClose}
-      title={LONG(day.day)}
+      title={longDay(day.day)}
       footer={
         <>
           <Button onClick={onClose}>{t("Close")}</Button>

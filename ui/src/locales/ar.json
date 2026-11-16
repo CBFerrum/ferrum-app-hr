@@ -251,5 +251,7 @@
   "· late": "· متأخرًا",
   "Your tax declarations": "إقراراتك الضريبية",
   "what you invest or spend that lowers the tax on your pay": "ما تستثمره أو تنفقه فيخفّض الضريبة على راتبك",
-  "Serving notice until {date}": "في فترة الإشعار حتى {date}"
+  "Serving notice until {date}": "في فترة الإشعار حتى {date}",
+  "today": "اليوم",
+  "yesterday": "أمس"
 }

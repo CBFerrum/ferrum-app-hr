@@ -22,7 +22,7 @@ import {
   type View,
   weeks,
 } from "./calendar";
-import { addDays, isDay, span, weekdayName } from "./dates";
+import { addDays, isDay, longDay, span, weekdayName } from "./dates";
 import { Failed, Nav } from "./Nav";
 import { marks } from "./orgchart";
 
@@ -36,11 +36,6 @@ interface Cal {
   away: Away[];
   holidays: Holiday[];
 }
-
-const LONG = (day: string) => {
-  const [y, m, d] = day.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
-};
 
 /** The people away on a day, or in a week, as a list a screen reader can read from top to bottom. */
 function Names({ away, title }: { away: Away[]; title: string }) {
@@ -95,7 +90,7 @@ function Month({ cal, anchor, today, day, onDay }: { cal: Cal; anchor: string; t
                     className="ppl-cal-day"
                     data-today={d === today || undefined}
                     aria-pressed={d === day}
-                    aria-label={[LONG(d), dayNote(cal.away, h, d)].filter(Boolean).join(": ")}
+                    aria-label={[longDay(d), dayNote(cal.away, h, d)].filter(Boolean).join(": ")}
                     onClick={() => onDay(d)}
                   >
                     <span className="ppl-cal-n">{Number(d.slice(8))}</span>
@@ -246,9 +241,9 @@ export function TeamCalendar() {
       </ul>
       {view === "month" ? (
         <div className="stack ppl-tight">
-          <h2 className="ppl-sub">{isolate(LONG(day))}</h2>
+          <h2 className="ppl-sub">{isolate(longDay(day))}</h2>
           {holidayOn(filtered.holidays, day) && <p className="muted">{holidayOn(filtered.holidays, day)!.weekly_off ? t("A weekly off.") : t("A holiday: {name}.", { name: holidayOn(filtered.holidays, day)!.name })}</p>}
-          <Names away={awayOn(filtered.away, day)} title={t("Away on {day}", { day: LONG(day) })} />
+          <Names away={awayOn(filtered.away, day)} title={t("Away on {day}", { day: longDay(day) })} />
         </div>
       ) : (
         <div className="stack ppl-tight">

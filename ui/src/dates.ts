@@ -44,31 +44,23 @@ export function eachDay(from: string, to: string): string[] {
 /** Whether `day` falls within `[from, to]`. */
 export const within = (day: string, from: string, to: string): boolean => from <= day && day <= to;
 
-/** "12 Oct", for a day. */
-export function short(day: string, locale?: string): string {
-  const [y, m, d] = day.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString(locale, { day: "numeric", month: "short" });
-}
+// Days are written in UTC too, as they are counted: the day written is the day stored, wherever the browser is.
 
-const at = (day: string): Date => {
-  const [y, m, d] = day.split("-").map(Number);
-  return new Date(y, m - 1, d);
-};
+/** "12 Oct", for a day. */
+export const short = (day: string, locale?: string): string => parse(day).toLocaleDateString(locale, { day: "numeric", month: "short", timeZone: "UTC" });
+
+/** "Monday, 12 October", for a day said in full. */
+export const longDay = (day: string, locale?: string): string =>
+  parse(day).toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
 
 /** "12 Oct", "12–14 Oct" or "30 Oct – 2 Nov": a stretch of days the way the viewer's language writes it. */
 export function span(from: string, to: string | null | undefined, locale?: string): string {
   if (!to || to === from) return short(from, locale);
-  return new Intl.DateTimeFormat(locale, { day: "numeric", month: "short" }).formatRange(at(from), at(to));
+  return new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", timeZone: "UTC" }).formatRange(parse(from), parse(to));
 }
 
 /** "October 2026". */
-export function monthName(day: string, locale?: string): string {
-  const [y, m] = day.split("-").map(Number);
-  return new Date(y, m - 1, 1).toLocaleDateString(locale, { month: "long", year: "numeric" });
-}
+export const monthName = (day: string, locale?: string): string => parse(startOfMonth(day)).toLocaleDateString(locale, { month: "long", year: "numeric", timeZone: "UTC" });
 
 /** "Mon" to "Sun", for a column head. */
-export function weekdayName(day: string, locale?: string, width: "short" | "narrow" = "short"): string {
-  const [y, m, d] = day.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString(locale, { weekday: width });
-}
+export const weekdayName = (day: string, locale?: string, width: "short" | "narrow" = "short"): string => parse(day).toLocaleDateString(locale, { weekday: width, timeZone: "UTC" });

@@ -3,7 +3,7 @@
 
 import { span } from "./dates";
 import { days } from "./people";
-import { t as tr } from "@ferrum/client";
+import { t as tr, toZonedInput } from "@ferrum/client";
 
 export type Kind = "leave" | "attendance" | "expense";
 
@@ -113,11 +113,11 @@ export function what(i: Item, locale?: string): string {
   }
 }
 
-/** Whole days since `since`, by the calendar (null when there is no date to count from). */
+/** Whole days since `since`, by the calendar of the clock the page shows times on (null when there is no date to count from). */
 function daysSince(since: string | null | undefined, now: Date): number | null {
   const at = since ? new Date(since) : null;
   if (!at || Number.isNaN(at.getTime())) return null;
-  const day = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  const day = (d: Date) => Date.parse(toZonedInput(d.toISOString()).slice(0, 10));
   return Math.max(0, Math.round((day(now) - day(at)) / 86_400_000));
 }
 
@@ -125,8 +125,8 @@ function daysSince(since: string | null | undefined, now: Date): number | null {
 export function waiting(since: string | null | undefined, now = new Date()): string {
   const n = daysSince(since, now);
   if (n === null) return "";
-  if (n === 0) return "today";
-  if (n === 1) return "yesterday";
+  if (n === 0) return tr("today");
+  if (n === 1) return tr("yesterday");
   if (n < 14) return tr("{n} days ago", { n });
   if (n < 60) return tr("{n} weeks ago", { n: Math.round(n / 7) });
   return tr("{n} months ago", { n: Math.round(n / 30) });

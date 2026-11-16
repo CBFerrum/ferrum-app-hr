@@ -2,7 +2,7 @@
 // their requests together, their payslips' periods and what their training covers. Pure, so what
 // the screen says is tested without a browser.
 
-import { addDays, daysBetween, endOfMonth, isDay, span, startOfMonth, startOfWeek, within } from "./dates";
+import { addDays, daysBetween, endOfMonth, isDay, monthName, span, startOfMonth, startOfWeek, within } from "./dates";
 import type { Holiday } from "./calendar";
 import { t } from "@ferrum/client";
 
@@ -209,10 +209,7 @@ export function requests(
 
 /** "October 2026" for a whole month's slip; else the days it covers. */
 export function slipPeriod(start: string, end: string, locale?: string): string {
-  if (start === startOfMonth(start) && end === endOfMonth(start)) {
-    const [y, m] = start.split("-").map(Number);
-    return new Date(y, m - 1, 1).toLocaleDateString(locale, { month: "long", year: "numeric" });
-  }
+  if (start === startOfMonth(start) && end === endOfMonth(start)) return monthName(start, locale);
   return `${span(start, end, locale)} ${end.slice(0, 4)}`;
 }
 

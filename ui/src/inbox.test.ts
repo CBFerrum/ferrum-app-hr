@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { setTimeZone } from "@ferrum/client";
 import {
   type AttendanceItem,
   badSanctions,
@@ -80,6 +81,17 @@ describe("approvals", () => {
     expect(waiting(new Date(2026, 3, 14, 9, 0).toISOString(), now)).toBe("6 months ago");
     expect(waiting(null, now)).toBe("");
     expect([stale(new Date(2026, 9, 12, 9, 0).toISOString(), now), stale(new Date(2026, 9, 11, 9, 0).toISOString(), now), stale(null, now)]).toEqual([false, true, false]);
+  });
+
+  it("counts the days waited on the workspace's calendar, not the browser's", () => {
+    // 09:00 and 11:00 UTC on 5 Nov are 23:00 on 5 Nov and 01:00 on 6 Nov in Kiritimati (UTC+14): a day apart there,
+    // the same day in any browser west of UTC+13.
+    setTimeZone("Pacific/Kiritimati");
+    try {
+      expect(waiting("2026-11-05T09:00:00Z", new Date("2026-11-05T11:00:00Z"))).toBe("yesterday");
+    } finally {
+      setTimeZone(undefined);
+    }
   });
 
   it("says what a leave leaves and who else is away", () => {
