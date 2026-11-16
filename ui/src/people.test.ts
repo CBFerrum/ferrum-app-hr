@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { anniversaries, covers, days, inDaysLabel, localDay, nextLogType } from "./people";
+import { setTimeZone } from "@ferrum/client";
+import { anniversaries, covers, days, inDaysLabel, nextLogType } from "./people";
 
 describe("People's home", () => {
   it("knows who is away on a day", () => {
@@ -10,11 +11,22 @@ describe("People's home", () => {
 
   it("checks in unless the last check-in today was in", () => {
     const now = new Date(2026, 10, 1, 9, 30);
-    const today = localDay(now);
+    const today = "2026-11-01";
     expect(nextLogType(undefined, today)).toBe("IN");
     expect(nextLogType({ log_type: "IN", log_time: now.toISOString() }, today)).toBe("OUT");
     expect(nextLogType({ log_type: "OUT", log_time: now.toISOString() }, today)).toBe("IN");
     expect(nextLogType({ log_type: "IN", log_time: new Date(2026, 9, 31, 18).toISOString() }, today)).toBe("IN");
+  });
+
+  it("takes a check-in's day on the workspace's clock, not the browser's", () => {
+    // 10:30 UTC on 5 Nov is already 6 Nov in Kiritimati (UTC+14), and still 5 Nov in any browser west of UTC+13.
+    setTimeZone("Pacific/Kiritimati");
+    try {
+      expect(nextLogType({ log_type: "IN", log_time: "2026-11-05T10:30:00Z" }, "2026-11-06")).toBe("OUT");
+      expect(nextLogType({ log_type: "IN", log_time: "2026-11-05T09:30:00Z" }, "2026-11-06")).toBe("IN");
+    } finally {
+      setTimeZone(undefined);
+    }
   });
 
   it("lists the work anniversaries coming up, not the first year's", () => {

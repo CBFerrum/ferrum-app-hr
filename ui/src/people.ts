@@ -1,7 +1,6 @@
-import { t as tr } from "@ferrum/client";
-// People's home, the parts that are plain logic (kept apart, so they are tested): dates as the
-// person's own calendar has them, who is away on a day, the work anniversaries coming up, and
-// whether the next check-in is in or out.
+import { t as tr, toZonedInput } from "@ferrum/client";
+// People's home, the parts that are plain logic (kept apart, so they are tested): who is away on a
+// day, the work anniversaries coming up, and whether the next check-in is in or out.
 
 export interface Employee {
   id: string;
@@ -34,21 +33,15 @@ export interface Checkin {
   log_time?: string | null;
 }
 
-/** A date as YYYY-MM-DD in the browser's time zone. */
-export function localDay(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
 /** Whether a leave covers a day (ISO dates compare as text). */
 export function covers(l: Leave, day: string): boolean {
   return !!l.from_date && !!l.to_date && l.from_date <= day && day <= l.to_date;
 }
 
-/** IN unless the last check-in is an IN of the same day. */
+/** IN unless the last check-in is an IN of the same day, on the clock the page shows times on. */
 export function nextLogType(last: Checkin | undefined, today: string): "IN" | "OUT" {
   if (!last?.log_time || last.log_type !== "IN") return "IN";
-  return localDay(new Date(last.log_time)) === today ? "OUT" : "IN";
+  return toZonedInput(last.log_time).slice(0, 10) === today ? "OUT" : "IN";
 }
 
 export interface Anniversary {

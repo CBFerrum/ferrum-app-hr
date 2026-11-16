@@ -5,32 +5,23 @@
 // appraisals, salary structures, payroll runs) as lists and forms in the records frame, with its
 // modules in the sidebar under the platform's bar.
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode, useEffect } from "react";
-import { createRoot } from "react-dom/client";
-import { createBrowserRouter, Link, Outlet, RouterProvider, useRouteError } from "react-router";
-import { addCatalogs, routeBase, shell, t, wordsReady } from "@ferrum/client";
-import { ConfirmHost, EmptyState, ErrorState, Toaster } from "@ferrum/kit";
-import { RequireAuth, setFrameMode } from "@ferrum/records/frame";
+import { useEffect } from "react";
+import { Link, Outlet, useRouteError } from "react-router";
+import { shell, t } from "@ferrum/client";
+import { EmptyState, ErrorState } from "@ferrum/kit";
+import { mountApp, RequireAuth, setFrameMode } from "@ferrum/records/frame";
 import { PeopleHome } from "./Home";
 import "./styles.css";
-
-// Its own words in the page's language (src/locales), fetched as the page starts; it is drawn once they are in.
-void addCatalogs({ ar: () => import("./locales/ar.json"), hi: () => import("./locales/hi.json") });
 
 /** One of People's own pages, loaded when first opened (the home is the only one every visit needs). */
 const own = <K extends string>(load: () => Promise<Record<K, React.ComponentType>>, name: K) => () => load().then((m) => ({ Component: m[name] }));
 
 /** A page of the records frame, loaded when first opened. */
-const page = (name: "FormView" | "ListView" | "ReportView" | "AppSettingsPage" | "ScreenPage") => () =>
+const page = (name: "FormView" | "ListView" | "ReportView") => () =>
   import("./records").then((m) => ({ Component: m[name] }));
 
 /** HR's and payroll's packages: the sidebar shows their modules. */
 const PEOPLE_PACKAGES = ["hr", "payroll", "hr_erp", "payroll_erp"];
-
-const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false, staleTime: 30_000 } },
-});
 
 function RouteError() {
   return <ErrorState error={useRouteError()} onRetry={() => window.location.reload()} />;
@@ -62,8 +53,10 @@ function Public() {
 
 setFrameMode("app", PEOPLE_PACKAGES);
 
-const router = createBrowserRouter(
-  [
+mountApp({
+  route: "people",
+  catalogs: { ar: () => import("./locales/ar.json"), hi: () => import("./locales/hi.json") },
+  routes: [
     // Open to anyone, so outside the sign-in.
     {
       path: "careers/:slug",
@@ -91,24 +84,8 @@ const router = createBrowserRouter(
         { path: "e/:entity", lazy: page("ListView") },
         { path: "e/:entity/:id", lazy: page("FormView") },
         { path: "r/:name", lazy: page("ReportView") },
-        { path: "apps/:app/settings", lazy: page("AppSettingsPage") },
-        { path: "x/:app/:page", lazy: page("ScreenPage") },
         { path: "*", element: <NotFound /> },
       ],
     },
   ],
-  { basename: routeBase("people") },
-);
-
-// Drawn once the page's words are in (its language's catalogs, fetched as the page starts).
-void wordsReady().then(() =>
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
-        <Toaster />
-        <ConfirmHost />
-      </QueryClientProvider>
-    </StrictMode>,
-  ),
-);
+});
