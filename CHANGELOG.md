@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.16.0
+
+Payroll and ERP 0.6.0. Needs the same platform as 0.15.2, and ERP 0.30 for the suite. No interface change.
+
+- **A payroll run's bank file is one instruction to the bank, however often it is downloaded.** Bank Payment File
+  stamped a new message id from the clock each time and kept nothing, so a file downloaded again (after the bank's
+  portal timed out, say) and uploaded again paid every salary twice: banks take a message id once. Each file is now a
+  round of the run under message id `<run number>-<round>`, kept on the run (Last Bank File; Bank File Rounds counts
+  them, and each employee row shows the Bank File Round that pays them). Asked again, the run gives its last round's
+  file unchanged, whatever format is asked. **New Round** makes a file under the next message id for whoever no
+  earlier round's file pays, as ERP's supplier payment runs do; with nobody left it is refused. The action now writes,
+  so it is no longer read-only.
+- **What happens today is dated on the workspace's day.** A correction's posting date, the journals that take a
+  corrected slip's share back and reverse a cancelled run, slip, expense claim or loan, the posting dates accruals,
+  expense claims, payments and loans take when none is given, a released salary, a loan's deferral and settlement, a
+  completed checklist task, an expected joining date and the reports' default days were taken from the UTC day: in
+  India a correction made before 05:30 on 1 April posted on 31 March, in the year before. They take the workspace's
+  day from the request now (Ferrum's `Ctx::today`), as the rest of HR already did.
+
+Tests: the payroll scenario asks for the bank file again, in another format and for a new round; a new scenario moves
+the workspace to a zone whose day is not UTC's and checks a release, a correction and the journal taking its share
+back. The suite keeps files in memory.
+
 ## 0.15.2
 
 Payroll 0.8.1. Needs the same platform as 0.15.1, and ERP 0.30 for the suite. No interface change.

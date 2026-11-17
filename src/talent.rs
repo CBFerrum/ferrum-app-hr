@@ -1,7 +1,7 @@
 //! Recruitment (openings, applicants, interviews, offers that become employees) and appraisals.
 
 use crate::people::{person_name, same_company};
-use crate::{lookup, opt_date, stamp_company, stored, today};
+use crate::{lookup, opt_date, stamp_company, stored};
 use async_trait::async_trait;
 use ferrum_domain::util::{d, elevated, get, id, money, rows, s, set, sys};
 use ferrum_kernel::{Action, Ctx, Doc, DocHook, Error, FieldError, HookCtx, HookRegistry, Kernel, Result};
@@ -297,7 +297,7 @@ impl OfferHook {
         let (first, last) = full.split_once(' ').map_or((full.as_str(), ""), |(f, l)| (f, l.trim()));
         let joining = match params.get("date_of_joining").and_then(Value::as_str) {
             Some(v) => ferrum_kernel::value::parse_date(v).map_err(|m| Error::field("date_of_joining", m))?,
-            None => opt_date(doc, "expected_joining_date").unwrap_or_else(today),
+            None => opt_date(doc, "expected_joining_date").unwrap_or_else(|| hc.ctx.today()),
         };
         let mut e = Doc::new();
         set(&mut e, "first_name", first);

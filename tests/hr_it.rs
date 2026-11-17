@@ -23,6 +23,25 @@ static RT: LazyLock<tokio::runtime::Runtime> =
     LazyLock::new(|| tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap());
 static KERNEL: tokio::sync::OnceCell<Arc<Kernel>> = tokio::sync::OnceCell::const_new();
 
+/// Files kept in memory (a payroll run's bank files).
+#[derive(Default)]
+struct MemFiles(std::sync::Mutex<HashMap<String, Vec<u8>>>);
+
+#[async_trait::async_trait]
+impl ferrum_kernel::files::FileStore for MemFiles {
+    async fn put(&self, key: &str, data: &[u8]) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().insert(key.to_string(), data.to_vec());
+        Ok(())
+    }
+    async fn get(&self, key: &str) -> ferrum_kernel::Result<Vec<u8>> {
+        self.0.lock().unwrap().get(key).cloned().ok_or_else(|| Error::NotFound("object".into()))
+    }
+    async fn delete(&self, key: &str) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
 async fn kernel() -> Arc<Kernel> {
     KERNEL
         .get_or_init(|| async {
@@ -44,6 +63,7 @@ async fn kernel() -> Arc<Kernel> {
                 ferrum_domain::reports::add_source(source);
             }
             let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
+            k.set_file_store(Arc::new(MemFiles::default()));
             ferrum_domain::maintenance(&k).await.expect("journal partitions");
             ferrum_app_erp::maintenance(&k).await.expect("journal partitions");
             k
@@ -154,6 +174,11 @@ fn employee_loans() {
 #[test]
 fn changes_after_payroll() {
     run(late_changes_scenario());
+}
+
+#[test]
+fn payroll_dates_on_the_workspaces_day() {
+    run(workspace_day_scenario());
 }
 
 #[test]
@@ -1486,6 +1511,7 @@ async fn payroll_scenario() {
     t.k.update(&t.admin, "Employee", uid(&p2), obj(json!({"salary_mode": "Cash"})), None).await.expect("Rahul paid in cash");
     t.k.update(&t.admin, "Employee", uid(&p3), obj(json!({"iban": "de89 3704 0044 0532 0130 00"})), None).await.expect("Sana's IBAN");
     refused(file(json!({})).await, "the company's account at the bank");
+    refused(file(json!({"format": "MT103", "from_account": "50100012345678"})).await, "format");
     let pain = file(json!({"from_account": "5010 0012 3456 78", "from_bic": "HDFCINBB", "execution_date": "2026-10-01"})).await.expect("pain.001");
     assert_eq!((pain["payments"].clone(), dec(&pain["total"])), (json!(2), n("173247.14")), "Priya and Sana; Rahul in cash");
     assert!(pain["file"]["name"].as_str().unwrap().ends_with("-pain.001.xml"));
@@ -1500,9 +1526,34 @@ async fn payroll_scenario() {
     ] {
         assert!(xml.contains(part), "{part} in {xml}");
     }
-    let sheet = file(json!({"format": "CSV", "from_account": "50100012345678"})).await.expect("csv");
-    assert_eq!(sheet["file"]["content"].as_str().unwrap().lines().count(), 3, "a header and the two paid by bank");
-    refused(file(json!({"format": "MT103", "from_account": "50100012345678"})).await, "format");
+    // Asked again a second later (the bank's portal timed out, say), it is the same file under the same message id:
+    // a bank given it twice sees one instruction. It is the run's first round, <run>-1, kept on the run; asked for in
+    // another format, it is still that file.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let again = file(json!({"from_account": "5010 0012 3456 78", "from_bic": "HDFCINBB", "execution_date": "2026-10-01"})).await.expect("again");
+    assert_eq!(again["file"]["content"], pain["file"]["content"], "the same bytes under the same message id");
+    let number = t.get("PayrollEntry", pe_id).await["number"].as_str().unwrap().to_string();
+    assert!(xml.contains(&format!("<GrpHdr><MsgId>{number}-1</MsgId>")), "message id {number}-1 in {xml}");
+    let csv = file(json!({"format": "CSV", "from_account": "50100012345678"})).await.expect("the same file");
+    assert_eq!((&csv["file"], &csv["round"]), (&pain["file"], &json!(1)), "round 1's file, whatever is asked");
+    let run = t.get("PayrollEntry", pe_id).await;
+    let kept: Uuid = run["last_bank_file"].as_str().and_then(|f| f.strip_prefix("/files/")).and_then(|f| f.parse().ok()).expect("a kept file");
+    let kept = t.k.read_file(&pm, kept).await.expect("the kept file").2;
+    assert_eq!((run["bank_file_rounds"].clone(), kept), (json!(1), xml.as_bytes().to_vec()), "kept on the run as the bank was given it");
+    // A new round is asked for on purpose, and pays only whom no earlier round's file pays: nobody, until Rahul is
+    // paid by bank. Round 1's file stays as it was.
+    refused(file(json!({"new_round": true, "from_account": "50100012345678"})).await, "is in the bank file of an earlier round");
+    t.k.update(&t.admin, "Employee", uid(&p2), obj(json!({"salary_mode": "Bank", "bank_account_no": "0099887766", "ifsc_code": "HDFC0000001"})), None)
+        .await
+        .expect("Rahul paid by bank");
+    let second = file(json!({"new_round": true, "from_account": "50100012345678"})).await.expect("round 2");
+    let xml2 = second["file"]["content"].as_str().unwrap();
+    assert!(xml2.contains(&format!("<GrpHdr><MsgId>{number}-2</MsgId>")) && xml2.contains("<NbOfTxs>1</NbOfTxs>"), "{xml2}");
+    assert!(xml2.contains("<Cdtr><Nm>Rahul Test</Nm></Cdtr>") && !xml2.contains("Priya") && !xml2.contains("Sana"), "{xml2}");
+    assert_eq!(dec(&pain["total"]) + dec(&second["total"]), n("192147.14"), "the two rounds pay the run once");
+    let files: i64 = t.scalar_i64("select count(*) from file_object where tenant_id = $1 and entity = 'PayrollEntry' and record_id = $2", pe_id).await;
+    assert_eq!(files, 2, "each round's file is kept");
+    assert_eq!(file(json!({})).await.expect("round 2 again")["file"], second["file"]);
 
     // Paying, then unwinding in order. A bank entry pays what is due, each salary in full.
     refused(t.k.run_action(&pm, "PayrollEntry", pe_id, "make_bank_entry", json!({"amount": "1000"})).await, "pays what is due");
@@ -3265,6 +3316,42 @@ impl P {
 
 fn amount_of(s: &Doc, table: &str, abbr: &str) -> Decimal {
     s[table].as_array().unwrap().iter().find(|r| r["abbr"] == json!(abbr)).map(|r| dec(&r["amount"])).unwrap_or_default()
+}
+
+/// What payroll dates "today" is the workspace's day, never UTC's. No clock is set: the workspace moves to a zone whose
+/// day is not UTC's now, whatever the hour (Pago Pago before 10:00 UTC, Kiritimati after, as the platform's own suites
+/// do), so a date taken from UTC is a day out. A salary held and released, and a slip of a posted run corrected, are
+/// dated on its day, and so is the journal that takes the slip's share of the run back.
+async fn workspace_day_scenario() {
+    use chrono::Timelike;
+    let mut p = P::new("hrday").await;
+    let zone = if chrono::Utc::now().hour() < 10 { "Pacific/Pago_Pago" } else { "Pacific/Kiritimati" };
+    p.t.k.update_tenant_settings(&p.t.admin, &obj(json!({"timezone": zone}))).await.expect("the workspace's zone");
+    p.t.admin = p.t.k.load_ctx(p.t.tenant, p.t.admin.user, None, "it".into()).await.expect("admin");
+    p.pm = p.t.k.load_ctx(p.t.tenant, p.pm.user, None, "it".into()).await.expect("payroll manager");
+    let today = p.pm.today();
+    assert_ne!(today, chrono::Utc::now().date_naive(), "{zone}'s day is not UTC's");
+    let (asha, ben) = (p.hire("Asha", "30000").await, p.hire("Ben", "30000").await);
+    p.run("2026-09-01", "2026-09-30", true).await;
+    let (t, day) = (&p.t, json!(today.to_string()));
+
+    let held = p.slip(&asha, "2026-09-01").await;
+    t.act(&p.pm, "SalarySlip", uid(&held), "hold_salary", json!({"reason": "Papers awaited"})).await;
+    t.act(&p.pm, "SalarySlip", uid(&held), "release_salary", json!({})).await;
+    assert_eq!(t.get("SalarySlip", uid(&held)).await["released_on"], day, "released on the workspace's day");
+
+    let slip = p.slip(&ben, "2026-09-01").await;
+    let fix = t.act(&p.pm, "SalarySlip", uid(&slip), "make_correction", json!({})).await;
+    assert_eq!(t.get("SalarySlip", vid(&fix)).await["posting_date"], day, "the correction is dated on the workspace's day");
+    let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+    let taken_back: Vec<chrono::NaiveDate> =
+        sqlx::query_scalar("select posting_date from journal_entry where tenant_id = $1 and source_entity = 'SalarySlip' and source_id = $2")
+            .bind(t.tenant)
+            .bind(uid(&slip))
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(taken_back, [today], "the slip's share of the run's accrual is taken back on the workspace's day");
 }
 
 /// An allowance paid with four months' pay, stopped after two; another carried on at a new amount;

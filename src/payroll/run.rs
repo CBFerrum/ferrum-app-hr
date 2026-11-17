@@ -9,7 +9,7 @@
 
 use crate::expense::{amount_param, bank_param, payment_entry};
 use crate::people::company_account;
-use crate::{lookup, opt_date, today};
+use crate::{lookup, opt_date};
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use ferrum_app_erp::ledger::{self, Entry, Line};
@@ -396,7 +396,7 @@ impl RunHook {
         if super::posts(hc) {
             let cid = id(doc, "company").unwrap_or_default();
             let payable = id(doc, "payroll_payable_account").ok_or_else(|| Error::field("payroll_payable_account", "is required"))?;
-            let on = opt_date(doc, "posting_date").unwrap_or_else(today);
+            let on = opt_date(doc, "posting_date").unwrap_or_else(|| hc.ctx.today());
             post_accrual(hc, cid, ("PayrollEntry", me, s(doc, "number").map(str::to_string)), on, &slips, payable, id(doc, "cost_center"), Decimal::ONE)
                 .await?;
         }
@@ -511,7 +511,7 @@ impl DocHook for RunHook {
         let me = id(doc, "id").unwrap_or_default();
         if super::posts(hc) {
             let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
-            ledger::reverse(hc.tx, hc.ctx, "PayrollEntry", me, today(), co.precision).await?;
+            ledger::reverse(hc.tx, hc.ctx, "PayrollEntry", me, hc.ctx.today(), co.precision).await?;
         }
         let sctx = sys(hc.ctx);
         for (status, cancel) in [(1, true), (0, false)] {
@@ -536,7 +536,7 @@ impl DocHook for RunHook {
                 .fetch_all(&mut **hc.tx)
                 .await?;
             for slip in corrected {
-                ledger::reverse(hc.tx, hc.ctx, "SalarySlip", slip, today(), co.precision).await?;
+                ledger::reverse(hc.tx, hc.ctx, "SalarySlip", slip, hc.ctx.today(), co.precision).await?;
             }
         }
         let mut v = Doc::new();

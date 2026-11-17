@@ -13,7 +13,7 @@
 
 use crate::expense::bank_param;
 use crate::people::company_account;
-use crate::{lookup, opt_date, stamp_company, today};
+use crate::{lookup, opt_date, stamp_company};
 use async_trait::async_trait;
 use chrono::{Datelike, Duration, Months, NaiveDate};
 use ferrum_app_erp::ledger::{self, Entry, Line};
@@ -404,7 +404,8 @@ impl DocHook for LoanHook {
         let account = id(doc, "loan_account").ok_or_else(|| Error::field("loan_account", "is required"))?;
         let amount = d(doc, "loan_amount");
         let memo = format!("Loan to {}", s(doc, "employee_name").unwrap_or_default());
-        post(hc, doc, opt_date(doc, "posting_date").unwrap_or_else(today), memo, &[(account, amount, true), (bank, -amount, false)]).await?;
+        let on = opt_date(doc, "posting_date").unwrap_or_else(|| hc.ctx.today());
+        post(hc, doc, on, memo, &[(account, amount, true), (bank, -amount, false)]).await?;
         refresh(hc, id(doc, "id").unwrap_or_default()).await
     }
 
@@ -424,7 +425,7 @@ impl DocHook for LoanHook {
     async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let me = id(doc, "id").unwrap_or_default();
         let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
-        ledger::reverse(hc.tx, hc.ctx, ENTITY, me, today(), co.precision).await?;
+        ledger::reverse(hc.tx, hc.ctx, ENTITY, me, hc.ctx.today(), co.precision).await?;
         let mut v = Doc::new();
         set(&mut v, "status", "Cancelled");
         hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, ENTITY, me, v).await
@@ -464,7 +465,7 @@ impl DocHook for LoanHook {
                 if let Some(n) = taken {
                     return Err(Error::field("period", format!("salary slip {n} already deducted the instalment of {m}; correct it to give it back")));
                 }
-                let e = json!({"event_date": today().to_string(), "event_type": "Deferral", "period_start": m.to_string(), "reason": reason});
+                let e = json!({"event_date": hc.ctx.today().to_string(), "event_type": "Deferral", "period_start": m.to_string(), "reason": reason});
                 event(hc, me, Some(e), None).await?;
                 format!("The instalment of {m} is deferred; {label} ends a month later")
             }
@@ -477,7 +478,7 @@ impl DocHook for LoanHook {
                 if amount <= Decimal::ZERO || amount > left {
                     return Err(Error::field("amount", format!("{label} has {} left to repay; give an amount up to it", left.normalize())));
                 }
-                let on = date_param(params, "posting_date")?.unwrap_or_else(today);
+                let on = date_param(params, "posting_date")?.unwrap_or_else(|| hc.ctx.today());
                 let bank = bank_param(hc, params, id(doc, "company").unwrap_or_default(), None).await?;
                 post(hc, doc, on, format!("{label} repaid outside salary"), &[(bank, amount, false), (account, -amount, true)]).await?;
                 let e = json!({"event_date": on.to_string(), "event_type": "Repayment", "amount": money(amount), "account": bank.to_string(),
@@ -492,7 +493,7 @@ impl DocHook for LoanHook {
                     .and_then(|v| v.parse::<Uuid>().ok())
                     .ok_or_else(|| Error::field("account", "choose the account that bears it"))?;
                 let reason = text_param(params, "reason").ok_or_else(|| Error::field("reason", "say why the loan is written off"))?;
-                let on = date_param(params, "posting_date")?.unwrap_or_else(today);
+                let on = date_param(params, "posting_date")?.unwrap_or_else(|| hc.ctx.today());
                 post(hc, doc, on, format!("{label} written off: {reason}"), &[(to, left, false), (account, -left, true)]).await?;
                 let e = json!({"event_date": on.to_string(), "event_type": "Write-off", "amount": money(left), "account": to.to_string(), "reason": reason});
                 event(hc, me, Some(e), None).await?;

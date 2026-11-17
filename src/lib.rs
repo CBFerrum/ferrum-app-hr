@@ -6,6 +6,9 @@
 //! attendance, claims and salary slips whoever created them. Money posts through the domain
 //! ledger; the ledger has no employee party, so employee balances live on dedicated accounts and
 //! every line names its source document (`against`).
+//!
+//! "Today" is the workspace's day, from the request's context (`Ctx::today`), never the UTC day:
+//! what is posted or dated today lands on the day it is where the workspace is.
 
 mod attendance;
 mod calendar;
@@ -98,28 +101,6 @@ pub async fn upkeep(k: &Kernel, tenant: Uuid) -> Result<()> {
         }
     }
     Ok(())
-}
-
-pub(crate) fn today() -> NaiveDate {
-    chrono::Utc::now().date_naive()
-}
-
-/// Today in the tenant's time zone.
-pub(crate) async fn local_today(tx: &mut ferrum_kernel::Tx, tenant: Uuid) -> Result<NaiveDate> {
-    let tz = attendance::timezone(tx, tenant).await?;
-    Ok(sqlx::query_scalar("select (now() at time zone $1)::date").bind(tz).fetch_one(&mut **tx).await?)
-}
-
-/// Whether `day` is after today in the tenant's time zone. Only days next to today's UTC date
-/// can differ, so the zone is looked up just for those.
-pub(crate) async fn is_future(hc: &mut HookCtx<'_>, day: NaiveDate) -> Result<bool> {
-    let utc = today();
-    if day < utc || (day - utc).num_days() > 1 {
-        return Ok(day > utc);
-    }
-    let tz = attendance::timezone(hc.tx, hc.ctx.tenant).await?;
-    let local: NaiveDate = sqlx::query_scalar("select (now() at time zone $1)::date").bind(tz).fetch_one(&mut **hc.tx).await?;
-    Ok(day > local)
 }
 
 /// An optional date field.

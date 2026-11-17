@@ -551,7 +551,7 @@ impl DocHook for AttendanceHook {
         if opt_date(&emp, "date_of_joining").is_some_and(|j| day < j) || opt_date(&emp, "relieving_date").is_some_and(|r| day > r) {
             return Err(Error::field("attendance_date", format!("{name} was not employed on {day}")));
         }
-        if id(doc, "leave_application").is_none() && crate::is_future(hc, day).await? {
+        if id(doc, "leave_application").is_none() && day > hc.ctx.today() {
             return Err(Error::field("attendance_date", "attendance cannot be marked for a future date"));
         }
         let dup: Option<String> = sqlx::query_scalar(
@@ -662,7 +662,7 @@ impl DocHook for RequestHook {
         if opt_date(&emp, "date_of_joining").is_some_and(|j| from < j) || opt_date(&emp, "relieving_date").is_some_and(|r| to > r) {
             return Err(Error::field("from_date", format!("{name} is not employed on all of these days")));
         }
-        if crate::is_future(hc, to).await? {
+        if to > hc.ctx.today() {
             return Err(Error::field("to_date", "attendance cannot be marked for a future date"));
         }
         let holidays = employee_holidays(hc.tx, hc.ctx.tenant, emp_id, from, to).await?;
