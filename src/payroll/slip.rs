@@ -1082,7 +1082,7 @@ async fn correct(hc: &mut HookCtx<'_>, doc: &Doc) -> Result<Value> {
     for f in ["employee", "start_date", "end_date", "payroll_entry", "off_cycle"] {
         set(&mut slip, f, doc.get(f).cloned().unwrap_or_default());
     }
-    set(&mut slip, "posting_date", crate::today().to_string());
+    set(&mut slip, "posting_date", hc.ctx.today().to_string());
     set(&mut slip, "replaces", me.to_string());
     let made = hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, "SalarySlip", slip).await?;
     let made_id = id(&made, "id").unwrap_or_default();
@@ -1125,7 +1125,7 @@ async fn hold(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value, holding: bool) ->
             return Err(Error::invalid(format!("{who}'s salary for {period} is not held")));
         }
         set(&mut v, "held", false);
-        set(&mut v, "released_on", crate::today().to_string());
+        set(&mut v, "released_on", hc.ctx.today().to_string());
     }
     hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "SalarySlip", me, v).await?;
     if let Some(run) = lookup(hc, "PayrollEntry", id(doc, "payroll_entry")).await? {
@@ -1215,7 +1215,7 @@ impl DocHook for SlipHook {
         let late = submitted_run(hc, doc).await?;
         if super::posts(hc) {
             let cid = id(doc, "company").unwrap_or_default();
-            let on = opt_date(doc, "posting_date").unwrap_or_else(crate::today);
+            let on = opt_date(doc, "posting_date").unwrap_or_else(|| hc.ctx.today());
             let source = ("SalarySlip", me, s(doc, "number").map(str::to_string));
             match (&late, id(doc, "payroll_entry")) {
                 (_, None) => {
@@ -1298,13 +1298,14 @@ impl DocHook for SlipHook {
         if super::posts(hc) {
             let cid = id(doc, "company").unwrap_or_default();
             let co = company(hc.kernel, hc.ctx, hc.tx, cid).await?;
-            let reversed = ledger::reverse(hc.tx, hc.ctx, "SalarySlip", me, crate::today(), co.precision).await?;
+            let today = hc.ctx.today();
+            let reversed = ledger::reverse(hc.tx, hc.ctx, "SalarySlip", me, today, co.precision).await?;
             if reversed == 0
                 && let Some(pe) = submitted_run(hc, doc).await?
             {
                 let payable = id(&pe, "payroll_payable_account").ok_or_else(|| Error::field("payroll_payable_account", "is required"))?;
                 let source = ("SalarySlip", me, s(doc, "number").map(str::to_string));
-                run::post_accrual(hc, cid, source, crate::today(), std::slice::from_ref(doc), payable, id(&pe, "cost_center"), -Decimal::ONE).await?;
+                run::post_accrual(hc, cid, source, today, std::slice::from_ref(doc), payable, id(&pe, "cost_center"), -Decimal::ONE).await?;
             }
         }
         super::payments::unallocate(hc, me).await?;

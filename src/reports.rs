@@ -339,7 +339,7 @@ fn sees(ctx: &Ctx, field: &str) -> bool {
 /// those a required type lacks. Identity and bank documents are listed only to those who see employees' identity
 /// or bank details; someone limited to their own records sees their own, of types shown to them.
 async fn expiring_documents(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result<Value> {
-    let today = crate::local_today(tx, ctx.tenant).await?;
+    let today = ctx.today();
     let days: Option<i32> = p.str("days").map(|d| d.parse().map_err(|_| Error::field("days", "must be a whole number"))).transpose()?;
     let mut categories = vec!["General".to_string()];
     if sees(ctx, "national_id") {
@@ -392,7 +392,7 @@ async fn expiring_documents(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_
 }
 
 async fn events(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result<Value> {
-    let from = p.date("from_date")?.unwrap_or_else(crate::today);
+    let from = p.date("from_date")?.unwrap_or_else(|| ctx.today());
     let days: i64 = p.str("days").map(|d| d.parse().map_err(|_| Error::field("days", "must be a whole number"))).transpose()?.unwrap_or(30).clamp(0, 366);
     let until = from + Duration::days(days);
     let mut qb = QueryBuilder::new(
@@ -436,7 +436,7 @@ fn code(status: &str) -> &'static str {
 }
 
 async fn attendance_sheet(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result<Value> {
-    let any = p.date("month")?.unwrap_or_else(crate::today);
+    let any = p.date("month")?.unwrap_or_else(|| ctx.today());
     let first = any.with_day(1).unwrap_or(any);
     let last = (first + Duration::days(32)).with_day(1).map(|d| d - Duration::days(1)).unwrap_or(any);
     let mut qb = QueryBuilder::new("select e.id, e.number, e.employee_name from e_employee e where e.tenant_id = ");
@@ -509,7 +509,7 @@ async fn attendance_sheet(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>)
 }
 
 async fn leave_balance(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result<Value> {
-    let as_of = p.date("as_of")?.unwrap_or_else(crate::today);
+    let as_of = p.date("as_of")?.unwrap_or_else(|| ctx.today());
     let mut qb = QueryBuilder::new("with p as (select ");
     qb.push_bind(as_of).push(
         "::date as as_of) select e.number, e.employee_name, t.leave_type_name, a.from_date, a.to_date, \

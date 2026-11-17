@@ -364,7 +364,7 @@ impl DocHook for DeclarationHook {
         .rows_affected();
         let mut v = Doc::new();
         set(&mut v, "verified_by", hc.ctx.email.as_str());
-        set(&mut v, "verified_on", crate::local_today(hc.tx, hc.ctx.tenant).await?.to_string());
+        set(&mut v, "verified_on", hc.ctx.today().to_string());
         hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "EmployeeTaxExemptionDeclaration", me, v).await?;
         Ok(Some(json!({"verified": n})))
     }

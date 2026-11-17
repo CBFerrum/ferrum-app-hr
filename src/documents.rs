@@ -4,7 +4,7 @@
 //! employee when the type lets them, their manager for a general type that says so; identity and bank documents
 //! stay with those who see the employee's identity or bank details.
 
-use crate::{local_today, lookup, stamp_company, stored};
+use crate::{lookup, stamp_company, stored};
 use async_trait::async_trait;
 use ferrum_domain::util::{b, get, id, s, set, sys};
 use ferrum_kernel::messages::{self, Message, Recipient};
@@ -69,7 +69,7 @@ impl DocHook for DocumentHook {
             return Err(Error::Forbidden("HR verifies a document, never the person it is about".into()));
         }
         let me = id(doc, "id").ok_or_else(|| Error::internal("document without id"))?;
-        let today = local_today(hc.tx, hc.ctx.tenant).await?;
+        let today = hc.ctx.today();
         let mut v = Doc::new();
         set(&mut v, "verified_by", hc.ctx.email.as_str());
         set(&mut v, "verified_on", today.to_string());
@@ -92,7 +92,7 @@ pub(crate) async fn warn_expiring(k: &Kernel, ctx: &Ctx) -> Result<()> {
         return Ok(());
     }
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let today = local_today(&mut tx, ctx.tenant).await?;
+    let today = ctx.today();
     let due: Vec<Uuid> = sqlx::query_scalar(
         "update e_employee_document set expiry_warned_on = $2 where tenant_id = $1 and expiry_warned_on is null and expiry_date is not null \
          and expiry_date - coalesce(warn_days_before::int, 30) <= $2 returning id",

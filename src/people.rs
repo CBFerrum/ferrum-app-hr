@@ -2,7 +2,7 @@
 //! company, self-service rules, and the lifecycle documents (onboarding, separation, promotion,
 //! transfer).
 
-use crate::{employee_of, lookup, opt_date, stamp_company, stored, today};
+use crate::{employee_of, lookup, opt_date, stamp_company, stored};
 use async_trait::async_trait;
 use ferrum_domain::util::{b, elevated, find, get, id, rows, s, set, sys};
 use ferrum_kernel::{Action, Doc, DocHook, Error, FieldError, Filter, HookCtx, HookRegistry, Result};
@@ -326,7 +326,7 @@ impl DocHook for ChecklistHook {
             if !b(a, "done") {
                 set(a, "completed_on", Value::Null);
             } else if s(a, "completed_on").is_none() {
-                set(a, "completed_on", today().to_string());
+                set(a, "completed_on", hc.ctx.today().to_string());
             }
             let was = s(a, "id").and_then(|i| before.get(i));
             let approved_by = match was {
@@ -413,7 +413,7 @@ pub(crate) async fn remind_overdue_tasks(k: &ferrum_kernel::Kernel, ctx: &ferrum
         return Ok(());
     }
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let today = crate::local_today(&mut tx, ctx.tenant).await?;
+    let today = ctx.today();
     let sctx = sys(ctx);
     for (parent, child, entity) in [
         ("e_employee_onboarding", "e_employee_onboarding__activities", "EmployeeOnboarding"),
@@ -514,7 +514,7 @@ impl DocHook for SeparationHook {
         let emp = id(doc, "employee").ok_or_else(|| Error::field("employee", "is required"))?;
         let mut v = Doc::new();
         set(&mut v, "relieving_date", day.to_string());
-        if day < crate::local_today(hc.tx, hc.ctx.tenant).await? {
+        if day < hc.ctx.today() {
             set(&mut v, "status", "Left");
         }
         hc.kernel.update_tx(&elevated(hc.ctx), hc.tx, "Employee", emp, v, None).await?;
@@ -651,7 +651,7 @@ impl DocHook for MoveHook {
 
     async fn before_submit(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
         if let Some(day) = opt_date(doc, self.0.date_field)
-            && crate::is_future(hc, day).await?
+            && day > hc.ctx.today()
         {
             return Err(Error::field(self.0.date_field, format!("a {} cannot be submitted before its date", self.0.label)));
         }

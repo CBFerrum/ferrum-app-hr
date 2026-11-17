@@ -177,6 +177,11 @@ fn changes_after_payroll() {
 }
 
 #[test]
+fn payroll_dates_on_the_workspaces_day() {
+    run(workspace_day_scenario());
+}
+
+#[test]
 fn employee_documents_with_expiry() {
     run(documents_scenario());
 }
@@ -3311,6 +3316,42 @@ impl P {
 
 fn amount_of(s: &Doc, table: &str, abbr: &str) -> Decimal {
     s[table].as_array().unwrap().iter().find(|r| r["abbr"] == json!(abbr)).map(|r| dec(&r["amount"])).unwrap_or_default()
+}
+
+/// What payroll dates "today" is the workspace's day, never UTC's. No clock is set: the workspace moves to a zone whose
+/// day is not UTC's now, whatever the hour (Pago Pago before 10:00 UTC, Kiritimati after, as the platform's own suites
+/// do), so a date taken from UTC is a day out. A salary held and released, and a slip of a posted run corrected, are
+/// dated on its day, and so is the journal that takes the slip's share of the run back.
+async fn workspace_day_scenario() {
+    use chrono::Timelike;
+    let mut p = P::new("hrday").await;
+    let zone = if chrono::Utc::now().hour() < 10 { "Pacific/Pago_Pago" } else { "Pacific/Kiritimati" };
+    p.t.k.update_tenant_settings(&p.t.admin, &obj(json!({"timezone": zone}))).await.expect("the workspace's zone");
+    p.t.admin = p.t.k.load_ctx(p.t.tenant, p.t.admin.user, None, "it".into()).await.expect("admin");
+    p.pm = p.t.k.load_ctx(p.t.tenant, p.pm.user, None, "it".into()).await.expect("payroll manager");
+    let today = p.pm.today();
+    assert_ne!(today, chrono::Utc::now().date_naive(), "{zone}'s day is not UTC's");
+    let (asha, ben) = (p.hire("Asha", "30000").await, p.hire("Ben", "30000").await);
+    p.run("2026-09-01", "2026-09-30", true).await;
+    let (t, day) = (&p.t, json!(today.to_string()));
+
+    let held = p.slip(&asha, "2026-09-01").await;
+    t.act(&p.pm, "SalarySlip", uid(&held), "hold_salary", json!({"reason": "Papers awaited"})).await;
+    t.act(&p.pm, "SalarySlip", uid(&held), "release_salary", json!({})).await;
+    assert_eq!(t.get("SalarySlip", uid(&held)).await["released_on"], day, "released on the workspace's day");
+
+    let slip = p.slip(&ben, "2026-09-01").await;
+    let fix = t.act(&p.pm, "SalarySlip", uid(&slip), "make_correction", json!({})).await;
+    assert_eq!(t.get("SalarySlip", vid(&fix)).await["posting_date"], day, "the correction is dated on the workspace's day");
+    let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+    let taken_back: Vec<chrono::NaiveDate> =
+        sqlx::query_scalar("select posting_date from journal_entry where tenant_id = $1 and source_entity = 'SalarySlip' and source_id = $2")
+            .bind(t.tenant)
+            .bind(uid(&slip))
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(taken_back, [today], "the slip's share of the run's accrual is taken back on the workspace's day");
 }
 
 /// An allowance paid with four months' pay, stopped after two; another carried on at a new amount;

@@ -9,7 +9,7 @@
 //! than that fact.
 
 use crate::calendar::holiday_list_for;
-use crate::leave::{allocation_on, available, local_today};
+use crate::leave::{allocation_on, available};
 use crate::opt_date;
 use async_trait::async_trait;
 use chrono::{NaiveDate, NaiveDateTime};
@@ -580,16 +580,16 @@ async fn published(tx: &mut Tx, tenant: Uuid, only: Option<Uuid>, today: NaiveDa
 }
 
 async fn careers(k: &Kernel, tenant: Uuid) -> Result<Value> {
+    let today = system(k, tenant).await?.today();
     let mut tx = k.db.tenant_tx(tenant).await?;
-    let today = local_today(&mut tx, tenant).await?;
     let list = published(&mut tx, tenant, None, today).await?;
     tx.commit().await?;
     Ok(json!({"openings": list.into_iter().map(opening_json).collect::<Vec<_>>()}))
 }
 
 async fn opening(k: &Kernel, tenant: Uuid, open: Uuid) -> Result<Value> {
+    let today = system(k, tenant).await?.today();
     let mut tx = k.db.tenant_tx(tenant).await?;
-    let today = local_today(&mut tx, tenant).await?;
     let found = published(&mut tx, tenant, Some(open), today).await?;
     tx.commit().await?;
     found.into_iter().next().map(opening_json).ok_or_else(|| Error::NotFound("opening".into()))
@@ -668,7 +668,7 @@ async fn apply(k: &Kernel, req: &SiteRequest, open: Uuid) -> Result<Value> {
     let sctx = system(k, req.tenant).await?;
     with_retry(|| async {
         let mut tx = k.db.tenant_tx(req.tenant).await?;
-        let today = local_today(&mut tx, req.tenant).await?;
+        let today = sctx.today();
         // An opening that is not published, or is closed, reads as missing.
         if published(&mut tx, req.tenant, Some(open), today).await?.is_empty() {
             return Err(Error::NotFound("opening".into()));

@@ -5,7 +5,7 @@
 //! ordinary, reversible vouchers.
 
 use crate::people::company_account;
-use crate::{default_approver, lookup, notify, opt_date, require_approver, stamp_company, stored, today};
+use crate::{default_approver, lookup, notify, opt_date, require_approver, stamp_company, stored};
 use async_trait::async_trait;
 use ferrum_app_erp::ledger::{self, Entry, Line};
 use ferrum_domain::util::{company, d, elevated, get, id, money, round, rows, s, set, sys};
@@ -262,7 +262,7 @@ impl DocHook for ClaimHook {
             return hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "ExpenseClaim", me, v).await;
         }
         let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
-        let on = opt_date(doc, "posting_date").unwrap_or_else(today);
+        let on = opt_date(doc, "posting_date").unwrap_or_else(|| hc.ctx.today());
         let mut entry = Entry::new(co.id, on, "ExpenseClaim", me, s(doc, "number").map(str::to_string));
         let name = s(doc, "employee_name").unwrap_or_default().to_string();
         entry.memo = Some(format!("Expense claim of {name}"));
@@ -324,7 +324,7 @@ impl DocHook for ClaimHook {
         let me = id(doc, "id").ok_or_else(|| Error::internal("claim without id"))?;
         if s(doc, "status") != Some("Rejected") {
             let co = company(hc.kernel, hc.ctx, hc.tx, id(doc, "company").unwrap_or_default()).await?;
-            ledger::reverse(hc.tx, hc.ctx, "ExpenseClaim", me, today(), co.precision).await?;
+            ledger::reverse(hc.tx, hc.ctx, "ExpenseClaim", me, hc.ctx.today(), co.precision).await?;
             for a in rows(doc, "advances") {
                 let amount = d(&a, "allocated_amount");
                 let Some(adv_id) = id(&a, "employee_advance").filter(|_| amount > Decimal::ZERO) else { continue };
@@ -500,7 +500,7 @@ pub(crate) async fn payment_entry(
     }
     let on = match params.get("posting_date").and_then(Value::as_str) {
         Some(v) => ferrum_kernel::value::parse_date(v).map_err(|m| Error::field("posting_date", m))?,
-        None => today(),
+        None => hc.ctx.today(),
     };
     let accounts: Vec<Value> = lines
         .iter()

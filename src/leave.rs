@@ -5,7 +5,7 @@
 
 use crate::attendance::{mark_leave, unmark_leave};
 use crate::calendar::{days, employee_holidays, leave_days, working_days};
-use crate::{default_approver, employee_of, notify, opt_date, require_approver, stamp_company, today};
+use crate::{default_approver, employee_of, notify, opt_date, require_approver, stamp_company};
 use async_trait::async_trait;
 use chrono::{Datelike, Months, NaiveDate};
 use ferrum_domain::util::{b, d, elevated, find, get, id, money, round, rows, s, set, sys};
@@ -148,7 +148,7 @@ pub(crate) async fn available(
 pub(crate) async fn sync_expiry(hc: &mut HookCtx<'_>, allocation: Uuid, cause: Uuid) -> Result<()> {
     let a = get(hc.kernel, hc.ctx, hc.tx, "LeaveAllocation", allocation).await?;
     let Some(end) = opt_date(&a, "to_date") else { return Ok(()) };
-    if d(&a, "docstatus") != Decimal::ONE || end >= today() {
+    if d(&a, "docstatus") != Decimal::ONE || end >= hc.ctx.today() {
         return Ok(());
     }
     let left = remaining(hc.tx, hc.ctx.tenant, allocation, None).await?;
@@ -363,7 +363,7 @@ impl DocHook for PolicyHook {
             hc.ctx.require("LeaveAllocation", Action::Submit)?;
             let on = match params.get("on").and_then(Value::as_str) {
                 Some(v) => ferrum_kernel::value::parse_date(v).map_err(|m| Error::field("on", m))?,
-                None => local_today(hc.tx, hc.ctx.tenant).await?,
+                None => hc.ctx.today(),
             };
             let (granted, skipped) = accrue_policy(hc, doc, on).await?;
             return Ok(Some(json!({"granted": granted, "skipped": skipped, "on": on})));
@@ -469,12 +469,6 @@ fn share_days(first: NaiveDate, shares: u32) -> Vec<NaiveDate> {
 fn accrued(annual: Decimal, shares: u32, begun: usize, cap: Decimal) -> Decimal {
     let earned = round(annual * Decimal::from(begun as u64) / Decimal::from(shares), 2);
     if cap > Decimal::ZERO { earned.min(cap) } else { earned }
-}
-
-/// Today on the tenant's wall clock.
-pub(crate) async fn local_today(tx: &mut Tx, tenant: Uuid) -> Result<NaiveDate> {
-    let tz = crate::attendance::timezone(tx, tenant).await?;
-    Ok(sqlx::query_scalar("select (now() at time zone $1)::date").bind(tz).fetch_one(&mut **tx).await?)
 }
 
 /// Grants what the accruing lines of `policy` have earned by `on` to the employees whose record
@@ -588,7 +582,7 @@ pub(crate) async fn accrue_leaves(k: &Kernel, ctx: &Ctx) -> Result<()> {
         return Ok(());
     }
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let on = local_today(&mut tx, ctx.tenant).await?;
+    let on = ctx.today();
     let policies: Vec<(Uuid, i64, Option<NaiveDate>, Option<i64>)> = sqlx::query_as(
         "select p.parent_id, (select count(*) from e_employee e where e.tenant_id = $1 and e.leave_policy = p.parent_id and e.status = 'Active'), \
          l.accrued_on, l.accrued_people \

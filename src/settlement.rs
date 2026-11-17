@@ -83,7 +83,7 @@ async fn settle_lines(hc: &mut HookCtx<'_>, st: &Doc, sign: Decimal, write: bool
                     )));
                 }
                 if write {
-                    let e = json!({"event_date": crate::today().to_string(), "event_type": "Settled by Statement", "amount": money(d(line, "amount")),
+                    let e = json!({"event_date": hc.ctx.today().to_string(), "event_type": "Settled by Statement", "amount": money(d(line, "amount")),
                                    "account": line.get("account"), "reference": st_id, "reason": format!("Full and final statement {}", s(st, "number").unwrap_or_default())});
                     crate::payroll::loans::event(hc, lid, Some(e), None).await?;
                 }
