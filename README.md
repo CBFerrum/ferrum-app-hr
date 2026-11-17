@@ -13,7 +13,7 @@
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
 ![TypeScript](https://img.shields.io/badge/React-TypeScript-3178c6?style=flat-square&logo=typescript&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-data-336791?style=flat-square&logo=postgresql&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-57%20Rust%20%C2%B7%2055%20UI-16a34a?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-58%20Rust%20%C2%B7%2057%20UI-16a34a?style=flat-square)
 
 ### Run people and payroll in one place: hire, onboard, track time and leave, pay by formula, and settle on the way out.
 
@@ -42,8 +42,8 @@ People (HR and Payroll) is the employee lifecycle for Ferrum: employees and orga
 | **What it adds** | 85 entities (56 records and 29 small tables), 7 roles, 6 modules (HR, Attendance and Leave, Recruitment, Performance, Expenses, Payroll), 3 approval workflows and 2 package approval policies, 12 reports, 1 print format, 7 document templates, 5 message templates, 6 notification kinds, 7 upkeep jobs, 2 example packs |
 | **Depends on** | Ferrum platform `>=0.3.2, <0.4`. The connector **HR and ERP** (expenses and payroll posting) needs ERP `>=0.1` and ships with this app |
 | **Works with** | ERP (ledger, accounts, cost centers, company letterhead), Finance (bank accounts), Projects and Objectives (people), Helpdesk and others through the shared Employee record |
-| **Languages** | English, Arabic and Hindi (253 interface words and 1,190 names in each), right-to-left |
-| **Tests** | 57 Rust tests (against a real PostgreSQL), 55 interface tests |
+| **Languages** | English, Arabic and Hindi (255 interface words and 1,190 names in each), right-to-left |
+| **Tests** | 58 Rust tests (against a real PostgreSQL), 57 interface tests |
 | **Licence** | AGPL-3.0-only |
 
 ## 📸 Screenshots
@@ -206,7 +206,7 @@ One **Full and Final Statement** gathers, from the employee's records, what is o
 - **Salary Components** are earnings, deductions or **employer contributions** (the employer's share of provident fund, insurance or social security, never part of gross or net pay). Amounts are fixed or **formulas in CEL** with a condition. A formula sees `base`, `variable`, `gross`, `payment_days`, the rows above it by abbreviation, `employee.<field>` and `location.<field>` (a workspace's own fields included), `period` (start, end, month, year, number, count, left, days), `ytd.<abbr>` and year-to-date totals, `previous.<abbr>`, `declared.<code>` and `verified.<code>`, and lookup tables with `lookup()` and `banded()`, `years_between` and `months_between`. Results are exact decimals.
 - **Lookup tables** with effective dates, keys and bands: a ceiling by year, a slab by region, bands of a tax.
 - **Salary Structures** list earnings first, then deductions, then employer contributions, in row order; a formula may use rows above it. **Salary Structure Assignments** put an employee on a structure with a base and a variable, from a date; the latest submitted one on or before a date is in force. Payroll frequency: Monthly, Fortnightly or Weekly.
-- **Payroll Periods and income tax.** The tax year over which income tax is projected and spread. **Income Tax Slabs** are progressive, with a standard exemption, declared exemptions, a **rebate** while taxable income is under a limit, and **cesses and surcharges** on the tax, each within its bounds and in order. India's new regime for FY 2025-26 is checked against the published figures; no country's rules ship as code.
+- **Payroll Periods and income tax.** The tax year over which income tax is projected and spread. **Income Tax Slabs** are progressive, with a standard exemption, declared exemptions, a **rebate** while taxable income is under a limit, and **cesses and surcharges** on the tax, each within its bounds and in order. A test compares the tax engine with a fixture of India's new-regime figures for FY 2025-26 as the tax department prints them; no country's rules ship as code.
 - **Tax declarations.** Exemption categories with a code and a maximum; **Employee Tax Exemption Declarations** with amounts and proofs; **Verify Proofs** by HR.
 - **Opening figures.** **Payroll Openings** carry what the system you moved from paid, and what a previous employer paid, for the year, so a mid-year move or a joiner is taxed on the whole year with credit.
 - **Salary Slips** are recomputed on every save while draft: working days, payment days (less leave without pay and absences, half days count half), earnings, deductions, employer contributions, additional salary, arrears, loan instalments, taxable earnings, income tax, rounded total. A leaver's last slip settles the year's tax.
@@ -391,7 +391,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 | One data set with accounting, projects and helpdesk | ✅ | 🟡¹ | 🟡¹ | ➖ | 🟡¹ | 🟡¹ | ✅ |
 | No per-employee price | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | 🟡¹⁰ |
 
-<sub>¹ Present in some form or not confirmed; check the product, country and edition. ² Through a separate product from the same vendor. ³ BambooHR's payroll is for the United States. ⁴ A separate vendor product that works with the HR product. ⁵ No country's rules are built into this app: they are formulas, lookup tables and templates, and a country pack is data. India's new regime is checked against published figures; statutory returns and contribution files are not built. ⁶ A cycle, a template of goals with weights, and self and manager scores; no review stages. ⁷ Programs, events and records with validity; no skills and no LMS link here (Ferrum has a separate learning app). ⁸ Promotions and transfers keep the previous values on the document; there is no "as of" date for the whole record. ⁹ Twelve reports; no dashboards. ¹⁰ Self-hosting is free; the vendor's cloud is priced per user.</sub>
+<sub>¹ Present in some form or not confirmed; check the product, country and edition. ² Through a separate product from the same vendor. ³ BambooHR's payroll is for the United States. ⁴ A separate vendor product that works with the HR product. ⁵ No country's rules are built into this app: they are formulas, lookup tables and templates, and a country pack is data. A test compares the tax engine with a fixture of India's published new-regime figures for FY 2025-26; statutory returns and contribution files are not built. ⁶ A cycle, a template of goals with weights, and self and manager scores; no review stages. ⁷ Programs, events and records with validity; no skills and no LMS link here (Ferrum has a separate learning app). ⁸ Promotions and transfers keep the previous values on the document; there is no "as of" date for the whole record. ⁹ Twelve reports; no dashboards. ¹⁰ Self-hosting is free; the vendor's cloud is priced per user.</sub>
 
 ### 🏆 Where People stands out
 
