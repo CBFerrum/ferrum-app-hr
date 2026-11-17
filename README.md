@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.15.2-0e7490?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.16.0-0e7490?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -37,7 +37,7 @@ People (HR and Payroll) is the employee lifecycle for Ferrum: employees and orga
 
 | | |
 |---|---|
-| **Version** | 0.15.2 (packages `hr` 0.6.1, `payroll` 0.8.1, `hr_erp` 0.5.0, `payroll_erp` 0.5.0) |
+| **Version** | 0.16.0 (packages `hr` 0.6.1, `payroll` 0.8.1, `hr_erp` 0.5.0, `payroll_erp` 0.6.0) |
 | **Kind** | Its own interface at `/people/` (your space, approvals, team calendar, directory and org chart, public careers page) with Ferrum's records screens for everything else |
 | **What it adds** | 85 entities (56 records and 29 small tables), 7 roles, 6 modules (HR, Attendance and Leave, Recruitment, Performance, Expenses, Payroll), 3 approval workflows and 2 package approval policies, 12 reports, 1 print format, 7 document templates, 5 message templates, 6 notification kinds, 7 upkeep jobs, 2 example packs |
 | **Depends on** | Ferrum platform `>=0.3.2, <0.4`. The connector **HR and ERP** (expenses and payroll posting) needs ERP `>=0.1` and ships with this app |
@@ -419,6 +419,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 
 ### ✅ Recently shipped
 
+- [x] **0.16.0** A run's bank file is a recorded round under message id `<run>-<round>`, given again unchanged; what happens today is dated on the workspace's day.
 - [x] **0.15.2** Payroll's package has one SQL file; the suite names the withholding tax account as ERP now does.
 - [x] **0.15.1** Check-ins and waiting days on the workspace's clock; rebuilt on Ferrum-Frontend 06bd1a2 with `mountApp`.
 - [x] **0.15.0** No upgrade history in the package SQL: the backfill of bank entries made before 0.10.0 is gone, and a slip's period constraint is made once.
