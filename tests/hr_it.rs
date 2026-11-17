@@ -2927,6 +2927,8 @@ async fn corrections_scenario() {
 async fn carried_scenario(elsewhere: bool) {
     let slug = if elsewhere { "hrcarry2" } else { "hrcarry1" };
     let t = T::new(slug).await;
+    // April 2027 is in the year after the company's current one: its bank entry is dated there.
+    t.ins(&t.admin, "FiscalYear", json!({"year_name": "2027-28", "company": t.c(), "start_date": "2027-04-01", "end_date": "2028-03-31"})).await;
     let pm = t.user(&format!("pm@{slug}.test"), &["Payroll Manager"]).await;
     let acct = t.user(&format!("acct@{slug}.test"), &["Accounts Manager"]).await;
     let flat = t
