@@ -5,14 +5,20 @@
 //! bank details and the company's own account are each in a permission group, and someone who
 //! cannot read them gets a refusal, not a file. The company's account is Finance's Bank Account for
 //! the paying GL account, or the one given with the request where Finance is not installed.
+//!
+//! Banks take a message id once. Each file made is a round of the run, under message id
+//! `<number>-<round>`, kept on the run: asked again, the run gives its last round's file unchanged,
+//! so a file uploaded twice is one instruction. A new round is asked for (`new_round`), and pays only
+//! those no earlier round's file pays (each employee's row says which round pays them), as a supplier
+//! payment run's rounds do in ERP.
 
 use crate::expense::bank_param;
 use chrono::{NaiveDate, Utc};
-use ferrum_domain::util::{b, company, id, money, s};
+use ferrum_domain::util::{b, company, id, money, rows, s, sys};
 use ferrum_kernel::{Doc, Error, HookCtx, Result};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 pub(crate) const PAIN: &str = "ISO 20022 (pain.001)";
@@ -21,6 +27,7 @@ pub(crate) const CSV: &str = "CSV";
 /// One credit transfer.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Payee {
+    pub employee: Uuid,
     pub name: String,
     pub slip: String,
     pub amount: Decimal,
@@ -49,7 +56,7 @@ pub(crate) struct Order<'a> {
     pub reference: &'a str,
 }
 
-/// The `bank_file {format?, execution_date?, bank_account?, from_account?, from_bic?}` action.
+/// The `bank_file {format?, execution_date?, bank_account?, from_account?, from_bic?, new_round?}` action.
 pub(crate) async fn bank_file(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -> Result<Value> {
     let readable =
         |entity: &str, field: &str| hc.ctx.schema.entity(entity).and_then(|e| e.field(field).cloned()).is_some_and(|f| hc.ctx.perms.can_read_field(entity, &f));
@@ -57,6 +64,19 @@ pub(crate) async fn bank_file(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -
         return Err(Error::Forbidden("bank details are restricted to payroll and HR managers".into()));
     }
     let run = id(doc, "id").ok_or_else(|| Error::internal("no id"))?;
+    let number = s(doc, "number").unwrap_or("PAYROLL").to_string();
+    let rounds = doc.get("bank_file_rounds").and_then(Value::as_i64).unwrap_or(0);
+    if rounds > 0 && !params.get("new_round").and_then(Value::as_bool).unwrap_or(false) {
+        // The bank may have it already: the same file, under the same message id.
+        let file = s(doc, "last_bank_file").and_then(|f| f.strip_prefix("/files/")).and_then(|f| f.parse::<Uuid>().ok());
+        let (name, kind, bytes) = hc.kernel.read_file(hc.ctx, file.ok_or_else(|| Error::internal("a bank file round without its file"))?).await?;
+        let content = String::from_utf8(bytes).map_err(|_| Error::internal("a bank file that is not text"))?;
+        return Ok(json!({
+            "file": {"name": name, "type": kind, "content": content},
+            "round": rounds,
+            "message": format!("Round {rounds}'s file again, as the bank was given it (message id {number}-{rounds}); a new round pays only those no earlier round pays"),
+        }));
+    }
     let cid = id(doc, "company").ok_or_else(|| Error::field("company", "is required"))?;
     let co = company(hc.kernel, hc.ctx, hc.tx, cid).await?;
     let param = |k: &str| params.get(k).and_then(Value::as_str).map(compact).filter(|v| !v.is_empty());
@@ -94,10 +114,14 @@ pub(crate) async fn bank_file(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -
         return Err(Error::invalid("the company's Bank Account has neither an IBAN nor an account number"));
     }
     // What the bank entry pays, one transfer to each employee: held salaries are left out, and what
-    // is still owed from an earlier slip goes with this one.
+    // is still owed from an earlier slip goes with this one. Those an earlier round's file pays are
+    // left out too: the bank has their payment.
     let due = super::payments::due(hc, run).await?;
+    let employees = rows(doc, "employees");
+    let paid_before: HashSet<Uuid> =
+        employees.iter().filter(|r| r.get("bank_file_round").is_some_and(Value::is_i64)).filter_map(|r| id(r, "employee")).collect();
     let mut per: Vec<(Uuid, Option<String>, Option<String>, Decimal)> = Vec::new();
-    for x in &due {
+    for x in due.iter().filter(|x| !paid_before.contains(&x.employee)) {
         match per.iter_mut().find(|p| p.0 == x.employee) {
             Some(p) => {
                 p.3 += x.amount;
@@ -124,7 +148,7 @@ pub(crate) async fn bank_file(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -
         .into_iter()
         .map(|(e, name, slip, amount)| {
             let (mode, bank, account, routing, iban) = banks.get(&e).cloned().unwrap_or_default();
-            (name, mode, bank, account, routing, iban, Some(amount), slip)
+            (e, name, mode, bank, account, routing, iban, Some(amount), slip)
         })
         .collect();
     let (payees, missing) = payees(rows);
@@ -132,15 +156,22 @@ pub(crate) async fn bank_file(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -
         return Err(Error::invalid(format!("no bank account for {}: add it to their employee record, or pay them another way", missing.join(", "))));
     }
     if payees.is_empty() {
-        return Err(Error::invalid(if due.is_empty() { super::run::nothing_due(hc, run).await? } else { "nobody in this run is paid by bank".into() }));
+        return Err(Error::invalid(if due.is_empty() {
+            super::run::nothing_due(hc, run).await?
+        } else if rounds > 0 {
+            format!("whoever this run pays by bank is in the bank file of an earlier round; without New Round, round {rounds}'s file is given again")
+        } else {
+            "nobody in this run is paid by bank".into()
+        }));
     }
     let pay_on = match param("execution_date") {
         Some(v) => NaiveDate::parse_from_str(&v, "%Y-%m-%d").map_err(|_| Error::field("execution_date", "is a day"))?,
         None => crate::opt_date(doc, "posting_date").unwrap_or_else(|| hc.ctx.today()),
     };
-    let number = s(doc, "number").unwrap_or("PAYROLL").to_string();
+    let round = rounds + 1;
+    let message_id = format!("{number}-{round}");
+    // When the message was made: an instant, not a day.
     let now = Utc::now();
-    let message_id = format!("{number}-{}", now.format("%Y%m%d%H%M%S"));
     let reference = if b(doc, "off_cycle") {
         format!("Salary paid off-cycle {}", s(doc, "start_date").unwrap_or_default())
     } else {
@@ -156,25 +187,46 @@ pub(crate) async fn bank_file(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -
     };
     let total: Decimal = payees.iter().map(|p| p.amount).sum();
     let (name, kind, content) = match param("format").as_deref() {
-        None | Some(PAIN) => (format!("{number}-pain.001.xml"), "application/xml", pain001(&order, &debtor, &payees)),
-        Some(CSV) => (format!("{number}-bank.csv"), "text/csv", csv(&order, &payees)),
+        None | Some(PAIN) => (format!("{message_id}-pain.001.xml"), "application/xml", pain001(&order, &debtor, &payees)),
+        Some(CSV) => (format!("{message_id}-bank.csv"), "text/csv", csv(&order, &payees)),
         Some(_) => return Err(Error::field("format", format!("is {PAIN} or {CSV}"))),
     };
+    // Kept on the run, the round counted and those it pays marked, with this transaction.
+    let stored = hc.kernel.store_file(hc.ctx, None, &name, kind, content.as_bytes()).await?;
+    let file: Uuid = stored.get("id").and_then(Value::as_str).and_then(|f| f.parse().ok()).ok_or_else(|| Error::internal("a stored file without its id"))?;
+    let sctx = sys(hc.ctx);
+    hc.kernel.attach_file_tx(&sctx, hc.tx, file, "PayrollEntry", run).await?;
+    for r in employees.iter().filter(|r| payees.iter().any(|p| Some(p.employee) == id(r, "employee"))) {
+        let mut v = Doc::new();
+        v.insert("bank_file_round".into(), json!(round));
+        hc.kernel.set_child_values_tx(&sctx, hc.tx, "PayrollEntry", "employees", id(r, "id").unwrap_or_default(), v).await?;
+    }
+    let mut v = Doc::new();
+    v.insert("bank_file_rounds".into(), json!(round));
+    v.insert("last_bank_file".into(), json!(format!("/files/{file}")));
+    hc.kernel.set_values_tx(&sctx, hc.tx, "PayrollEntry", run, v).await?;
     Ok(json!({
         "file": {"name": name, "type": kind, "content": content},
+        "round": round,
         "payments": payees.len(),
         "total": money(total),
-        "message": format!("{} payment{} of {} {} in all", payees.len(), if payees.len() == 1 { "" } else { "s" }, total.normalize(), co.currency_code),
+        "message": format!(
+            "Round {round}, message id {message_id}: {} payment{} of {} {} in all; the file is kept on the run",
+            payees.len(),
+            if payees.len() == 1 { "" } else { "s" },
+            total.normalize(),
+            co.currency_code
+        ),
     }))
 }
 
 /// What is due as payments: those paid by bank with something to pay, and the names of those paid
 /// by bank without an account to pay into.
 pub(crate) fn payees(
-    rows: Vec<(Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<Decimal>, Option<String>)>,
+    rows: Vec<(Uuid, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<Decimal>, Option<String>)>,
 ) -> (Vec<Payee>, Vec<String>) {
     let (mut out, mut missing) = (Vec::new(), Vec::new());
-    for (name, mode, bank, account, routing, iban, net, slip) in rows {
+    for (employee, name, mode, bank, account, routing, iban, net, slip) in rows {
         let amount = net.unwrap_or_default();
         if mode.as_deref().unwrap_or("Bank") != "Bank" || amount <= Decimal::ZERO {
             continue;
@@ -186,7 +238,16 @@ pub(crate) fn payees(
             missing.push(name);
             continue;
         }
-        out.push(Payee { name, slip: slip.unwrap_or_default(), amount, iban, account, routing: tidy(routing), bank: bank.filter(|b| !b.trim().is_empty()) });
+        out.push(Payee {
+            employee,
+            name,
+            slip: slip.unwrap_or_default(),
+            amount,
+            iban,
+            account,
+            routing: tidy(routing),
+            bank: bank.filter(|b| !b.trim().is_empty()),
+        });
     }
     (out, missing)
 }
@@ -334,6 +395,7 @@ mod tests {
 
     fn priya() -> Payee {
         Payee {
+            employee: Uuid::nil(),
             name: "Priya & Co".into(),
             slip: "SAL-202609-00001".into(),
             amount: d("143537.14"),
@@ -348,6 +410,7 @@ mod tests {
     fn who_is_paid_by_bank() {
         let row = |name: &str, mode: Option<&str>, account: Option<&str>, iban: Option<&str>, net: &str| {
             (
+                Uuid::nil(),
                 Some(name.to_string()),
                 mode.map(str::to_string),
                 None,
