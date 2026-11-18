@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.16.0-0e7490?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.17.0-0e7490?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -37,10 +37,10 @@ People (HR and Payroll) is the employee lifecycle for Ferrum: employees and orga
 
 | | |
 |---|---|
-| **Version** | 0.16.0 (packages `hr` 0.6.1, `payroll` 0.8.1, `hr_erp` 0.5.0, `payroll_erp` 0.6.0) |
+| **Version** | 0.17.0 (packages `hr` 0.6.1, `payroll` 0.8.1, `hr_erp` 0.5.0, `payroll_erp` 0.6.0) |
 | **Kind** | Its own interface at `/people/` (your space, approvals, team calendar, directory and org chart, public careers page) with Ferrum's records screens for everything else |
 | **What it adds** | 85 entities (56 records and 29 small tables), 7 roles, 6 modules (HR, Attendance and Leave, Recruitment, Performance, Expenses, Payroll), 3 approval workflows and 2 package approval policies, 12 reports, 1 print format, 7 document templates, 5 message templates, 6 notification kinds, 7 upkeep jobs, 2 example packs |
-| **Depends on** | Ferrum platform `>=0.3.2, <0.4`. The connector **HR and ERP** (expenses and payroll posting) needs ERP `>=0.1` and ships with this app |
+| **Depends on** | Ferrum platform `>=0.4.0, <0.5`. The connector **HR and ERP** (expenses and payroll posting) needs ERP `>=0.1` and ships with this app |
 | **Works with** | ERP (ledger, accounts, cost centers, company letterhead), Finance (bank accounts), Projects and Objectives (people), Helpdesk and others through the shared Employee record |
 | **Languages** | English, Arabic and Hindi (255 interface words and 1,190 names in each), right-to-left |
 | **Tests** | 58 Rust tests (against a real PostgreSQL), 57 interface tests |
@@ -419,6 +419,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 
 ### ✅ Recently shipped
 
+- [x] **0.17.0** Upkeep runs one workspace at a time, on whichever replica is free; needs Ferrum 0.4.0.
 - [x] **0.16.0** A run's bank file is a recorded round under message id `<run>-<round>`, given again unchanged; what happens today is dated on the workspace's day.
 - [x] **0.15.2** Payroll's package has one SQL file; the suite names the withholding tax account as ERP now does.
 - [x] **0.15.1** Check-ins and waiting days on the workspace's clock; rebuilt on Ferrum-Frontend 06bd1a2 with `mountApp`.
@@ -475,7 +476,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 
 ## 🚀 Install
 
-People is a native Ferrum app for platform `>=0.3.2, <0.4`.
+People is a native Ferrum app for platform `>=0.4.0, <0.5`.
 
 1. In Ferrum, open the **App Manager** (or the store) and install **HR and Payroll**. The connector **HR and ERP** (expense claims, advances, payroll accounts, loans and final settlements) is offered where ERP is installed too, and ships with it. Self-hosters who build their own server image include the `hr` app with the others.
 2. Give roles: **HR Manager** and **HR User** for HR, **Payroll Manager** for pay, **Employee** for everyone with a sign-in (link each employee to their user), **Leave Approver** and **Expense Approver** for managers, **Attendance Device** for API keys of devices.

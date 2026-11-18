@@ -54,26 +54,16 @@ pub fn reports() -> Vec<Arc<dyn ReportSource>> {
     vec![Arc::new(reports::HrReports)]
 }
 
-/// Periodic upkeep: every minute, on one replica at a time (advisory lock); must be idempotent and cheap.
-/// Per tenant with HR installed: attendance from check-ins for finished shifts, expiry of ended
-/// leave allocations, the leaves that policies accrue (once a day), closing job openings past
-/// their closing date, and leavers: Left once their last working day has passed, then their
-/// sign-in ended.
-pub async fn maintenance(k: &Kernel) -> Result<()> {
-    let tenants: Vec<Uuid> = {
-        let mut tx = k.db.system_tx().await?;
-        let t = sqlx::query_scalar("select id from tenant where status = 'active'").fetch_all(&mut *tx).await?;
-        tx.commit().await?;
-        t
-    };
-    for tenant in tenants {
-        upkeep(k, tenant).await?;
-    }
-    Ok(())
+/// One workspace's upkeep, which the platform runs about once a minute where HR or payroll is installed, on whichever
+/// replica is free, and may run again: attendance from check-ins for finished shifts, expiry of ended leave
+/// allocations, the leaves that policies accrue (once a day), closing job openings past their closing date, and leavers:
+/// Left once their last working day has passed, then their sign-in ended.
+pub async fn maintenance(k: &Kernel, tenant: Uuid) -> Result<()> {
+    upkeep(k, tenant).await
 }
 
-/// One tenant's share of [`maintenance`]: a workspace without HR is left alone, and a job that
-/// fails is logged without stopping the others.
+/// [`maintenance`]'s work: a workspace without HR is left alone, and a job that fails is logged without stopping the
+/// others.
 pub async fn upkeep(k: &Kernel, tenant: Uuid) -> Result<()> {
     let schema = match k.registry.schema(tenant).await {
         Ok(s) => s,
