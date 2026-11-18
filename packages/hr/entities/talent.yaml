@@ -244,10 +244,44 @@
     - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
     - {name: start_date, type: date, required: true, in_list: true}
     - {name: end_date, type: date, required: true, in_list: true}
-    - {name: status, type: select, options: [Not Started, In Progress, Completed], default: Not Started, required: true, in_list: true, in_filter: true}
+    - {name: status, type: select, options: [Not Started, In Progress, Completed], default: Not Started, required: true, read_only: true, no_copy: true, in_list: true, in_filter: true,
+       description: "Set by Start the Cycle and Close the Cycle"}
     - {name: description, type: text}
   rules:
     - {name: ordered_dates, check: "doc.start_date == null || doc.end_date == null || doc.end_date >= doc.start_date", message: "End date must not be before start date"}
+  actions:
+    - name: start
+      label: Start the Cycle
+      permission: write
+      condition: "doc.status == 'Not Started'"
+      confirm: "Start this cycle and make an appraisal for every active employee it covers?"
+      params:
+        - {name: appraisal_template, type: link, to: AppraisalTemplate, label: Template, description: "Its goals are copied into each appraisal made; appraisals start without goals when empty"}
+        - {name: department, type: link, to: Department, label: Department, description: "Only its employees; everyone in the cycle's company when empty"}
+      contract:
+        effect: transactional_action
+        returns: {type: object, properties: {status: {type: string}, created: {type: integer}, skipped: {type: integer}, remaining: {type: integer}}}
+        completion: "The cycle is In Progress and each active employee it covers has one appraisal in it at Self Review, up to 500 a call; remaining says how many are still to be made with Create Appraisals"
+    - name: create_appraisals
+      label: Create Appraisals
+      permission: write
+      condition: "doc.status == 'In Progress'"
+      params:
+        - {name: appraisal_template, type: link, to: AppraisalTemplate, label: Template, description: "Its goals are copied into each appraisal made; appraisals start without goals when empty"}
+        - {name: department, type: link, to: Department, label: Department, description: "Only its employees; everyone in the cycle's company when empty"}
+      contract:
+        effect: transactional_action
+        returns: {type: object, properties: {created: {type: integer}, skipped: {type: integer}, remaining: {type: integer}}}
+        completion: "Each active employee the cycle covers who had no appraisal in it has one at Self Review, up to 500 a call"
+    - name: close
+      label: Close the Cycle
+      permission: write
+      condition: "doc.status == 'In Progress'"
+      confirm: "Close this cycle? Appraisals in it can no longer be changed."
+      contract:
+        effect: transactional_action
+        returns: {type: object, properties: {status: {type: string}}}
+        completion: "The cycle is Completed; it is refused while an appraisal in it is not signed off"
   list: {sort: start_date desc}
 
 - name: AppraisalTemplateGoal
@@ -292,7 +326,7 @@
   title_field: employee_name
   owner_fields: [employee_user]
   numbering: {template: "HR-APR-{YYYY}-{seq:5}"}
-  description: The employee scores their goals; HR or the manager scores them too and submits. Weightages must total 100.
+  description: "The employee scores their goals and sends them on; the manager scores them and sends them for sign-off; HR submits. Weightages must total 100."
   fields:
     - {name: employee, type: link, to: Employee, required: true, in_filter: true}
     - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
@@ -300,11 +334,40 @@
     - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
     - {name: appraisal_cycle, type: link, to: AppraisalCycle, required: true, in_list: true, in_filter: true}
     - {name: appraisal_template, type: link, to: AppraisalTemplate, description: Goals are copied from it when none are entered}
+    - {name: stage, type: select, options: [Self Review, Manager Review, Sign-off, Done], default: Self Review, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: reviewer, type: email, label: Manager, in_filter: true, description: "Who scores after the employee: the sign-in of the employee they report to, unless HR names someone else"}
+    - {name: self_submitted_on, type: datetime, read_only: true, no_copy: true}
+    - {name: manager_submitted_on, type: datetime, read_only: true, no_copy: true}
     - {name: goals, type: table, of: AppraisalGoal}
     - {name: self_score, type: decimal, read_only: true, label: Weighted Self Score}
     - {name: final_score, type: decimal, read_only: true, in_list: true, label: Final Score (0-5)}
     - {name: remarks, type: text, perm_group: review}
-  list: {columns: [number, employee_name, appraisal_cycle, final_score], sort: created_at desc}
+  # A live appraisal per employee and cycle (an index over documents not cancelled). Safe on existing rows: the
+  # appraisal's own check has refused a second live one per employee and cycle since the entity existed.
+  unique: [[employee, appraisal_cycle]]
+  actions:
+    - name: submit_self_review
+      label: Send to My Manager
+      docstatus: [0]
+      permission: write
+      condition: "doc.stage == 'Self Review'"
+      contract: {effect: transactional_action, returns: {type: object, properties: {stage: {type: string}, message: {type: string}}}, completion: "Every goal has a self score and the appraisal is at Manager Review; the manager is told (the HR managers when nobody reviews it)"}
+    - name: complete_manager_review
+      label: Send for Sign-off
+      docstatus: [0]
+      permission: write
+      # An appraisal made before stages has none and waits for the manager, as the upgrade's backfill records.
+      condition: "doc.stage == null || doc.stage == 'Manager Review'"
+      contract: {effect: transactional_action, returns: {type: object, properties: {stage: {type: string}}}, completion: "Every goal has a manager score and the appraisal is at Sign-off; the HR managers are told"}
+    - name: send_back
+      label: Send Back
+      docstatus: [0]
+      permission: write
+      condition: "doc.stage == null || doc.stage == 'Manager Review' || doc.stage == 'Sign-off'"
+      params:
+        - {name: note, type: text, label: Why, required: true}
+      contract: {effect: transactional_action, returns: {type: object, properties: {stage: {type: string}}}, completion: "The appraisal is one stage back and whoever holds that stage is told why"}
+  list: {columns: [number, employee_name, appraisal_cycle, stage, final_score], sort: created_at desc}
 
 - name: TrainingRequirement
   label: Required For

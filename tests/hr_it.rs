@@ -111,8 +111,14 @@ fn payroll_run() {
 }
 
 /// Every action of the four packages, as the capability id the gate lists it under.
-const CONTRACT_IDS: [&str; 44] = [
+const CONTRACT_IDS: [&str; 50] = [
     "hr.employee.record_training",
+    "hr.appraisal_cycle.start",
+    "hr.appraisal_cycle.create_appraisals",
+    "hr.appraisal_cycle.close",
+    "hr.appraisal.submit_self_review",
+    "hr.appraisal.complete_manager_review",
+    "hr.appraisal.send_back",
     "hr.employee.issue_appointment_letter",
     "hr.employee.issue_employment_certificate",
     "hr.employee.issue_warning_letter",
@@ -671,6 +677,285 @@ fn a_level_is_one_to_five() {
             let r = s.t.k.update(&s.t.admin, "Employee", uid(&s.asha), obj(json!({"skills": [{"skill": s.welding["id"], "level": level}]})), None).await;
             assert!(r.is_err(), "level {level}: {r:?}");
         }
+    });
+}
+
+// ───────────── appraisal cycles in stages (hr-5) ─────────────
+
+/// A workspace with an HR manager, Asha (reports to Maya), Maya and Omar (managers with the Employee role), a
+/// 60/40 template and a cycle not yet started.
+struct Review {
+    t: T,
+    hr: Ctx,
+    asha: Ctx,
+    maya: Ctx,
+    omar: Ctx,
+    asha_emp: Doc,
+    tpl: Doc,
+    cycle: Doc,
+}
+
+impl Review {
+    async fn new(slug: &str) -> Review {
+        let t = T::new(slug).await;
+        let hr = t.user(&format!("hr@{slug}.test"), &["HR Manager"]).await;
+        let asha = t.user(&format!("asha@{slug}.test"), &["Employee"]).await;
+        let maya = t.user(&format!("maya@{slug}.test"), &["Employee"]).await;
+        let omar = t.user(&format!("omar@{slug}.test"), &["Employee"]).await;
+        let maya_emp = t.employee("Maya", json!({"user": format!("maya@{slug}.test")})).await;
+        t.employee("Omar", json!({"user": format!("omar@{slug}.test")})).await;
+        let asha_emp = t.employee("Asha", json!({"user": format!("asha@{slug}.test"), "reports_to": maya_emp["id"]})).await;
+        let tpl = t
+            .ins(
+                &hr,
+                "AppraisalTemplate",
+                json!({"template_title": "Core", "goals": [{"kra": "Delivery", "per_weightage": "60"}, {"kra": "Quality", "per_weightage": "40"}]}),
+            )
+            .await;
+        let cycle =
+            t.ins(&hr, "AppraisalCycle", json!({"cycle_name": "H2 2026", "company": t.c(), "start_date": "2026-10-01", "end_date": "2027-03-31"})).await;
+        Review { t, hr, asha, maya, omar, asha_emp, tpl, cycle }
+    }
+
+    async fn start(&self) -> Value {
+        self.t.act(&self.hr, "AppraisalCycle", uid(&self.cycle), "start", json!({"appraisal_template": self.tpl["id"]})).await
+    }
+
+    async fn ashas(&self) -> Doc {
+        let found = self.t.one("Appraisal", json!({"employee": self.asha_emp["id"], "appraisal_cycle": self.cycle["id"]})).await;
+        self.t.get("Appraisal", uid(&found)).await
+    }
+
+    /// Asha's goals with `field` set to the scores given, in order.
+    fn scores(ap: &Doc, field: &str, scores: &[&str]) -> Value {
+        let mut goals = ap["goals"].as_array().unwrap().clone();
+        for (g, v) in goals.iter_mut().zip(scores) {
+            g[field] = json!(v);
+        }
+        json!({"goals": goals})
+    }
+
+    async fn save(&self, who: &Ctx, ap: &Doc, patch: Value) -> ferrum_kernel::Result<Doc> {
+        self.t.k.update(who, "Appraisal", uid(ap), obj(patch), None).await
+    }
+
+    async fn act(&self, who: &Ctx, ap: &Doc, action: &str, params: Value) -> ferrum_kernel::Result<Value> {
+        self.t.k.run_action(who, "Appraisal", uid(ap), action, params).await
+    }
+
+    /// Asha scores herself and sends it on; Maya scores and sends it for sign-off.
+    async fn to_sign_off(&self) -> Doc {
+        let ap = self.ashas().await;
+        self.save(&self.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        self.act(&self.asha, &ap, "submit_self_review", json!({})).await.expect("sent on");
+        let ap = self.ashas().await;
+        self.save(&self.maya, &ap, Review::scores(&ap, "manager_score", &["4", "3"])).await.expect("manager scores");
+        self.act(&self.maya, &ap, "complete_manager_review", json!({})).await.expect("for sign-off");
+        self.ashas().await
+    }
+}
+
+#[test]
+fn starting_a_cycle_makes_an_appraisal_for_everyone_once() {
+    run(async {
+        let r = Review::new("hrap1").await;
+        let out = r.start().await;
+        assert_eq!((out["status"].clone(), out["created"].clone(), out["remaining"].clone()), (json!("In Progress"), json!(3), json!(0)));
+        assert_eq!(r.t.get("AppraisalCycle", uid(&r.cycle)).await["status"], json!("In Progress"));
+        let ap = r.ashas().await;
+        assert_eq!((ap["stage"].clone(), ap["reviewer"].clone(), ap["goals"].as_array().unwrap().len()), (json!("Self Review"), json!("maya@hrap1.test"), 2));
+        assert!(r.t.k.run_action(&r.hr, "AppraisalCycle", uid(&r.cycle), "start", json!({})).await.is_err(), "started once");
+        let again = r.t.act(&r.hr, "AppraisalCycle", uid(&r.cycle), "create_appraisals", json!({})).await;
+        assert_eq!((again["created"].clone(), again["skipped"].clone()), (json!(0), json!(3)));
+        r.t.employee("Newcomer", json!({})).await;
+        assert_eq!(r.t.act(&r.hr, "AppraisalCycle", uid(&r.cycle), "create_appraisals", json!({})).await["created"], json!(1));
+        assert_eq!(sends(&r.t, "hr.appraisal_opened").await, 3, "everyone with a sign-in is told");
+    });
+}
+
+#[test]
+fn an_appraisal_needs_a_started_cycle() {
+    run(async {
+        let r = Review::new("hrap2").await;
+        refused(r.t.try_ins(&r.hr, "Appraisal", json!({"employee": r.asha_emp["id"], "appraisal_cycle": r.cycle["id"]})).await, "start the cycle first");
+    });
+}
+
+#[test]
+fn two_appraisals_for_one_person_in_a_cycle_are_refused_by_the_database() {
+    run(async {
+        let r = Review::new("hrap3").await;
+        let other = r.t.employee("Solo", json!({})).await;
+        r.t.act(&r.hr, "AppraisalCycle", uid(&r.cycle), "start", json!({"department": Value::Null})).await;
+        let ap = r.t.one("Appraisal", json!({"employee": other["id"], "appraisal_cycle": r.cycle["id"]})).await;
+        r.t.k.delete(&r.hr, "Appraisal", uid(&ap), None).await.expect("deleted");
+        let v = json!({"employee": other["id"], "appraisal_cycle": r.cycle["id"]});
+        let (a, b) = tokio::join!(r.t.try_ins(&r.hr, "Appraisal", v.clone()), r.t.try_ins(&r.hr, "Appraisal", v));
+        assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1, "{a:?} {b:?}");
+    });
+}
+
+#[test]
+fn the_employee_scores_only_at_self_review() {
+    run(async {
+        let r = Review::new("hrap4").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        refused(r.act(&r.asha, &ap, "submit_self_review", json!({})).await, "score every goal");
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        assert_eq!(r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on")["stage"], json!("Manager Review"));
+        assert_eq!(sends(&r.t, "hr.appraisal_to_review").await, 1, "Maya is told");
+        let ap = r.ashas().await;
+        refused(r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["3", "3"])).await, "not your turn");
+    });
+}
+
+#[test]
+fn an_employee_cannot_write_their_own_manager_score() {
+    run(async {
+        let r = Review::new("hrap5").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        refused(r.save(&r.asha, &ap, Review::scores(&ap, "manager_score", &["5", "5"])).await, "not your turn");
+        let mut goals = ap["goals"].as_array().unwrap().clone();
+        goals[0]["per_weightage"] = json!("70");
+        goals[1]["per_weightage"] = json!("30");
+        refused(r.save(&r.asha, &ap, json!({"goals": goals.clone()})).await, "not your turn");
+        goals.push(json!({"kra": "Extra", "per_weightage": "0"}));
+        assert!(r.save(&r.asha, &ap, json!({"goals": goals})).await.is_err(), "no goal added");
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on");
+        let ap = r.ashas().await;
+        refused(r.save(&r.asha, &ap, Review::scores(&ap, "manager_score", &["5", "5"])).await, "not your turn");
+    });
+}
+
+#[test]
+fn the_manager_scores_only_their_reports_at_manager_review() {
+    run(async {
+        let r = Review::new("hrap6").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        refused(r.save(&r.maya, &ap, Review::scores(&ap, "manager_score", &["4", "3"])).await, "not your turn");
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on");
+        let ap = r.ashas().await;
+        refused(r.save(&r.maya, &ap, Review::scores(&ap, "self_score", &["1", "1"])).await, "not your turn");
+        let mut patch = Review::scores(&ap, "manager_score", &["4", "3"]);
+        patch["remarks"] = json!("Solid half");
+        r.save(&r.maya, &ap, patch).await.expect("manager scores and remarks");
+        assert_eq!(r.act(&r.maya, &ap, "complete_manager_review", json!({})).await.expect("for sign-off")["stage"], json!("Sign-off"));
+        assert_eq!(sends(&r.t, "hr.appraisal_to_sign_off").await, 1);
+    });
+}
+
+#[test]
+fn another_manager_cannot_reach_the_appraisal() {
+    run(async {
+        let r = Review::new("hrap7").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on");
+        assert!(r.t.k.get(&r.omar, "Appraisal", uid(&ap), false).await.is_err(), "Omar cannot read it");
+        assert!(r.save(&r.omar, &ap, Review::scores(&ap, "manager_score", &["1", "1"])).await.is_err(), "nor score it");
+        assert!(r.act(&r.omar, &ap, "complete_manager_review", json!({})).await.is_err());
+    });
+}
+
+#[test]
+fn sign_off_needs_the_managers_scores() {
+    run(async {
+        let r = Review::new("hrap8").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on");
+        refused(r.t.k.submit(&r.hr, "Appraisal", uid(&ap), None).await, "manager's scores come first");
+        let ap = r.to_sign_off_from_manager().await;
+        let done = r.t.submit(&r.hr, "Appraisal", uid(&ap)).await;
+        assert_eq!(dec(&done["final_score"]), n("3.6"));
+        assert_eq!(r.ashas().await["stage"], json!("Done"));
+        assert_eq!(sends(&r.t, "hr.appraisal_done").await, 1);
+    });
+}
+
+impl Review {
+    /// From Manager Review: Maya scores and sends it for sign-off.
+    async fn to_sign_off_from_manager(&self) -> Doc {
+        let ap = self.ashas().await;
+        self.save(&self.maya, &ap, Review::scores(&ap, "manager_score", &["4", "3"])).await.expect("manager scores");
+        self.act(&self.maya, &ap, "complete_manager_review", json!({})).await.expect("for sign-off");
+        self.ashas().await
+    }
+}
+
+#[test]
+fn sent_back_goes_one_stage_back_with_the_reason() {
+    run(async {
+        let r = Review::new("hrap9").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on");
+        let ap = r.ashas().await;
+        assert_eq!(r.act(&r.maya, &ap, "send_back", json!({"note": "Add your evidence"})).await.expect("sent back")["stage"], json!("Self Review"));
+        assert_eq!(sends(&r.t, "hr.appraisal_sent_back").await, 1, "Asha is told why");
+        let ap = r.ashas().await;
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["4", "4"])).await.expect("Asha edits again");
+        r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on again");
+        let ap = r.to_sign_off_from_manager().await;
+        refused(r.act(&r.maya, &ap, "send_back", json!({"note": "Oops"})).await, "not yours to send back");
+        assert_eq!(r.act(&r.hr, &ap, "send_back", json!({"note": "Recheck quality"})).await.expect("HR sends back")["stage"], json!("Manager Review"));
+    });
+}
+
+#[test]
+fn a_cycle_closes_only_when_everything_is_signed_off() {
+    run(async {
+        let r = Review::new("hrap10").await;
+        r.start().await;
+        let close = || r.t.k.run_action(&r.hr, "AppraisalCycle", uid(&r.cycle), "close", json!({}));
+        refused(close().await, "3 appraisals are not signed off");
+        let ap = r.to_sign_off().await;
+        r.t.submit(&r.hr, "Appraisal", uid(&ap)).await;
+        for other in r.t.list(&r.t.admin, "Appraisal", json!({"appraisal_cycle": r.cycle["id"], "docstatus": 0})).await {
+            r.t.k.delete(&r.hr, "Appraisal", uid(&other), None).await.expect("drafts deleted");
+        }
+        assert_eq!(close().await.expect("closed")["status"], json!("Completed"));
+        refused(r.t.try_ins(&r.hr, "Appraisal", json!({"employee": r.asha_emp["id"], "appraisal_cycle": r.cycle["id"]})).await, "completed");
+        r.t.k.cancel(&r.hr, "Appraisal", uid(&ap), None).await.expect("a cancel still works");
+    });
+}
+
+#[test]
+fn only_an_hr_manager_starts_and_closes() {
+    run(async {
+        let r = Review::new("hrap11").await;
+        let hu = r.t.user("hu@hrap11.test", &["HR User"]).await;
+        for who in [&hu, &r.asha] {
+            assert!(r.t.k.run_action(who, "AppraisalCycle", uid(&r.cycle), "start", json!({})).await.is_err());
+        }
+        r.start().await;
+        for who in [&hu, &r.asha] {
+            assert!(r.t.k.run_action(who, "AppraisalCycle", uid(&r.cycle), "close", json!({})).await.is_err());
+        }
+    });
+}
+
+#[test]
+fn appraisals_from_before_stages_keep_working() {
+    run(async {
+        let r = Review::new("hrap12").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        // As an older release left it: no stage.
+        let mut tx = r.t.k.db.tenant_tx(r.t.tenant).await.unwrap();
+        sqlx::query("update e_appraisal set stage = null where tenant_id = $1 and id = $2").bind(r.t.tenant).bind(uid(&ap)).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let ap = r.ashas().await;
+        r.save(&r.maya, &ap, Review::scores(&ap, "manager_score", &["4", "3"])).await.expect("a manager scores a draft from before stages");
+        assert_eq!(r.act(&r.maya, &ap, "complete_manager_review", json!({})).await.expect("for sign-off")["stage"], json!("Sign-off"));
     });
 }
 
@@ -2403,26 +2688,28 @@ async fn talent_scenario() {
             json!({"template_title": "Engineering", "goals": [{"kra": "Delivery", "per_weightage": "60"}, {"kra": "Quality", "per_weightage": "40"}]}),
         )
         .await;
-    let cycle = t
-        .ins(
-            &hr,
-            "AppraisalCycle",
-            json!({"cycle_name": "H2 2026", "company": t.c(), "start_date": "2026-10-01", "end_date": "2027-03-31", "status": "In Progress"}),
-        )
-        .await;
-    let ap = t.ins(&hr, "Appraisal", json!({"employee": emp["id"], "appraisal_cycle": cycle["id"], "appraisal_template": tpl["id"]})).await;
-    assert_eq!(ap["goals"].as_array().unwrap().len(), 2, "goals copied from the template");
+    let cycle = t.ins(&hr, "AppraisalCycle", json!({"cycle_name": "H2 2026", "company": t.c(), "start_date": "2026-10-01", "end_date": "2027-03-31"})).await;
+    let started = t.act(&hr, "AppraisalCycle", uid(&cycle), "start", json!({"appraisal_template": tpl["id"]})).await;
+    assert_eq!(started["status"], json!("In Progress"));
+    let ap = t.one("Appraisal", json!({"employee": emp["id"], "appraisal_cycle": cycle["id"]})).await;
+    let ap = t.get("Appraisal", uid(&ap)).await;
+    assert_eq!((ap["goals"].as_array().unwrap().len(), ap["stage"].clone()), (2, json!("Self Review")), "goals copied from the template");
+    let mut goals = ap["goals"].as_array().unwrap().clone();
+    goals[0]["manager_score"] = json!("5");
+    refused(t.k.update(&me, "Appraisal", uid(&ap), obj(json!({"goals": goals})), None).await, "not your turn");
     let mut goals = ap["goals"].as_array().unwrap().clone();
     goals[0]["self_score"] = json!("5");
-    goals[0]["manager_score"] = json!("5");
     goals[1]["self_score"] = json!("4");
     let ap = t.k.update(&me, "Appraisal", uid(&ap), obj(json!({"goals": goals})), None).await.expect("self appraisal");
     assert_eq!((dec(&ap["self_score"]), ap["goals"][0]["manager_score"].clone()), (n("4.6"), Value::Null), "employees cannot score for the manager");
-    refused(t.k.submit(&hr, "Appraisal", uid(&ap), None).await, "score every goal");
+    refused(t.k.submit(&hr, "Appraisal", uid(&ap), None).await, "manager's scores come first");
+    t.act(&me, "Appraisal", uid(&ap), "submit_self_review", json!({})).await;
+    let ap = t.get("Appraisal", uid(&ap)).await;
     let mut goals = ap["goals"].as_array().unwrap().clone();
     goals[0]["manager_score"] = json!("4");
     goals[1]["manager_score"] = json!("3");
     t.k.update(&hr, "Appraisal", uid(&ap), obj(json!({"goals": goals})), None).await.expect("manager scores");
+    t.act(&hr, "Appraisal", uid(&ap), "complete_manager_review", json!({})).await;
     let ap = t.submit(&hr, "Appraisal", uid(&ap)).await;
     assert_eq!(dec(&ap["final_score"]), n("3.6"));
     refused(

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.21.0
+
+Package `hr` 0.10.0. New fields on Appraisal (Stage, Manager, the two sent-on times) and a unique index of one live
+appraisal per employee and cycle, made when the package's version moves. Two backfills run once on upgrade:
+appraisals made before stages are **Done** when submitted and **Manager Review** when draft (where HR left them,
+waiting for scores), and a cycle still Not Started that already holds appraisals becomes **In Progress**. No interface
+change beyond the records frame's new buttons.
+
+**An appraisal cycle that starts, runs in stages and closes.** The cycle's status is now set only by its actions:
+**Start the Cycle** (HR Manager) makes an appraisal for every active employee the cycle covers, or one department,
+from a template, at most 500 a call (`remaining` says when to run **Create Appraisals** for the rest, which also
+adds people who join later); **Close the Cycle** is refused while an appraisal in it is not signed off. A new
+appraisal needs a started cycle, and a completed cycle takes no more changes (a cancel still works).
+
+- Each appraisal moves Self Review → Manager Review → Sign-off → Done. **Send to My Manager** (the employee; every goal
+  needs a self score), **Send for Sign-off** (the manager or HR; every goal needs a manager score), **Send Back** one
+  stage with a reason; HR's submit is refused before Sign-off. A save never moves the stage.
+- Who may change what is checked on every save: the employee only their self scores and comments at Self Review, the
+  manager (the Manager field: the sign-in of the employee the person reports to, unless HR names someone) only manager
+  scores, comments and remarks at Manager Review, HR anything. Managers reach the appraisals of those who report to them.
+- Five message templates tell each person when it is their turn: `hr.appraisal_opened`, `hr.appraisal_to_review`,
+  `hr.appraisal_to_sign_off`, `hr.appraisal_sent_back` (with the reason), `hr.appraisal_done`.
+
 ## 0.20.0
 
 Package `hr` 0.9.0. New entity Skill and two tables (Skills on Employee, Skills Needed on Designation), made when the

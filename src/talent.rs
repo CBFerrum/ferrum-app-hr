@@ -19,6 +19,7 @@ pub(crate) fn register(h: &mut HookRegistry) {
         .register("Interview", Arc::new(InterviewHook))
         .register("JobOffer", Arc::new(OfferHook))
         .register("AppraisalTemplate", Arc::new(TemplateHook))
+        .register("AppraisalCycle", Arc::new(CycleHook))
         .register("Appraisal", Arc::new(AppraisalHook))
         .register("TrainingEvent", Arc::new(TrainingHook))
         .register("TrainingProgram", Arc::new(ProgramHook))
@@ -566,9 +567,111 @@ impl DocHook for TemplateHook {
 
 struct AppraisalHook;
 
+/// Whether `a` and `b` hold the same value as a form sends it: empty, null and absent are one, and numbers are
+/// compared as decimals ("4", 4 and "4.00").
+fn same(a: Option<&Value>, b: Option<&Value>) -> bool {
+    let empty = |v: Option<&Value>| v.is_none_or(|v| v.is_null() || v.as_str() == Some(""));
+    if empty(a) || empty(b) {
+        return empty(a) && empty(b);
+    }
+    let num = |v: Option<&Value>| v.and_then(|v| ferrum_kernel::value::parse_decimal(v).ok());
+    match (num(a), num(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+/// Who may change what on an appraisal at its stage (old = the stored one). HR (full access) changes anything; the
+/// employee only their self scores and comments at Self Review; the reviewer only manager scores, comments and remarks
+/// at Manager Review. Nobody else, and only HR and the cycle's actions make appraisals.
+fn turn(hc: &HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
+    if crate::full_access(hc.ctx, "Appraisal", &[Action::Write]) {
+        return Ok(());
+    }
+    let Some(old) = old else { return Err(Error::Forbidden("appraisals are made by HR or by starting the cycle".into())) };
+    let stage = s(old, "stage").unwrap_or("Manager Review");
+    let me = |f: &str| s(old, f).is_some_and(|u| u.eq_ignore_ascii_case(&hc.ctx.email));
+    let not_yours = || Error::Forbidden("it is not your turn on this appraisal".into());
+    let (goal_fields, own_fields): (&[&str], &[&str]) = if me("employee_user") {
+        if stage != "Self Review" {
+            return Err(not_yours());
+        }
+        (&["self_score", "self_comments"], &[])
+    } else if me("reviewer") && stage == "Manager Review" {
+        (&["manager_score", "manager_comments"], &["remarks"])
+    } else {
+        return Err(not_yours());
+    };
+    let changed = |f: &str| !same(doc.get(f), old.get(f));
+    let def = &hc.entity.def;
+    if def.fields.iter().any(|f| !f.read_only && f.name != "goals" && !own_fields.contains(&f.name.as_str()) && changed(&f.name)) {
+        return Err(not_yours());
+    }
+    let (new_goals, old_goals) = (rows(doc, "goals"), rows(old, "goals"));
+    if new_goals.iter().map(|g| s(g, "id")).ne(old_goals.iter().map(|g| s(g, "id"))) {
+        return Err(Error::Forbidden("only HR adds, removes or reorders goals".into()));
+    }
+    let goal_def = hc.ctx.schema.entity("AppraisalGoal").ok_or_else(|| Error::internal("no AppraisalGoal"))?;
+    for (n, o) in new_goals.iter().zip(&old_goals) {
+        if goal_def.def.fields.iter().any(|f| !f.read_only && !goal_fields.contains(&f.name.as_str()) && !same(n.get(&f.name), o.get(&f.name))) {
+            return Err(not_yours());
+        }
+    }
+    Ok(())
+}
+
+/// The cycle's status, and a refusal when it takes no work (`new`: an appraisal being made).
+async fn cycle_open(hc: &mut HookCtx<'_>, doc: &Doc, new: bool) -> Result<()> {
+    let status = lookup(hc, "AppraisalCycle", id(doc, "appraisal_cycle")).await?.and_then(|c| s(&c, "status").map(str::to_string));
+    match status.as_deref() {
+        Some("Completed") => Err(Error::field("appraisal_cycle", "this cycle is completed")),
+        Some("Not Started") if new => Err(Error::field("appraisal_cycle", "start the cycle first")),
+        _ => Ok(()),
+    }
+}
+
+/// Every goal of `doc` has `field`, else the goals without it are refused.
+fn scored(doc: &Doc, field: &str) -> Result<()> {
+    let missing: Vec<FieldError> = rows(doc, "goals")
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| g.get(field).is_none_or(Value::is_null))
+        .map(|(i, _)| FieldError::new(field, "score every goal first").in_row("goals", i))
+        .collect();
+    if rows(doc, "goals").is_empty() {
+        return Err(Error::field("goals", "add the goals to appraise"));
+    }
+    if missing.is_empty() { Ok(()) } else { Err(Error::Validation(missing)) }
+}
+
 #[async_trait]
 impl DocHook for AppraisalHook {
     async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        // The stage moves only through the actions and submit: a save keeps the stored one.
+        let old = stored(hc, doc).await?;
+        match &old {
+            Some(o) => {
+                for f in ["stage", "self_submitted_on", "manager_submitted_on"] {
+                    set(doc, f, o.get(f).cloned().unwrap_or_default());
+                }
+            }
+            None => {
+                set(doc, "stage", "Self Review");
+                set(doc, "self_submitted_on", Value::Null);
+                set(doc, "manager_submitted_on", Value::Null);
+            }
+        }
+        // The reviewer: HR may name one; anyone else keeps what is stored, or the employee's manager.
+        let full = crate::full_access(hc.ctx, "Appraisal", &[Action::Write]);
+        let kept = if full { s(doc, "reviewer").map(str::to_string) } else { old.as_ref().and_then(|o| s(o, "reviewer").map(str::to_string)) };
+        let reviewer = match kept {
+            Some(r) => Some(r),
+            None => match lookup(hc, "Employee", id(doc, "employee")).await? {
+                Some(e) => lookup(hc, "Employee", id(&e, "reports_to")).await?.and_then(|m| s(&m, "user").map(str::to_string)),
+                None => None,
+            },
+        };
+        set(doc, "reviewer", reviewer.map(Value::String).unwrap_or_default());
         stamp_company(hc, doc).await?;
         let mut goals = rows(doc, "goals");
         if goals.is_empty()
@@ -601,6 +704,9 @@ impl DocHook for AppraisalHook {
     }
 
     async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let old = stored(hc, doc).await?;
+        cycle_open(hc, doc, old.is_none()).await?;
+        turn(hc, doc, old.as_ref())?;
         if let Some(e) = weight_errors(&rows(doc, "goals"), "goals") {
             return Err(Error::Validation(vec![e]));
         }
@@ -620,19 +726,216 @@ impl DocHook for AppraisalHook {
         Ok(())
     }
 
-    async fn before_submit(&self, _hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
-        let goals = rows(doc, "goals");
-        if goals.is_empty() {
-            return Err(Error::field("goals", "add the goals to appraise"));
+    /// A new appraisal tells its employee to start.
+    async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
+        if old.is_none() {
+            tell(hc, doc, "hr.appraisal_opened", &["field:employee_user"], Default::default()).await?;
         }
-        let missing: Vec<FieldError> = goals
-            .iter()
-            .enumerate()
-            .filter(|(_, g)| g.get("manager_score").is_none_or(Value::is_null))
-            .map(|(i, _)| FieldError::new("manager_score", "score every goal before submitting").in_row("goals", i))
-            .collect();
-        if missing.is_empty() { Ok(()) } else { Err(Error::Validation(missing)) }
+        Ok(())
     }
+
+    async fn before_submit(&self, _hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        if s(doc, "stage").unwrap_or("Manager Review") != "Sign-off" {
+            return Err(Error::invalid("the manager's scores come first: it is signed off once it reaches Sign-off"));
+        }
+        scored(doc, "manager_score")
+    }
+
+    async fn on_submit(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let me = id(doc, "id").ok_or_else(|| Error::internal("appraisal without id"))?;
+        let mut v = Doc::new();
+        set(&mut v, "stage", "Done");
+        hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "Appraisal", me, v).await?;
+        tell(hc, doc, "hr.appraisal_done", &["field:employee_user"], Default::default()).await
+    }
+
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if !["submit_self_review", "complete_manager_review", "send_back"].contains(&name) {
+            return Ok(None);
+        }
+        cycle_open(hc, doc, false).await?;
+        let me = id(doc, "id").ok_or_else(|| Error::internal("appraisal without id"))?;
+        let full = crate::full_access(hc.ctx, "Appraisal", &[Action::Write]);
+        let is = |f: &str| s(doc, f).is_some_and(|u| u.eq_ignore_ascii_case(&hc.ctx.email));
+        let (is_self, is_reviewer) = (is("employee_user"), !is("employee_user") && is("reviewer"));
+        let stage = s(doc, "stage").unwrap_or("Manager Review").to_string();
+        let now = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>("select now()").fetch_one(&mut **hc.tx).await?.to_rfc3339();
+        let no_reviewer = s(doc, "reviewer").is_none();
+        let (next, stamp, template, to, message): (&str, Option<&str>, &str, &str, Option<&str>) = match name {
+            "submit_self_review" => {
+                if !(full || is_self) {
+                    return Err(Error::Forbidden("the employee sends their own scores on".into()));
+                }
+                scored(doc, "self_score")?;
+                if no_reviewer {
+                    (
+                        "Manager Review",
+                        Some("self_submitted_on"),
+                        "hr.appraisal_to_sign_off",
+                        "role:HR Manager",
+                        Some("Nobody is named to review it: an HR manager scores it"),
+                    )
+                } else {
+                    ("Manager Review", Some("self_submitted_on"), "hr.appraisal_to_review", "field:reviewer", None)
+                }
+            }
+            "complete_manager_review" => {
+                if !(full || is_reviewer) {
+                    return Err(Error::Forbidden("the manager, or HR, sends it for sign-off".into()));
+                }
+                scored(doc, "manager_score")?;
+                ("Sign-off", Some("manager_submitted_on"), "hr.appraisal_to_sign_off", "role:HR Manager", None)
+            }
+            _ => match stage.as_str() {
+                "Manager Review" if full || is_reviewer => ("Self Review", None, "hr.appraisal_sent_back", "field:employee_user", None),
+                "Sign-off" if full => {
+                    if no_reviewer {
+                        ("Manager Review", None, "hr.appraisal_sent_back", "role:HR Manager", None)
+                    } else {
+                        ("Manager Review", None, "hr.appraisal_sent_back", "field:reviewer", None)
+                    }
+                }
+                _ => return Err(Error::Forbidden("it is not yours to send back at this stage".into())),
+            },
+        };
+        let mut v = Doc::new();
+        set(&mut v, "stage", next);
+        if let Some(f) = stamp {
+            set(&mut v, f, now);
+        }
+        hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "Appraisal", me, v).await?;
+        let mut values = serde_json::Map::new();
+        if name == "send_back" {
+            values.insert("note".into(), params.get("note").cloned().unwrap_or_default());
+        }
+        tell(hc, doc, template, &[to], values).await?;
+        let mut out = json!({"stage": next});
+        if let Some(m) = message {
+            out["message"] = json!(m);
+        }
+        Ok(Some(out))
+    }
+}
+
+// ───────────────────────────── appraisal cycles and stages ─────────────────────────────
+
+/// At most this many appraisals are made by one Start or Create Appraisals; the rest wait for the next call.
+const APPRAISALS_PER_CALL: usize = 500;
+
+/// A message template on an appraisal, to the recipients of `specs` (`field:…`, `role:…`).
+async fn tell(hc: &mut HookCtx<'_>, doc: &Doc, template: &str, specs: &[&str], values: serde_json::Map<String, Value>) -> Result<()> {
+    let sctx = sys(hc.ctx);
+    let me = id(doc, "id").ok_or_else(|| Error::internal("appraisal without id"))?;
+    let value = Value::Object(doc.clone());
+    let mut to: Vec<Recipient> = Vec::new();
+    for spec in specs {
+        for r in messages::recipients(hc.kernel, hc.tx, &sctx, "Appraisal", &value, spec).await? {
+            if !to.contains(&r) {
+                to.push(r);
+            }
+        }
+    }
+    let m = Message { template: template.into(), entity: Some("Appraisal".into()), record: Some(me), to, values, ..Default::default() };
+    messages::send(hc.kernel, hc.tx, &sctx, &m).await?;
+    Ok(())
+}
+
+/// A cycle's status is set by its actions: Start makes everyone's appraisal, Create Appraisals the missing ones,
+/// Close ends it once everything in it is signed off.
+struct CycleHook;
+
+#[async_trait]
+impl DocHook for CycleHook {
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        let cycle = id(doc, "id").ok_or_else(|| Error::internal("cycle without id"))?;
+        match name {
+            "start" | "create_appraisals" => {
+                // In Progress first: an appraisal is made only in a started cycle.
+                if name == "start" {
+                    let mut v = Doc::new();
+                    set(&mut v, "status", "In Progress");
+                    hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "AppraisalCycle", cycle, v).await?;
+                }
+                let mut out = make_appraisals(hc, doc, params).await?;
+                if name == "start" {
+                    out["status"] = json!("In Progress");
+                }
+                Ok(Some(out))
+            }
+            "close" => {
+                let open: i64 = sqlx::query_scalar("select count(*) from e_appraisal where tenant_id = $1 and appraisal_cycle = $2 and docstatus = 0")
+                    .bind(hc.ctx.tenant)
+                    .bind(cycle)
+                    .fetch_one(&mut **hc.tx)
+                    .await?;
+                if open > 0 {
+                    return Err(Error::invalid(format!("{open} appraisals are not signed off: sign them off or delete them")));
+                }
+                let mut v = Doc::new();
+                set(&mut v, "status", "Completed");
+                hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "AppraisalCycle", cycle, v).await?;
+                Ok(Some(json!({"status": "Completed"})))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+/// An appraisal for each active employee the cycle covers who has none in it, up to [`APPRAISALS_PER_CALL`].
+async fn make_appraisals(hc: &mut HookCtx<'_>, cycle: &Doc, params: &Value) -> Result<Value> {
+    let me = id(cycle, "id").ok_or_else(|| Error::internal("cycle without id"))?;
+    let company = id(cycle, "company");
+    let param = |k: &str| params.get(k).and_then(Value::as_str).and_then(|v| v.parse::<Uuid>().ok());
+    let department = param("department");
+    if let Some(d) = lookup(hc, "Department", department).await?
+        && id(&d, "company") != company
+    {
+        return Err(Error::field("department", "belongs to another company"));
+    }
+    let (template, end) = (param("appraisal_template"), opt_date(cycle, "end_date"));
+    let (todo, skipped): (Vec<Uuid>, i64) = {
+        let todo: Vec<Uuid> = sqlx::query_scalar(
+            "select e.id from e_employee e where e.tenant_id = $1 and e.company = $2 and e.status = 'Active' \
+             and ($3::date is null or e.date_of_joining <= $3) and ($4::uuid is null or e.department = $4) \
+             and not exists (select 1 from e_appraisal a where a.tenant_id = e.tenant_id and a.employee = e.id and a.appraisal_cycle = $5 and a.docstatus < 2) \
+             order by e.id limit $6",
+        )
+        .bind(hc.ctx.tenant)
+        .bind(company)
+        .bind(end)
+        .bind(department)
+        .bind(me)
+        .bind(APPRAISALS_PER_CALL as i64 + 1)
+        .fetch_all(&mut **hc.tx)
+        .await?;
+        let skipped: i64 = sqlx::query_scalar(
+            "select count(*) from e_employee e where e.tenant_id = $1 and e.company = $2 and e.status = 'Active' \
+             and ($3::date is null or e.date_of_joining <= $3) and ($4::uuid is null or e.department = $4) \
+             and exists (select 1 from e_appraisal a where a.tenant_id = e.tenant_id and a.employee = e.id and a.appraisal_cycle = $5 and a.docstatus < 2)",
+        )
+        .bind(hc.ctx.tenant)
+        .bind(company)
+        .bind(end)
+        .bind(department)
+        .bind(me)
+        .fetch_one(&mut **hc.tx)
+        .await?;
+        (todo, skipped)
+    };
+    let remaining = usize::from(todo.len() > APPRAISALS_PER_CALL);
+    let ectx = elevated(hc.ctx);
+    let mut created = 0;
+    for emp in todo.into_iter().take(APPRAISALS_PER_CALL) {
+        let mut a = Doc::new();
+        set(&mut a, "employee", emp.to_string());
+        set(&mut a, "appraisal_cycle", me.to_string());
+        if let Some(t) = template {
+            set(&mut a, "appraisal_template", t.to_string());
+        }
+        hc.kernel.insert_tx(&ectx, hc.tx, "Appraisal", a).await?;
+        created += 1;
+    }
+    Ok(json!({"created": created, "skipped": skipped, "remaining": remaining}))
 }
 
 #[cfg(test)]

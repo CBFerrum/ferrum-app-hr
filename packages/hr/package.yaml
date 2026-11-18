@@ -1,5 +1,5 @@
 package: hr
-version: 0.9.0
+version: 0.10.0
 label: Human Resources
 description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
 depends: [core]
@@ -234,7 +234,10 @@ roles:
       - {entity: LeaveAllocation, read: true, if_owner: true}
       - {entity: LeaveLedgerEntry, read: true, if_owner: true}
       - {entity: Appraisal, read: true, write: true, if_owner: true, read_groups: [review]}
-      - {entity: AppraisalGoal, read_groups: [review]}
+      # As a manager, the appraisals of those reporting to them; what each may change at which stage is the
+      # appraisal's own check (src/talent.rs, `turn`), never this grant.
+      - {entity: Appraisal, read: true, write: true, via: employee.reports_to.user, read_groups: [review], write_groups: [review]}
+      - {entity: AppraisalGoal, read_groups: [review], write_groups: [review]}
       - {entity: EmployeePromotion, read: true, if_owner: true, read_groups: [pay]}
       - {entity: EmployeeTransfer, read: true, if_owner: true}
       - {entity: EmployeeSeparation, read: true, if_owner: true}
@@ -286,6 +289,10 @@ seed:
 backfills:
   - {name: serving_notice, entity: Employee, needs: "t.status = 'Left' and t.relieving_date >= current_date and exists (select 1 from e_employee_separation s where s.tenant_id = t.tenant_id and s.employee = t.id and s.docstatus = 1 and s.relieving_date = t.relieving_date)",
      set: "status = 'Active'"}
+  # 0.21.0: appraisals made before stages existed. Signed-off ones are Done; drafts wait for the manager's scores,
+  # which is where HR left them. A cycle that already holds appraisals is In Progress.
+  - {name: appraisal_stage, entity: Appraisal, needs: "t.stage is null and t.docstatus < 2", set: "stage = case when t.docstatus = 1 then 'Done' else 'Manager Review' end"}
+  - {name: appraisal_cycle_started, entity: AppraisalCycle, needs: "t.status = 'Not Started' and exists (select 1 from e_appraisal a where a.tenant_id = t.tenant_id and a.appraisal_cycle = t.id and a.docstatus < 2)", set: "status = 'In Progress'"}
 handover:
   - {entity: Employee, field: leave_approver}
   - {entity: Employee, field: expense_approver}
@@ -328,6 +335,62 @@ messages:
         inapp:
           title: "{{ doc.program_name }} lapses on {{ doc.valid_until }}"
           text: "Take it again before then."
+  - key: hr.appraisal_opened
+    label: Appraisal opened
+    entity: Appraisal
+    languages:
+      en:
+        email:
+          subject: "Your appraisal is open"
+          body: "<p>Your appraisal is open: score your goals and send them to your manager.</p>"
+        inapp:
+          title: "Your appraisal is open"
+          text: "Score your goals and send them to your manager."
+  - key: hr.appraisal_to_review
+    label: Appraisal waiting for the manager
+    entity: Appraisal
+    languages:
+      en:
+        email:
+          subject: "{{ doc.employee_name }}'s appraisal waits for your scores"
+          body: "<p>{{ doc.employee_name }} has scored their goals. Their appraisal waits for your scores.</p>"
+        inapp:
+          title: "{{ doc.employee_name }}'s appraisal waits for your scores"
+          text: "Score the goals and send it for sign-off."
+  - key: hr.appraisal_to_sign_off
+    label: Appraisal waiting for sign-off
+    entity: Appraisal
+    languages:
+      en:
+        email:
+          subject: "{{ doc.employee_name }}'s appraisal waits for sign-off"
+          body: "<p>{{ doc.employee_name }}'s appraisal waits for sign-off.</p>"
+        inapp:
+          title: "{{ doc.employee_name }}'s appraisal waits for sign-off"
+          text: "Sign it off, or send it back."
+  - key: hr.appraisal_sent_back
+    label: Appraisal sent back
+    entity: Appraisal
+    values: [note]
+    languages:
+      en:
+        email:
+          subject: "{{ doc.employee_name }}'s appraisal was sent back"
+          body: "<p>It was sent back: {{ values.note }}</p>"
+        inapp:
+          title: "{{ doc.employee_name }}'s appraisal was sent back"
+          text: "It was sent back: {{ values.note }}"
+  - key: hr.appraisal_done
+    label: Appraisal signed off
+    entity: Appraisal
+    languages:
+      en:
+        email:
+          subject: "Your appraisal is signed off"
+          body: "<p>Your appraisal is signed off.</p>"
+        inapp:
+          title: "Your appraisal is signed off"
+          text: "Your appraisal is signed off."
   - key: hr.letter_issued
     label: Letter or certificate sent
     values: [serial]

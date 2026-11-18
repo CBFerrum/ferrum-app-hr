@@ -71,6 +71,10 @@ impl DocHook for SelfService {
         if emp.as_ref().and_then(|e| s(e, "user")).is_some_and(|u| u.eq_ignore_ascii_case(&hc.ctx.email)) {
             return Ok(());
         }
+        // A manager scoring an appraisal of someone reporting to them (what they may change is the appraisal's check).
+        if entity == "Appraisal" && s(doc, "reviewer").is_some_and(|u| u.eq_ignore_ascii_case(&hc.ctx.email)) {
+            return Ok(());
+        }
         Err(Error::Forbidden(format!("you can only create or change your own {}", hc.entity.def.label.to_lowercase())))
     }
 }
