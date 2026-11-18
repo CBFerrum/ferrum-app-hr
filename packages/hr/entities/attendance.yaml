@@ -27,6 +27,10 @@
       permission: write
       params:
         - {name: weekday, type: select, options: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday], label: Weekday, description: "The list's weekly off when empty"}
+      contract:
+        effect: transactional_action
+        completion: "Every date of the weekday inside the list's range is on the list as a weekly off"
+        returns: {"type": "object"}
   list: {columns: [holiday_list_name, from_date, to_date, total_holidays], sort: from_date desc}
 
 - name: ShiftType
@@ -65,6 +69,10 @@
       confirm: "Mark attendance from check-ins for every completed shift day of this shift type?"
       params:
         - {name: up_to, type: date, label: Up To, description: "Every completed shift day when empty"}
+      contract:
+        effect: transactional_action
+        completion: "Attendance is submitted for every completed shift day in the range that had none"
+        returns: {"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "marked": {"type": "integer"}, "absent": {"type": "integer"}}}
   list: {columns: [shift_name, start_time, end_time, enable_auto_attendance], sort: shift_name asc}
 
 - name: ShiftAssignment
@@ -239,12 +247,20 @@
         - {name: to_date, type: date, label: To, required: true}
         - {name: company, type: link, to: Company, label: Company, description: "Its active employees are allocated; your default company when empty"}
         - {name: carry_forward, type: select, options: ["No", "Yes"], label: Carry Forward, description: "Add what each employee's last allocation of the type has left"}
+      contract:
+        effect: transactional_action
+        completion: "A submitted leave allocation exists for each active employee of the company and each line granted at once; employees who already had one are skipped"
+        returns: {"type": "object", "properties": {"created": {"type": "integer"}, "skipped": {"type": "integer"}}}
     - name: accrue
       label: Grant Accrued Leaves
       permission: read
       confirm: "Grant the leaves that the lines of this policy have accrued so far to the employees who have it? This also runs by itself every day."
       params:
         - {name: "on", type: date, label: Accrued On, description: "Today when empty"}
+      contract:
+        effect: transactional_action
+        completion: "The leaves the policy's accruing lines have earned up to the day are allocated; repeating it for the same day grants nothing more"
+        returns: {"type": "object", "properties": {"granted": {"type": "integer"}, "skipped": {"type": "integer"}, "on": {"type": "string"}}}
   list: {sort: title asc}
 
 - name: LeaveAllocation

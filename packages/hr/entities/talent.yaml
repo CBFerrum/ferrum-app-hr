@@ -199,8 +199,8 @@
     - {name: status, type: select, options: [Awaiting Response, Accepted, Rejected], default: Awaiting Response, read_only: true, no_copy: true, in_list: true, in_filter: true}
     - {name: employee, type: link, to: Employee, read_only: true, no_copy: true}
   actions:
-    - {name: accept, label: Mark Accepted, docstatus: [1], permission: submit, condition: "doc.status == 'Awaiting Response'"}
-    - {name: reject, label: Mark Rejected, docstatus: [1], permission: submit, condition: "doc.status == 'Awaiting Response'"}
+    - {name: accept, label: Mark Accepted, docstatus: [1], permission: submit, condition: "doc.status == 'Awaiting Response'", contract: {"effect": "transactional_action", "completion": "The offer and its applicant are Accepted", "returns": {"type": "object", "properties": {"status": {"type": "string"}}}}}
+    - {name: reject, label: Mark Rejected, docstatus: [1], permission: submit, condition: "doc.status == 'Awaiting Response'", contract: {"effect": "transactional_action", "completion": "The offer and its applicant are Rejected", "returns": {"type": "object", "properties": {"status": {"type": "string"}}}}}
     - name: make_employee
       label: Create Employee
       docstatus: [1]
@@ -209,6 +209,10 @@
       params:
         - {name: date_of_joining, type: date, label: Date of Joining, description: "The offer's expected joining date when empty"}
         - {name: user, type: data, label: Sign-in Email, description: "The member who signs in as this employee (their own pages and approvals); none when empty"}
+      contract:
+        effect: transactional_action
+        completion: "An employee exists for the accepted offer, the offer names it, the applicant is at the job's Hired stage and the opening's hired count is raised; an offer makes one employee"
+        returns: {"type": "object", "properties": {"id": {"type": "string"}, "entity": {"type": "string"}, "message": {"type": "string"}}}
     - name: issue_offer_letter
       label: Issue Offer Letter
       permission: read
@@ -223,6 +227,10 @@
         - {type: generate, template: hr.offer_letter, name: "'Offer letter ' + doc.applicant_name", values: {serial: "results[1].number"}}
         - {type: find, entity: EmployeeLetter, by: {id: "results[1].id"}, update: {sent_to: "has(params.send_mail) && params.send_mail == 'Yes' ? doc.applicant_email : ''"}}
         - {type: message, when: "has(params.send_mail) && params.send_mail == 'Yes'", template: hr.letter_issued, to: "field:applicant_email", channels: [email], values: {serial: "results[1].number"}, attachments: ["results[2]"]}
+      contract:
+        effect: transactional_action
+        completion: "A numbered offer letter is in the letter register; with Send It to the Person the mail to the applicant is queued, its delivery is not confirmed"
+        returns: {"type": "object"}
   list: {columns: [number, applicant_name, designation, offer_date, status], sort: offer_date desc}
 
 - name: AppraisalCycle

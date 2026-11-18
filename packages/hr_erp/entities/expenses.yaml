@@ -88,7 +88,7 @@
   rules:
     - {name: something_to_claim, check: "doc.grand_total > 0.0", message: "Nothing is sanctioned on this claim", on: submit}
   actions:
-    - {name: get_advances, label: Get Advances, docstatus: [0], permission: write}
+    - {name: get_advances, label: Get Advances, docstatus: [0], permission: write, contract: {"effect": "transactional_action", "completion": "The draft claim lists the employee's unsettled advances", "returns": {"type": "object"}}}
     - name: make_payment_entry
       label: Make Payment Entry
       docstatus: [1]
@@ -97,6 +97,12 @@
       params:
         - {name: amount, type: data, label: Amount, description: "Everything open when empty"}
         - {name: bank_account, type: link, to: Account, label: Paid From, description: "The company's default bank account when empty"}
+        - {name: posting_date, type: date, label: Posting Date, description: Today when empty}
+        - {name: submit, type: check, label: Post It, description: "Posts the entry when you may submit journal entries; a draft for accounts when empty"}
+      contract:
+        effect: transactional_action
+        completion: "A journal entry that pays the claim from the bank account exists, naming the claim: a draft for accounts to post, or posted when `submit` is true and the caller may submit journal entries"
+        returns: {"type": "object", "properties": {"id": {"type": "string"}, "message": {"type": "string"}}}
   list: {columns: [number, employee_name, posting_date, grand_total, outstanding_amount, status], sort: posting_date desc}
 
 - name: EmployeeAdvance
@@ -135,6 +141,12 @@
       params:
         - {name: amount, type: data, label: Amount, description: "Everything open when empty"}
         - {name: bank_account, type: link, to: Account, label: Paid From, description: "The company's default bank account when empty"}
+        - {name: posting_date, type: date, label: Posting Date, description: Today when empty}
+        - {name: submit, type: check, label: Post It, description: "Posts the entry when you may submit journal entries; a draft for accounts when empty"}
+      contract:
+        effect: transactional_action
+        completion: "A journal entry that pays the advance to the employee exists: a draft for accounts, or posted when `submit` is true"
+        returns: {"type": "object", "properties": {"id": {"type": "string"}, "message": {"type": "string"}}}
     - name: make_return_entry
       label: Return Unused Advance
       docstatus: [1]
@@ -143,4 +155,10 @@
       params:
         - {name: amount, type: data, label: Amount, description: "Everything open when empty"}
         - {name: bank_account, type: link, to: Account, label: Paid Into, description: "The company's default bank account when empty"}
+        - {name: posting_date, type: date, label: Posting Date, description: Today when empty}
+        - {name: submit, type: check, label: Post It, description: "Posts the entry when you may submit journal entries; a draft for accounts when empty"}
+      contract:
+        effect: transactional_action
+        completion: "A journal entry that takes back the unused part of the advance exists: a draft for accounts, or posted when `submit` is true"
+        returns: {"type": "object", "properties": {"id": {"type": "string"}, "message": {"type": "string"}}}
   list: {columns: [number, employee_name, posting_date, advance_amount, pending_amount, status], sort: posting_date desc}

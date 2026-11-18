@@ -1,5 +1,5 @@
 package: hr_erp
-version: 0.5.0
+version: 0.5.1
 label: HR and ERP
 description: Expense claims and employee advances, posted to the ledger and paid through it; the full and final statement of an employee who leaves (last pay, leave encashment, notice, gratuity by the company's rule, claims and advances), settled by one journal entry; the company's employee payable and advance accounts.
 depends: [hr, accounting]
@@ -10,7 +10,7 @@ overlays:
     ops:
       - {op: add_field, field: {name: hr_employee_payable_account, type: link, to: Account, label: Employee Payable Account, link_filters: {is_group: false}, description: Credited when expense claims are approved}}
       - {op: add_field, field: {name: hr_employee_advance_account, type: link, to: Account, label: Employee Advance Account, link_filters: {is_group: false}}}
-      - {op: add_action, action: {name: setup_hr_accounts, label: Create HR and Payroll Accounts, permission: write}}
+      - {op: add_action, action: {name: setup_hr_accounts, label: Create HR and Payroll Accounts, permission: write, contract: {"effect": "transactional_action", "completion": "The company's HR and payroll accounts exist and its empty account fields point at them; repeating it changes nothing", "returns": {"type": "object", "properties": {"linked": {"type": "integer"}, "message": {"type": "string"}}}}}}
       # Gratuity on the full and final statement: no country's rule is built in. India's (15 days'
       # pay per year of service on a 26-day month, after 5 years, more than six months counting as a
       # year) is 5, 15, 26, BS (with DA where paid) and the first rounding.
@@ -26,7 +26,7 @@ overlays:
       - {op: add_field, field: {name: hr_reference_number, type: data, label: HR Reference No, read_only: true}}
   - entity: EmployeeSeparation
     ops:
-      - {op: add_action, action: {name: make_full_and_final, label: Create Full and Final Statement, docstatus: [1], permission: read}}
+      - {op: add_action, action: {name: make_full_and_final, label: Create Full and Final Statement, docstatus: [1], permission: read, contract: {"effect": "transactional_action", "completion": "The separation has its one full and final statement, a draft; asked again, the same statement is named", "returns": {"type": "object", "properties": {"entity": {"type": "string"}, "id": {"type": "string"}, "message": {"type": "string"}}}}}}
 
 modules:
   - name: expenses

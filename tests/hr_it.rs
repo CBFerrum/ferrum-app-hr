@@ -110,6 +110,126 @@ fn payroll_run() {
     run(payroll_scenario());
 }
 
+/// Every action of the four packages, as the capability id the gate lists it under.
+const CONTRACT_IDS: [&str; 43] = [
+    "hr.employee.issue_appointment_letter",
+    "hr.employee.issue_employment_certificate",
+    "hr.employee.issue_warning_letter",
+    "hr.employee.request_letter",
+    "hr.employee_onboarding.apply_checklist",
+    "hr.employee_separation.apply_checklist",
+    "hr.employee_separation.issue_relieving_letter",
+    "hr.job_offer.issue_offer_letter",
+    "payroll.salary_structure_assignment.issue_salary_certificate",
+    "payroll.salary_slip.mail_payslip",
+    "hr.holiday_list.add_weekly_offs",
+    "hr.shift_type.mark_attendance",
+    "hr.leave_policy.assign_allocations",
+    "hr.leave_policy.accrue",
+    "hr.employee_document.verify",
+    "hr.job_offer.accept",
+    "hr.job_offer.reject",
+    "hr.job_offer.make_employee",
+    "payroll.salary_structure.set_active",
+    "payroll.employee_tax_exemption_declaration.verify_proofs",
+    "payroll.additional_salary.stop_or_change",
+    "payroll.payroll_entry.get_employees",
+    "payroll.payroll_entry.create_salary_slips",
+    "payroll.payroll_entry.submit_salary_slips",
+    "payroll.salary_slip.choose_late_changes",
+    "payroll.salary_slip.make_correction",
+    "payroll.salary_slip.hold_salary",
+    "payroll.salary_slip.release_salary",
+    "hr_erp.expense_claim.get_advances",
+    "hr_erp.expense_claim.make_payment_entry",
+    "hr_erp.employee_advance.make_payment_entry",
+    "hr_erp.employee_advance.make_return_entry",
+    "hr_erp.full_and_final_statement.get_outstanding",
+    "hr_erp.full_and_final_statement.make_payment_entry",
+    "payroll_erp.employee_loan.defer_instalment",
+    "payroll_erp.employee_loan.repay",
+    "payroll_erp.employee_loan.write_off",
+    "hr_erp.company.setup_hr_accounts",
+    "hr_erp.employee_separation.make_full_and_final",
+    "payroll_erp.payroll_entry.make_bank_entry",
+    "payroll_erp.payroll_entry.record_payment_elsewhere",
+    "payroll_erp.payroll_entry.undo_payment_elsewhere",
+    "payroll_erp.payroll_entry.bank_file",
+];
+
+#[test]
+fn every_action_says_what_done_means() {
+    run(async {
+        let t = T::new("hrcontract").await;
+        let catalog = t.k.catalog(&t.admin);
+        for id in CONTRACT_IDS {
+            let c = catalog.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("{id} is not in the catalog"));
+            assert!(!c.completion.ends_with("is done, committed with this receipt"), "{id} still has the derived promise: {}", c.completion);
+            assert_eq!(serde_json::to_value(c.effect).unwrap(), json!("transactional_action"), "{id}");
+        }
+        let actions: Vec<&str> = catalog
+            .iter()
+            .filter(|c| serde_json::to_value(&c.operation).unwrap()["op"] == json!("action"))
+            .filter(|c| ["hr.", "payroll.", "hr_erp.", "payroll_erp."].iter().any(|p| c.id.starts_with(p)))
+            .map(|c| c.id.as_str())
+            .collect();
+        for id in &actions {
+            assert!(CONTRACT_IDS.contains(id), "{id} is an action of HR or payroll with no contract here");
+        }
+        assert_eq!(actions.len(), CONTRACT_IDS.len(), "{actions:?}");
+    });
+}
+
+#[test]
+fn undo_actions_are_named() {
+    run(async {
+        let t = T::new("hrundo").await;
+        let catalog = t.k.catalog(&t.admin);
+        let undo = |id: &str| catalog.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("{id}")).compensate_with.clone();
+        assert_eq!(undo("payroll.salary_slip.hold_salary").as_deref(), Some("payroll.salary_slip.release_salary"));
+        assert_eq!(undo("payroll_erp.payroll_entry.record_payment_elsewhere").as_deref(), Some("payroll_erp.payroll_entry.undo_payment_elsewhere"));
+    });
+}
+
+#[test]
+fn an_action_through_the_gate_is_done_once() {
+    run(async {
+        let t = T::new("hrgate").await;
+        let hr = t.user("hr@hrgate.test", &["HR Manager"]).await;
+        let me = t.user("me@hrgate.test", &["Employee"]).await;
+        let dept = t.ins(&hr, "Department", json!({"department_name": "Engineering", "company": t.c()})).await;
+        let eng = t.ins(&hr, "Designation", json!({"designation_name": "Engineer"})).await;
+        let opening = t
+            .ins(
+                &hr,
+                "JobOpening",
+                json!({"job_title": "Backend Engineer", "company": t.c(), "designation": eng["id"], "department": dept["id"], "vacancies": 1, "publish": true}),
+            )
+            .await;
+        let applicant = t.ins(&hr, "JobApplicant", json!({"applicant_name": "Kiran Rao", "email_id": "kiran@mail.test", "job_opening": opening["id"]})).await;
+        let offer = t
+            .ins_submit(
+                &hr,
+                "JobOffer",
+                json!({"job_applicant": applicant["id"], "company": t.c(), "offer_date": "2026-10-10", "expected_joining_date": "2026-10-20", "ctc": "1800000"}),
+            )
+            .await;
+        let accept = |key: Option<&str>| {
+            let inv = ferrum_kernel::capability::Invocation::new("hr.job_offer.accept", json!({"id": offer["id"]}));
+            match key {
+                Some(k) => inv.key(k),
+                None => inv,
+            }
+        };
+        assert_eq!(t.k.invoke(&me, accept(Some("accept-0"))).await.map_err(|e| e.code()).unwrap_err(), "forbidden", "an employee may not accept an offer");
+        assert_eq!(t.k.invoke(&hr, accept(None)).await.map_err(|e| e.code()).unwrap_err(), "schema_invalid", "no key, no action");
+        let first = t.k.invoke(&hr, accept(Some("accept-1"))).await.expect("accepted");
+        assert_eq!((first.result.clone(), first.repeated), (json!({"status": "Accepted"}), false));
+        let again = t.k.invoke(&hr, accept(Some("accept-1"))).await.expect("answered again");
+        assert_eq!((again.result, again.repeated), (json!({"status": "Accepted"}), true));
+    });
+}
+
 #[test]
 fn recruitment_lifecycle_and_appraisal() {
     run(talent_scenario());
@@ -1535,6 +1655,19 @@ async fn payroll_scenario() {
     assert!(xml.contains(&format!("<GrpHdr><MsgId>{number}-1</MsgId>")), "message id {number}-1 in {xml}");
     let csv = file(json!({"format": "CSV", "from_account": "50100012345678"})).await.expect("the same file");
     assert_eq!((&csv["file"], &csv["round"]), (&pain["file"], &json!(1)), "round 1's file, whatever is asked");
+    // Through the gate the file is given once: the receipt kept for a repeat holds no bank account number.
+    let gate = |key: &str| {
+        let inv = ferrum_kernel::capability::Invocation::new(
+            "payroll_erp.payroll_entry.bank_file",
+            json!({"id": pe_id, "params": {"from_account": "5010 0012 3456 78", "from_bic": "HDFCINBB", "execution_date": "2026-10-01"}}),
+        );
+        t.k.invoke(&pm, inv.key(key))
+    };
+    let given = gate("bank-1").await.expect("through the gate");
+    assert!(!given.repeated && given.result["file"]["content"].is_string(), "the first answer carries the file");
+    let repeat = gate("bank-1").await.expect("repeated through the gate");
+    assert!(repeat.repeated && repeat.answered_once.is_some(), "a repeat says the file was given once");
+    assert!(repeat.result.get("file").is_none(), "and does not carry it: {}", repeat.result);
     let run = t.get("PayrollEntry", pe_id).await;
     let kept: Uuid = run["last_bank_file"].as_str().and_then(|f| f.strip_prefix("/files/")).and_then(|f| f.parse().ok()).expect("a kept file");
     let kept = t.k.read_file(&pm, kept).await.expect("the kept file").2;
@@ -1849,10 +1982,10 @@ async fn retire_scenario() {
         ("LeavePolicy", "accrue", &["on"]),
         ("HolidayList", "add_weekly_offs", &["weekday"]),
         ("ShiftType", "mark_attendance", &["up_to"]),
-        ("ExpenseClaim", "make_payment_entry", &["amount", "bank_account"]),
-        ("EmployeeAdvance", "make_payment_entry", &["amount", "bank_account"]),
-        ("EmployeeAdvance", "make_return_entry", &["amount", "bank_account"]),
-        ("FullAndFinalStatement", "make_payment_entry", &["bank_account", "posting_date"]),
+        ("ExpenseClaim", "make_payment_entry", &["amount", "bank_account", "posting_date", "submit"]),
+        ("EmployeeAdvance", "make_payment_entry", &["amount", "bank_account", "posting_date", "submit"]),
+        ("EmployeeAdvance", "make_return_entry", &["amount", "bank_account", "posting_date", "submit"]),
+        ("FullAndFinalStatement", "make_payment_entry", &["bank_account", "posting_date", "submit"]),
     ] {
         assert_eq!(asks(entity, action), names, "{entity}.{action}");
     }

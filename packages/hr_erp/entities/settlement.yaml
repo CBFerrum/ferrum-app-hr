@@ -44,7 +44,7 @@
   rules:
     - {name: something_to_settle, check: "size(doc.payables) + size(doc.receivables) > 0", message: "Nothing is owed either way: get the outstanding amounts or add a line", on: submit}
   actions:
-    - {name: get_outstanding, label: Get Outstanding Amounts, docstatus: [0], permission: write}
+    - {name: get_outstanding, label: Get Outstanding Amounts, docstatus: [0], permission: write, contract: {"effect": "transactional_action", "completion": "The draft statement lists what is open either way for the employee", "returns": {"type": "object"}}}
     - name: make_payment_entry
       label: Make Payment Entry
       docstatus: [1]
@@ -53,6 +53,11 @@
       params:
         - {name: bank_account, type: link, to: Account, label: Paid From, description: "The company's default bank account when empty"}
         - {name: posting_date, type: date, label: Posting Date, description: Today when empty}
+        - {name: submit, type: check, label: Post It, description: "Posts the entry when you may submit journal entries; a draft for accounts when empty"}
+      contract:
+        effect: transactional_action
+        completion: "One journal entry that settles the statement's lines against the bank account exists: a draft for accounts, or posted when `submit` is true"
+        returns: {"type": "object", "properties": {"id": {"type": "string"}, "message": {"type": "string"}}}
   form:
     - {label: Employee, fields: [employee, employee_name, company, separation, relieving_date, transaction_date]}
     - {label: Paid to them, fields: [payables]}

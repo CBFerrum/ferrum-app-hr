@@ -133,6 +133,10 @@
         - {type: create_document, entity: EmployeeDocument, values: {employee: "doc.id", document_type: "results[0].id", document_number: "results[1].number", issue_date: "today", file: "results[2].url"}}
         - {type: find, entity: EmployeeLetter, by: {id: "results[1].id"}, update: {employee_document: "results[3].id", sent_to: "has(params.send_mail) && params.send_mail == 'Yes' ? coalesce(doc.personal_email, doc.company_email) : ''"}}
         - {type: message, when: "has(params.send_mail) && params.send_mail == 'Yes'", template: hr.letter_issued, to: "expr:coalesce(doc.personal_email, doc.company_email)", channels: [email], values: {serial: "results[1].number"}, attachments: ["results[2]"]}
+      contract:
+        effect: transactional_action
+        completion: "A numbered appointment letter is in the letter register and filed with the employee's documents; with Send It to the Person the mail is queued, its delivery is not confirmed"
+        returns: {"type": "object"}
     - name: issue_employment_certificate
       label: Issue Employment Certificate
       permission: read
@@ -147,6 +151,10 @@
         - {type: create_document, entity: EmployeeDocument, values: {employee: "doc.id", document_type: "results[0].id", document_number: "results[1].number", issue_date: "today", file: "results[2].url"}}
         - {type: find, entity: EmployeeLetter, by: {id: "results[1].id"}, update: {employee_document: "results[3].id", sent_to: "has(params.send_mail) && params.send_mail == 'Yes' ? coalesce(doc.personal_email, doc.company_email) : ''"}}
         - {type: message, when: "has(params.send_mail) && params.send_mail == 'Yes'", template: hr.letter_issued, to: "expr:coalesce(doc.personal_email, doc.company_email)", channels: [email], values: {serial: "results[1].number"}, attachments: ["results[2]"]}
+      contract:
+        effect: transactional_action
+        completion: "A numbered employment certificate is in the letter register and filed with the employee's documents; with Send It to the Person the mail is queued, its delivery is not confirmed"
+        returns: {"type": "object"}
     - name: issue_warning_letter
       label: Issue Warning Letter
       permission: read
@@ -162,6 +170,10 @@
         - {type: create_document, entity: EmployeeDocument, values: {employee: "doc.id", document_type: "results[0].id", document_number: "results[1].number", issue_date: "today", file: "results[2].url"}}
         - {type: find, entity: EmployeeLetter, by: {id: "results[1].id"}, update: {employee_document: "results[3].id", sent_to: "has(params.send_mail) && params.send_mail == 'Yes' ? coalesce(doc.personal_email, doc.company_email) : ''"}}
         - {type: message, when: "has(params.send_mail) && params.send_mail == 'Yes'", template: hr.letter_issued, to: "expr:coalesce(doc.personal_email, doc.company_email)", channels: [email], values: {serial: "results[1].number"}, attachments: ["results[2]"]}
+      contract:
+        effect: transactional_action
+        completion: "A numbered warning letter is in the letter register and filed with the employee's documents; with Send It to the Person the mail is queued, its delivery is not confirmed"
+        returns: {"type": "object"}
     - name: request_letter
       label: Request a Letter
       permission: read
@@ -171,6 +183,10 @@
         - {name: note, type: text, label: Note to HR}
       effects:
         - {type: message, template: hr.letter_requested, to: "role:HR Manager", channels: [inapp, email], values: {letter: "params.letter", note: "params.note"}}
+      contract:
+        effect: transactional_action
+        completion: "The request is sent to the HR managers through the message template hr.letter_requested; no letter is issued by it"
+        returns: {"type": "object"}
   form:
     - {label: Employee, fields: [first_name, middle_name, last_name, employee_name, company, status, user, gender, date_of_birth]}
     - {label: Employment, fields: [date_of_joining, relieving_date, notice_period_days, department, designation, grade, branch, employment_type, reports_to, leave_approver, expense_approver]}
@@ -231,6 +247,10 @@
         - {type: copy_lines, table: activities, link: checklist_template, from_table: tasks,
            values: {activity_name: item.task, assignee_role: item.assignee_role, assignee_field: item.assignee_field, due_date: "addDays(doc.date_of_joining, item.due_days)",
                     document_type: item.document_type, required: item.required, requires_approval: item.requires_approval}}
+      contract:
+        effect: transactional_action
+        completion: "The checklist template's tasks are on this onboarding"
+        returns: {"type": "object"}
   list: {columns: [number, employee_name, date_of_joining, status], sort: created_at desc}
 
 - name: EmployeeSeparation
@@ -271,6 +291,10 @@
         - {type: copy_lines, table: activities, link: checklist_template, from_table: tasks,
            values: {activity_name: item.task, assignee_role: item.assignee_role, assignee_field: item.assignee_field, due_date: "addDays(doc.relieving_date, item.due_days)",
                     document_type: item.document_type, required: item.required, requires_approval: item.requires_approval}}
+      contract:
+        effect: transactional_action
+        completion: "The checklist template's tasks are on this separation"
+        returns: {"type": "object"}
     - name: issue_relieving_letter
       label: Issue Relieving Letter
       permission: read
@@ -286,6 +310,10 @@
         - {type: create_document, entity: EmployeeDocument, values: {employee: "doc.employee", document_type: "results[0].id", document_number: "results[1].number", issue_date: "today", file: "results[2].url"}}
         - {type: find, entity: EmployeeLetter, by: {id: "results[1].id"}, update: {employee_document: "results[3].id", sent_to: "has(params.send_mail) && params.send_mail == 'Yes' ? coalesce(links.employee.personal_email, links.employee.company_email) : ''"}}
         - {type: message, when: "has(params.send_mail) && params.send_mail == 'Yes'", template: hr.letter_issued, to: "expr:coalesce(links.employee.personal_email, links.employee.company_email)", channels: [email], values: {serial: "results[1].number"}, attachments: ["results[2]"]}
+      contract:
+        effect: transactional_action
+        completion: "A numbered relieving letter is in the letter register and filed with the employee's documents; with Send It to the Person the mail is queued, its delivery is not confirmed"
+        returns: {"type": "object"}
   list: {columns: [number, employee_name, relieving_date, status], sort: created_at desc}
 
 - name: EmployeePromotion

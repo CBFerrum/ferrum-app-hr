@@ -58,5 +58,5 @@
   rules:
     - {name: expiry_after_issue, check: "doc.issue_date == null || doc.expiry_date == null || doc.expiry_date >= doc.issue_date", field: expiry_date, message: "cannot be before the issue date"}
   actions:
-    - {name: verify, label: Verify, permission: write, condition: "doc.verified_on == null"}
+    - {name: verify, label: Verify, permission: write, condition: "doc.verified_on == null", contract: {"effect": "transactional_action", "completion": "The document is marked verified by the caller on the workspace's day", "returns": {"type": "object", "properties": {"verified_by": {"type": "string"}, "verified_on": {"type": "string"}}}}}
   list: {columns: [number, employee_name, document_type, document_number, expiry_date, verified_by], sort: created_at desc}
