@@ -352,7 +352,7 @@
   title_field: program_name
   company_scoped: true
   owner_fields: [employee_user]
-  description: "What someone has completed, and until when it counts. Sessions make these."
+  description: "What someone has completed, and until when it counts. Sessions make these, and so does the Record a Completed Training operation."
   fields:
     - {name: employee, type: link, to: Employee, required: true, read_only: true, in_list: true, in_filter: true, index: true}
     - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
@@ -362,4 +362,8 @@
     - {name: session, type: link, to: TrainingEvent, read_only: true}
     - {name: completed_on, type: date, read_only: true, in_list: true}
     - {name: valid_until, type: date, read_only: true, in_list: true, in_filter: true}
+    - {name: source, type: data, max_length: 200, read_only: true, no_copy: true, in_filter: true,
+       description: "What made this record: session:<id> for a training session, or the reference another app gave (lms:<enrolment id>). An employee has one record per source"}
+  # Records made before 0.18.0 have no source; PostgreSQL counts empty (null) values as distinct, so they stay as they are.
+  unique: [[employee, source]]
   list: {columns: [employee, program_name, completed_on, valid_until], sort: completed_on desc}

@@ -111,7 +111,8 @@ fn payroll_run() {
 }
 
 /// Every action of the four packages, as the capability id the gate lists it under.
-const CONTRACT_IDS: [&str; 43] = [
+const CONTRACT_IDS: [&str; 44] = [
+    "hr.employee.record_training",
     "hr.employee.issue_appointment_letter",
     "hr.employee.issue_employment_certificate",
     "hr.employee.issue_warning_letter",
@@ -157,6 +158,9 @@ const CONTRACT_IDS: [&str; 43] = [
     "payroll_erp.payroll_entry.bank_file",
 ];
 
+/// Actions that only read, offered to other apps.
+const LOOKUP_IDS: [&str; 1] = ["hr.company.find_employee"];
+
 #[test]
 fn every_action_says_what_done_means() {
     run(async {
@@ -167,6 +171,11 @@ fn every_action_says_what_done_means() {
             assert!(!c.completion.ends_with("is done, committed with this receipt"), "{id} still has the derived promise: {}", c.completion);
             assert_eq!(serde_json::to_value(c.effect).unwrap(), json!("transactional_action"), "{id}");
         }
+        for id in LOOKUP_IDS {
+            let c = catalog.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("{id} is not in the catalog"));
+            assert!(!c.completion.ends_with("is done, committed with this receipt"), "{id}: {}", c.completion);
+            assert_eq!(serde_json::to_value(c.effect).unwrap(), json!("query"), "{id}");
+        }
         let actions: Vec<&str> = catalog
             .iter()
             .filter(|c| serde_json::to_value(&c.operation).unwrap()["op"] == json!("action"))
@@ -174,9 +183,9 @@ fn every_action_says_what_done_means() {
             .map(|c| c.id.as_str())
             .collect();
         for id in &actions {
-            assert!(CONTRACT_IDS.contains(id), "{id} is an action of HR or payroll with no contract here");
+            assert!(CONTRACT_IDS.contains(id) || LOOKUP_IDS.contains(id), "{id} is an action of HR or payroll with no contract here");
         }
-        assert_eq!(actions.len(), CONTRACT_IDS.len(), "{actions:?}");
+        assert_eq!(actions.len(), CONTRACT_IDS.len() + LOOKUP_IDS.len(), "{actions:?}");
     });
 }
 
@@ -227,6 +236,212 @@ fn an_action_through_the_gate_is_done_once() {
         assert_eq!((first.result.clone(), first.repeated), (json!({"status": "Accepted"}), false));
         let again = t.k.invoke(&hr, accept(Some("accept-1"))).await.expect("answered again");
         assert_eq!((again.result, again.repeated), (json!({"status": "Accepted"}), true));
+    });
+}
+
+// ───────────── a completed training, through the gate (hr-2) ─────────────
+
+fn record_training(emp: &Doc, params: Value) -> ferrum_kernel::capability::Invocation {
+    ferrum_kernel::capability::Invocation::new("hr.employee.record_training", json!({"id": emp["id"], "params": params}))
+}
+
+fn as_id(v: &Value) -> Uuid {
+    v.as_str().unwrap_or_else(|| panic!("not an id: {v}")).parse().unwrap()
+}
+
+async fn records_of(t: &T, emp: &Doc) -> Vec<Doc> {
+    t.list(&t.admin, "TrainingRecord", json!({"employee": emp["id"]})).await
+}
+
+#[test]
+fn a_completed_training_is_recorded_through_the_gate() {
+    run(async {
+        let t = T::new("hrrt1").await;
+        let hr = t.user("hr@hrrt1.test", &["HR Manager"]).await;
+        let asha = t.employee("Asha", json!({})).await;
+        let r =
+            t.k.invoke(&hr, record_training(&asha, json!({"program_name": "Data protection", "source": "lms:e1", "completed_on": "2026-03-01"})).key("t1"))
+                .await
+                .expect("recorded");
+        assert_eq!((r.result["created"].clone(), r.repeated), (json!(true), false));
+        let program = t.one("TrainingProgram", json!({"program_name": "Data protection"})).await;
+        assert_eq!((program["company"].clone(), r.result["program"].clone()), (json!(t.c()), program["id"].clone()), "made in the employee's company");
+        let rec = t.get("TrainingRecord", as_id(&r.result["training_record"])).await;
+        assert_eq!(
+            (rec["employee"].clone(), rec["company"].clone(), rec["completed_on"].clone(), rec["valid_until"].clone(), rec["source"].clone()),
+            (asha["id"].clone(), json!(t.c()), json!("2026-03-01"), Value::Null, json!("lms:e1"))
+        );
+    });
+}
+
+#[test]
+fn the_same_source_is_one_record() {
+    run(async {
+        let t = T::new("hrrt2").await;
+        let hr = t.user("hr@hrrt2.test", &["HR Manager"]).await;
+        let (asha, ravi) = (t.employee("Asha", json!({})).await, t.employee("Ravi", json!({})).await);
+        let p = json!({"program_name": "Data protection", "source": "lms:e1", "completed_on": "2026-03-01"});
+        let first = t.k.invoke(&hr, record_training(&asha, p.clone()).key("t1")).await.expect("recorded");
+        let again = t.k.invoke(&hr, record_training(&asha, p.clone()).key("t1")).await.expect("answered");
+        assert_eq!((again.repeated, again.result.clone()), (true, first.result.clone()), "the same key is answered");
+        let other_key = t.k.invoke(&hr, record_training(&asha, p.clone()).key("t2")).await.expect("answered by the record");
+        assert_eq!(
+            (other_key.repeated, other_key.result["created"].clone(), other_key.result["training_record"].clone()),
+            (false, json!(false), first.result["training_record"].clone()),
+            "a new key with the same source finds the first record"
+        );
+        assert_eq!(records_of(&t, &asha).await.len(), 1);
+        let theirs = t.k.invoke(&hr, record_training(&ravi, p).key("t3")).await.expect("recorded for Ravi");
+        assert_eq!(theirs.result["created"], json!(true));
+        assert_ne!(theirs.result["training_record"], first.result["training_record"]);
+        assert_eq!(records_of(&t, &ravi).await.len(), 1, "another employee's source is their own");
+    });
+}
+
+#[test]
+fn only_hr_records_a_training() {
+    run(async {
+        let t = T::new("hrrt3").await;
+        let me = t.user("asha@hrrt3.test", &["Employee"]).await;
+        let asha = t.employee("Asha", json!({"user": "asha@hrrt3.test"})).await;
+        let r = t.k.invoke(&me, record_training(&asha, json!({"program_name": "Data protection", "source": "self:1"})).key("t1")).await;
+        assert_eq!(r.map_err(|e| e.code()).unwrap_err(), "forbidden", "an employee does not certify themselves");
+        assert!(records_of(&t, &asha).await.is_empty());
+    });
+}
+
+#[test]
+fn validity_comes_from_the_program_unless_given() {
+    run(async {
+        let t = T::new("hrrt4").await;
+        let hr = t.user("hr@hrrt4.test", &["HR Manager"]).await;
+        let asha = t.employee("Asha", json!({})).await;
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Forklift", "company": t.c(), "valid_for_months": 12})).await;
+        let go = |source: &str, extra: Value| {
+            let mut p = obj(json!({"program_name": "Forklift", "source": source, "completed_on": "2026-03-01"}));
+            p.extend(obj(extra));
+            record_training(&asha, Value::Object(p)).key(source)
+        };
+        let r = t.k.invoke(&hr, go("a", json!({}))).await.expect("from the program");
+        assert_eq!(t.get("TrainingRecord", as_id(&r.result["training_record"])).await["valid_until"], json!("2027-03-01"));
+        let r = t.k.invoke(&hr, go("b", json!({"valid_until": "2026-09-30"}))).await.expect("given");
+        assert_eq!(t.get("TrainingRecord", as_id(&r.result["training_record"])).await["valid_until"], json!("2026-09-30"));
+        refused(t.k.invoke(&hr, go("c", json!({"valid_until": "2026-01-01"}))).await, "valid_until");
+        let tomorrow = (hr.today() + chrono::Days::new(1)).to_string();
+        refused(t.k.invoke(&hr, go("d", json!({"completed_on": tomorrow}))).await, "completed_on");
+        refused(t.k.invoke(&hr, go("e", json!({"program_name": "   "}))).await, "program_name");
+        refused(t.k.invoke(&hr, record_training(&asha, json!({"program_name": "Forklift", "source": "lms: e1"})).key("f")).await, "source");
+        assert_eq!(records_of(&t, &asha).await.len(), 2, "a refusal leaves nothing");
+    });
+}
+
+#[test]
+fn two_first_uses_of_a_program_name_make_one_program() {
+    run(async {
+        let t = T::new("hrrt5").await;
+        let hr = t.user("hr@hrrt5.test", &["HR Manager"]).await;
+        let (asha, ravi) = (t.employee("Asha", json!({})).await, t.employee("Ravi", json!({})).await);
+        let p = json!({"program_name": "Ladder safety", "source": "lms:e9"});
+        let (a, b) = tokio::join!(t.k.invoke(&hr, record_training(&asha, p.clone()).key("a")), t.k.invoke(&hr, record_training(&ravi, p).key("b")));
+        let (a, b) = (a.expect("Asha's"), b.expect("Ravi's"));
+        assert_eq!(a.result["program"], b.result["program"], "one program");
+        assert_eq!(t.list(&t.admin, "TrainingProgram", json!({"program_name": "Ladder safety"})).await.len(), 1);
+    });
+}
+
+#[test]
+fn a_cancelled_session_deletes_its_records_on_the_record_path() {
+    run(async {
+        let t = T::new("hrrt6").await;
+        let (asha, ravi) = (t.employee("Asha", json!({})).await, t.employee("Ravi", json!({})).await);
+        let program = t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c()})).await;
+        let session = t
+            .ins_submit(
+                &t.admin,
+                "TrainingEvent",
+                json!({"title": "Fire safety, March", "program": program["id"], "company": t.c(), "held_on": "2026-03-31",
+                       "attendees": [{"employee": asha["id"], "result": "Passed"}, {"employee": ravi["id"], "result": "Passed"}]}),
+            )
+            .await;
+        let made = t.list(&t.admin, "TrainingRecord", json!({"program": program["id"]})).await;
+        assert_eq!(made.len(), 2);
+        assert!(made.iter().all(|r| r["source"] == json!(format!("session:{}", uid(&session)))), "{made:?}");
+        t.k.cancel(&t.admin, "TrainingEvent", uid(&session), None).await.expect("cancelled");
+        assert!(t.list(&t.admin, "TrainingRecord", json!({"program": program["id"]})).await.is_empty());
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        let deletes: i64 = sqlx::query_scalar("select count(*) from audit_event where tenant_id = $1 and entity = 'TrainingRecord' and action = 'delete'")
+            .bind(t.tenant)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(deletes, 2, "each record goes through the record path");
+    });
+}
+
+async fn opening(t: &T, closes_on: chrono::NaiveDate) -> Doc {
+    let eng = t.ins(&t.admin, "Designation", json!({"designation_name": format!("Engineer {closes_on}")})).await;
+    t.ins(&t.admin, "JobOpening", json!({"job_title": "Backend Engineer", "company": t.c(), "designation": eng["id"], "closes_on": closes_on.to_string()}))
+        .await
+}
+
+#[test]
+fn the_upkeep_closes_an_opening_on_the_record_path() {
+    run(async {
+        let t = T::new("hrrt7").await;
+        let o = opening(&t, t.admin.today() - chrono::Days::new(1)).await;
+        let before = o["version"].as_i64().unwrap();
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        let after = t.get("JobOpening", uid(&o)).await;
+        assert_eq!((after["status"].clone(), after["version"].as_i64()), (json!("Closed"), Some(before + 1)));
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        assert_eq!(t.get("JobOpening", uid(&o)).await["version"].as_i64(), Some(before + 1), "closed once");
+    });
+}
+
+#[test]
+fn an_opening_closes_on_the_workspaces_day() {
+    run(async {
+        let mut t = T::new("hrrt8").await;
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        let db_day: chrono::NaiveDate = sqlx::query_scalar("select current_date").fetch_one(&mut *tx).await.unwrap();
+        drop(tx);
+        // A zone whose day is not the database's: behind it, or ahead of it.
+        let mut differs = None;
+        for zone in ["Pacific/Pago_Pago", "Pacific/Kiritimati"] {
+            t.k.update_tenant_settings(&t.admin, &obj(json!({"timezone": zone}))).await.expect("the workspace's zone");
+            t.admin = t.k.load_ctx(t.tenant, t.admin.user, None, "it".into()).await.expect("admin");
+            if t.admin.today() != db_day {
+                differs = Some(t.admin.today());
+                break;
+            }
+        }
+        let today = differs.expect("one of the two zones' day is not the database's");
+        if today < db_day {
+            let o = opening(&t, today).await;
+            ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+            assert_eq!(t.get("JobOpening", uid(&o)).await["status"], json!("Open"), "it closes after its day, the workspace's");
+        } else {
+            let o = opening(&t, today - chrono::Days::new(1)).await;
+            ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+            assert_eq!(t.get("JobOpening", uid(&o)).await["status"], json!("Closed"), "its day has passed in the workspace");
+        }
+    });
+}
+
+#[test]
+fn an_employee_is_found_by_sign_in_and_nothing_more() {
+    run(async {
+        let t = T::new("hrrt9").await;
+        let hr = t.user("hr@hrrt9.test", &["HR Manager"]).await;
+        let me = t.user("asha@hrrt9.test", &["Employee"]).await;
+        let asha = t.employee("Asha", json!({"user": "asha@hrrt9.test", "bank_account_no": "123456789012"})).await;
+        let find = |email: &str| ferrum_kernel::capability::Invocation::new("hr.company.find_employee", json!({"id": t.c(), "params": {"email": email}}));
+        let found = t.k.invoke(&hr, find("Asha@HRRT9.test")).await.expect("found");
+        assert_eq!(found.result, json!({"employee": asha["id"]}), "the id and nothing else");
+        assert_eq!(t.k.invoke(&hr, find("nobody@hrrt9.test")).await.expect("asked").result, json!({"employee": null}));
+        assert_eq!(t.k.invoke(&me, find("asha@hrrt9.test")).await.map_err(|e| e.code()).unwrap_err(), "forbidden");
+        let c = t.k.catalog(&t.admin).into_iter().find(|c| c.id == "hr.company.find_employee").expect("offered");
+        assert_eq!(serde_json::to_value(c.effect).unwrap(), json!("query"));
     });
 }
 

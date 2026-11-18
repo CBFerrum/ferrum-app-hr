@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.18.0
+
+Package `hr` 0.7.0. A new field and unique index on Training Record (made when the package's version moves; records that
+exist keep an empty source and stay as they are). No interface change.
+
+**A completed training is recorded through the gate.** The operation `hr.employee.record_training` (a hidden action
+on Employee, for other apps, processes and agents; its version is the `hr` package's, first 0.7.0) records "this
+employee completed this training on this day, valid until then": the program of that name is used, or made in the
+employee's company, and validity comes from the program unless given. An employee has one record per source (the
+caller's own reference, such as `lms:<enrolment id>`), held by a unique index beyond the receipt's life: a call with
+the same source answers the first record (`created: false`). Rights: write on Employee (HR Manager, HR User), or an
+app's declared use. Learn records its completed courses through it once Learn's change lands.
+
+**An employee's id from a sign-in, and nothing more.** `hr.company.find_employee` (hidden, read-only, HR Manager and
+HR User, or a declared use) answers the id of a company's employee who signs in with an email, or null, so that an app
+such as Learn need not read whole employee records to find one.
+
+- A cancelled training session deletes the records it made through the record path (audited, with their deleted
+  events), and the session's records carry `session:<id>` as their source.
+- The upkeep closes job openings past their closing date through the record path, on the workspace's day (it used the
+  database's day and wrote the table directly, so the version and audit trail missed it).
+- Training records are in a person's export and erasure, kept as employment records.
+
 ## 0.17.1
 
 Packages `hr` 0.6.2, `payroll` 0.8.2, `hr_erp` 0.5.1, `payroll_erp` 0.6.1. No behaviour or database change. Parameters the handlers already read are now declared, so the gate takes them: Post It and Posting Date on the expense claim, advance and advance-return payment entries and Post It on the full and final one; Amount, Paid From, Posting Date and Post It on the payroll bank entry; Active on Activate / Deactivate of a salary structure.

@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.17.1-0e7490?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.18.0-0e7490?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -37,7 +37,7 @@ People (HR and Payroll) is the employee lifecycle for Ferrum: employees and orga
 
 | | |
 |---|---|
-| **Version** | 0.17.1 (packages `hr` 0.6.2, `payroll` 0.8.2, `hr_erp` 0.5.1, `payroll_erp` 0.6.1) |
+| **Version** | 0.18.0 (packages `hr` 0.7.0, `payroll` 0.8.2, `hr_erp` 0.5.1, `payroll_erp` 0.6.1) |
 | **Kind** | Its own interface at `/people/` (your space, approvals, team calendar, directory and org chart, public careers page) with Ferrum's records screens for everything else |
 | **What it adds** | 85 entities (56 records and 29 small tables), 7 roles, 6 modules (HR, Attendance and Leave, Recruitment, Performance, Expenses, Payroll), 3 approval workflows and 2 package approval policies, 12 reports, 1 print format, 7 document templates, 5 message templates, 6 notification kinds, 7 upkeep jobs, 2 example packs |
 | **Depends on** | Ferrum platform `>=0.4.0, <0.5`. The connector **HR and ERP** (expenses and payroll posting) needs ERP `>=0.1` and ships with this app |
@@ -242,7 +242,7 @@ Everything a person receives on paper is a Ferrum document template (Settings, D
 ### 📈 Appraisals and training
 
 - **Appraisal Cycles**, **Appraisal Templates** with goals (KRAs) and weightages (which must total 100), and **Appraisals**: the employee scores their goals, HR or the manager scores them too and submits; a final score is worked out.
-- **Training Programs** (mandatory or not, valid for months), **Training Events** with attendees whose results are marked before submitting, and **Training Records** of what someone has completed and until when it counts, shown in My space.
+- **Training Programs** (mandatory or not, valid for months), **Training Events** with attendees whose results are marked before submitting, and **Training Records** of what someone has completed and until when it counts, shown in My space. Other apps record a completed training through `hr.employee.record_training`, one record per employee and source.
 
 ### 🔔 Notifications
 
@@ -267,6 +267,7 @@ Records about an employee carry the employee's sign-in email, so employees see t
 - Every entity has Ferrum's REST and MCP API under each person's permissions, search, an audit trail, exports and live updates.
 - A short assistant note tells Ferrum's assistant what the records mean (states, balances from the ledger, the recruitment path) and suggests "Who is on leave this week?", "How many leave days do I have left?", "Which openings have the most applicants?" and "Who joined this quarter?". Pay, bank, identity and personal details are held back from it unless the workspace allows them.
 - `GET /api/app/hr/work` feeds Ferrum Home's My work with the requests that wait for your decision.
+- Operations other apps can call through the gate (with a declared use): `hr.employee.record_training` records a completed training once per source (Learn's completed courses, once Learn uses it); `hr.company.find_employee` answers an employee's id for a sign-in and nothing else.
 
 ## 🧭 How it works
 
@@ -316,7 +317,7 @@ An accepted offer makes the employee and starts onboarding. A separation records
 | **Leave Type / Policy / Allocation / Application / Ledger Entry / Encashment** | Leave | accrual, carry forward, balance as a sum |
 | **Job Requisition / Opening / Stage / Applicant / Interview / Offer** | Recruitment | stage category, score, offer status |
 | **Appraisal Cycle / Template / Appraisal** | Performance | goals, weightage, scores |
-| **Training Program / Event / Record** | Training | validity, result |
+| **Training Program / Event / Record** | Training | validity, result; a record's source (a session or another app's reference), one record per employee and source |
 | **Expense Claim Type / Claim / Employee Advance** | Money employees spend | status, sanctioned amount |
 | **Salary Component / Structure / Assignment** | Pay rules | type, formula, frequency |
 | **Payroll Period / Income Tax Slab / Exemption Category / Declaration / Opening** | Tax | slabs, rebate, charges |
@@ -391,7 +392,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 | One data set with accounting, projects and helpdesk | ✅ | 🟡¹ | 🟡¹ | ➖ | 🟡¹ | 🟡¹ | ✅ |
 | No per-employee price | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | 🟡¹⁰ |
 
-<sub>¹ Present in some form or not confirmed; check the product, country and edition. ² Through a separate product from the same vendor. ³ BambooHR's payroll is for the United States. ⁴ A separate vendor product that works with the HR product. ⁵ No country's rules are built into this app: they are formulas, lookup tables and templates, and a country pack is data. A test compares the tax engine with a fixture of India's published new-regime figures for FY 2025-26; statutory returns and contribution files are not built. ⁶ A cycle, a template of goals with weights, and self and manager scores; no review stages. ⁷ Programs, events and records with validity; no skills and no LMS link here (Ferrum has a separate learning app). ⁸ Promotions and transfers keep the previous values on the document; there is no "as of" date for the whole record. ⁹ Twelve reports; no dashboards. ¹⁰ Self-hosting is free; the vendor's cloud is priced per user.</sub>
+<sub>¹ Present in some form or not confirmed; check the product, country and edition. ² Through a separate product from the same vendor. ³ BambooHR's payroll is for the United States. ⁴ A separate vendor product that works with the HR product. ⁵ No country's rules are built into this app: they are formulas, lookup tables and templates, and a country pack is data. A test compares the tax engine with a fixture of India's published new-regime figures for FY 2025-26; statutory returns and contribution files are not built. ⁶ A cycle, a template of goals with weights, and self and manager scores; no review stages. ⁷ Programs, events and records with validity; no skills. Ferrum's learning app records completed courses here through `hr.employee.record_training` once it uses it. ⁸ Promotions and transfers keep the previous values on the document; there is no "as of" date for the whole record. ⁹ Twelve reports; no dashboards. ¹⁰ Self-hosting is free; the vendor's cloud is priced per user.</sub>
 
 ### 🏆 Where People stands out
 
@@ -419,6 +420,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 
 ### ✅ Recently shipped
 
+- [x] **0.18.0** A completed training is recorded through the gate (`hr.employee.record_training`, once per source); an employee's id from a sign-in (`hr.company.find_employee`); session cancels and opening closes go through the record path.
 - [x] **0.17.1** Every HR and payroll action says what it returns and what "done" means (and which action undoes it); a bank file is kept out of the receipt.
 - [x] **0.17.0** Upkeep runs one workspace at a time, on whichever replica is free; needs Ferrum 0.4.0.
 - [x] **0.16.0** A run's bank file is a recorded round under message id `<run>-<round>`, given again unchanged; what happens today is dated on the workspace's day.

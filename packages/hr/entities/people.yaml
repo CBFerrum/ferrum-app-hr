@@ -187,6 +187,21 @@
         effect: transactional_action
         completion: "The request is sent to the HR managers through the message template hr.letter_requested; no letter is issued by it"
         returns: {"type": "object"}
+    # For other apps (Learn's completed courses), processes and agents, through the platform's gate: not a button
+    # (src/talent.rs, `record_training`).
+    - name: record_training
+      label: Record a Completed Training
+      permission: write
+      hidden: true
+      params:
+        - {name: program_name, label: Training, required: true, description: "The training's name. The training program of this name is used; one is made in the employee's company when none exists"}
+        - {name: source, label: Source, required: true, description: "The caller's own reference for what was completed, the same on every attempt (lms:<enrolment id>). A second call with the same source for the same employee answers the first record"}
+        - {name: completed_on, type: date, label: Completed On, description: "The workspace's day when empty; never a later day"}
+        - {name: valid_until, type: date, label: Valid Until, description: "When empty: the day the program's validity ends, or for good when the program sets none"}
+      contract:
+        effect: transactional_action
+        returns: {type: object, properties: {training_record: {type: string, format: uuid}, program: {type: string, format: uuid}, created: {type: boolean}}}
+        completion: "The employee has one training record for this source, committed with this receipt; created is false when it already existed"
   form:
     - {label: Employee, fields: [first_name, middle_name, last_name, employee_name, company, status, user, gender, date_of_birth]}
     - {label: Employment, fields: [date_of_joining, relieving_date, notice_period_days, department, designation, grade, branch, employment_type, reports_to, leave_approver, expense_approver]}

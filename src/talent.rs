@@ -3,8 +3,8 @@
 use crate::people::{person_name, same_company};
 use crate::{lookup, opt_date, stamp_company, stored};
 use async_trait::async_trait;
-use ferrum_domain::util::{d, elevated, get, id, money, rows, s, set, sys};
-use ferrum_kernel::{Action, Ctx, Doc, DocHook, Error, FieldError, HookCtx, HookRegistry, Kernel, Result};
+use ferrum_domain::util::{d, elevated, find, get, id, money, rows, s, set, sys};
+use ferrum_kernel::{Action, Ctx, Doc, DocHook, Error, FieldError, Filter, HookCtx, HookRegistry, Kernel, Result};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -58,30 +58,97 @@ impl DocHook for TrainingHook {
             let record = json!({
                 "employee": row.get("employee"), "program": doc.get("program"), "program_name": program.get("program_name"), "company": doc.get("company"),
                 "session": doc.get("id"), "completed_on": doc.get("held_on"), "valid_until": held.and_then(|h| valid_until(h, months)).map(|d| d.to_string()),
+                "source": format!("session:{}", id(doc, "id").unwrap_or_default()),
             });
             hc.kernel.insert_tx(&sctx, hc.tx, "TrainingRecord", record.as_object().cloned().unwrap_or_default()).await?;
         }
         Ok(())
     }
 
+    /// Each record the session made goes through the record path (audited, a deleted event); one that cannot go
+    /// fails the cancel, which leaves them all.
     async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
-        sqlx::query("delete from e_training_record where tenant_id = $1 and session = $2")
-            .bind(hc.ctx.tenant)
-            .bind(id(doc, "id"))
-            .execute(&mut **hc.tx)
-            .await?;
+        let session = id(doc, "id").ok_or_else(|| Error::internal("session without id"))?;
+        let made = find(hc.kernel, hc.ctx, hc.tx, "TrainingRecord", vec![Filter::eq("session", session.to_string())], None, u32::MAX).await?;
+        let ectx = elevated(hc.ctx);
+        for r in made {
+            hc.kernel.delete_tx(&ectx, hc.tx, "TrainingRecord", id(&r, "id").unwrap_or_default(), None).await?;
+        }
         Ok(())
     }
 }
 
-/// Maintenance: openings past their closing date close.
+/// `hr.employee.record_training`: another app, a process or an agent says `employee` completed a training. One record
+/// per employee and `source`, whatever the key: a second call with the same source answers the first record. The
+/// program of that name is used, or made in the employee's company. The kernel has locked the employee's row.
+pub(crate) async fn record_training(hc: &mut HookCtx<'_>, employee: &Doc, params: &Value) -> Result<Value> {
+    let text = |k: &str| params.get(k).and_then(Value::as_str).map(str::trim).unwrap_or_default();
+    let name = text("program_name");
+    if name.is_empty() || name.chars().count() > 140 {
+        return Err(Error::field("program_name", "is required, at most 140 characters"));
+    }
+    let source = text("source");
+    if source.is_empty() || source.chars().count() > 200 || source.chars().any(char::is_whitespace) {
+        return Err(Error::field("source", "is required: at most 200 characters, without spaces"));
+    }
+    let date = |k: &str| -> Result<Option<chrono::NaiveDate>> {
+        match text(k) {
+            "" => Ok(None),
+            v => ferrum_kernel::value::parse_date(v).map(Some).map_err(|_| Error::field(k, "is not a date")),
+        }
+    };
+    let today = hc.ctx.today();
+    let done = date("completed_on")?.unwrap_or(today);
+    if done > today {
+        return Err(Error::field("completed_on", "cannot be after today"));
+    }
+    let emp = id(employee, "id").ok_or_else(|| Error::internal("employee without id"))?;
+    let mine = vec![Filter::eq("employee", emp.to_string()), Filter::eq("source", source)];
+    if let Some(r) = find(hc.kernel, hc.ctx, hc.tx, "TrainingRecord", mine, None, 1).await?.first() {
+        return Ok(json!({"training_record": r.get("id"), "program": r.get("program"), "created": false}));
+    }
+    // Two first uses of one new name at once would otherwise both make the program, and the second would fail.
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("hr:training_program:{}:{}", hc.ctx.tenant, name.to_lowercase()))
+        .execute(&mut **hc.tx)
+        .await?;
+    let program = match find(hc.kernel, hc.ctx, hc.tx, "TrainingProgram", vec![Filter::eq("program_name", name)], None, 1).await?.into_iter().next() {
+        Some(p) => p,
+        None => {
+            let p = json!({"program_name": name, "company": employee.get("company")});
+            hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, "TrainingProgram", p.as_object().cloned().unwrap_or_default()).await?
+        }
+    };
+    let until = match date("valid_until")? {
+        Some(u) if u < done => return Err(Error::field("valid_until", "cannot be before the day it was completed")),
+        Some(u) => Some(u),
+        None => valid_until(done, program.get("valid_for_months").and_then(Value::as_i64)),
+    };
+    let record = json!({
+        "employee": emp, "program": program.get("id"), "program_name": name, "company": employee.get("company"),
+        "completed_on": done.to_string(), "valid_until": until.map(|d| d.to_string()), "source": source,
+    });
+    let made = hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, "TrainingRecord", record.as_object().cloned().unwrap_or_default()).await?;
+    Ok(json!({"training_record": made.get("id"), "program": program.get("id"), "created": true}))
+}
+
+/// Maintenance: openings past their closing date, the workspace's day, close through the record path. At most 200 a
+/// round; one that cannot close is logged and tried again next round.
 pub(crate) async fn close_openings(k: &Kernel, ctx: &Ctx) -> Result<()> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    sqlx::query("update e_job_opening set status = 'Closed', updated_at = now() where tenant_id = $1 and status = 'Open' and closes_on < current_date")
+    let due: Vec<Uuid> = sqlx::query_scalar("select id from e_job_opening where tenant_id = $1 and status = 'Open' and closes_on < $2 order by id limit 200")
         .bind(ctx.tenant)
-        .execute(&mut *tx)
+        .bind(ctx.today())
+        .fetch_all(&mut *tx)
         .await?;
     tx.commit().await?;
+    for opening in due {
+        let mut v = Doc::new();
+        set(&mut v, "status", "Closed");
+        if let Err(e) = k.update(ctx, "JobOpening", opening, v, None).await {
+            tracing::warn!(tenant = %ctx.tenant, %opening, "job opening not closed: {e}");
+        }
+    }
     Ok(())
 }
 

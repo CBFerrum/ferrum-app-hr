@@ -1,5 +1,5 @@
 package: hr
-version: 0.6.2
+version: 0.7.0
 label: Human Resources
 description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
 depends: [core]
@@ -10,6 +10,22 @@ overlays:
     ops:
       - {op: add_field, field: {name: hr_default_holiday_list, type: link, to: HolidayList, label: Default Holiday List}}
       - {op: add_field, field: {name: hr_notice_period_days, type: int, min: "0", label: Notice Period (Days), description: "Notice due from employees whose record sets none"}}
+      # For other apps (Learn) that have a sign-in and need the employee's id, and nothing else of the record
+      # (src/people.rs, `EmployeeLookup`). An action needs a record: the company is the one whose employees are searched.
+      - op: add_action
+        action:
+          name: find_employee
+          label: Find an Employee by Sign-in
+          # Also every employee's record: HR Manager and HR User, or an app's declared use (src/people.rs).
+          permission: read
+          read_only: true
+          hidden: true
+          params:
+            - {name: email, label: Sign-in Email, required: true, description: "The sign-in email of the person; letter case does not matter"}
+          contract:
+            effect: query
+            returns: {type: object, properties: {employee: {type: [string, "null"], format: uuid}}}
+            completion: "The id of this company's employee who signs in with this email, or null when there is none; no other field of the employee"
 
 modules:
   - name: hr
@@ -107,6 +123,7 @@ personal_data:
   - {entity: EmployeePromotion, match: employee_user, retain: "Employment records"}
   - {entity: EmployeeTransfer, match: employee_user, retain: "Employment records"}
   - {entity: Appraisal, match: employee_user, retain: "Employment records"}
+  - {entity: TrainingRecord, match: employee_user, retain: "Employment records"}
   - {entity: EmployeeDocument, match: employee_user, retain: "Employment records"}
   - {entity: EmployeeLetter, match: recipient_email, name: recipient_name, erase: [recipient_name, recipient_email, sent_to]}
 roles:
