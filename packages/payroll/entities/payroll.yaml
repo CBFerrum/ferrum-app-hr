@@ -64,7 +64,7 @@
     - {name: leave_encashment_amount_per_day, type: currency, currency: currency, min: "0"}
     - {name: notes, type: text}
   actions:
-    - {name: set_active, label: Activate / Deactivate, docstatus: [1], permission: submit}
+    - {name: set_active, label: Activate / Deactivate, docstatus: [1], permission: submit, params: [{name: active, type: check, label: Active, description: "The flag to set; the opposite of today's when empty"}], contract: {"effect": "transactional_action", "completion": "The structure's active flag is switched", "returns": {"type": "object", "properties": {"is_active": {"type": "boolean"}}}}}
   list: {columns: [structure_name, payroll_frequency, is_active], sort: structure_name asc}
 
 - name: SalaryStructureAssignment
@@ -104,6 +104,10 @@
         - {type: create_document, entity: EmployeeDocument, values: {employee: "doc.employee", document_type: "results[0].id", document_number: "results[1].number", issue_date: "today", file: "results[2].url"}}
         - {type: find, entity: EmployeeLetter, by: {id: "results[1].id"}, update: {employee_document: "results[3].id", sent_to: "has(params.send_mail) && params.send_mail == 'Yes' ? coalesce(links.employee.personal_email, links.employee.company_email) : ''"}}
         - {type: message, when: "has(params.send_mail) && params.send_mail == 'Yes'", template: hr.letter_issued, to: "expr:coalesce(links.employee.personal_email, links.employee.company_email)", channels: [email], values: {serial: "results[1].number"}, attachments: ["results[2]"]}
+      contract:
+        effect: transactional_action
+        completion: "A numbered salary certificate is in the letter register and filed with the employee's documents; with Send It to the Person the mail is queued, its delivery is not confirmed"
+        returns: {"type": "object"}
   list: {columns: [number, employee_name, salary_structure, from_date, base], sort: from_date desc}
 
 - name: PayrollPeriod
@@ -209,7 +213,7 @@
     - {name: verified_by, type: email, read_only: true, no_copy: true}
     - {name: verified_on, type: date, read_only: true, no_copy: true}
   actions:
-    - {name: verify_proofs, label: Verify Proofs, docstatus: [1], permission: submit, confirm: "Mark every declared amount that has a proof verified?"}
+    - {name: verify_proofs, label: Verify Proofs, docstatus: [1], permission: submit, confirm: "Mark every declared amount that has a proof verified?", contract: {"effect": "transactional_action", "completion": "Every declared amount that has a proof is marked verified", "returns": {"type": "object", "properties": {"verified": {"type": "integer"}}}}}
   list: {columns: [number, employee_name, payroll_period, total_exemption_amount], sort: created_at desc}
 
 - name: AdditionalSalary
@@ -255,6 +259,10 @@
       condition: "doc.recurring"
       params:
         - {name: amount, type: data, label: New Amount, description: "Empty: it stops. Otherwise it carries on at this amount from the next period not yet paid"}
+      contract:
+        effect: transactional_action
+        completion: "The additional salary ends with the last period already paid; given a new amount, a new submitted additional salary carries it on from the next period"
+        returns: {"type": "object", "properties": {"message": {"type": "string"}, "entity": {"type": "string"}, "id": {"type": "string"}}}
   list: {columns: [number, employee_name, salary_component, amount, payroll_date, recurring], sort: payroll_date desc}
 
 - name: LeaveEncashment
@@ -331,9 +339,9 @@
     - {name: ordered_dates, check: "doc.start_date == null || doc.end_date == null || doc.end_date >= doc.start_date", message: "End date must not be before start date"}
     - {name: has_employees, check: "size(doc.employees) > 0", message: "Get the employees before submitting", on: submit}
   actions:
-    - {name: get_employees, label: Get Employees, docstatus: [0], permission: write}
-    - {name: create_salary_slips, label: Create Salary Slips, docstatus: [1], permission: submit, condition: "!doc.salary_slips_submitted"}
-    - {name: submit_salary_slips, label: Submit Salary Slips, docstatus: [1], permission: submit, condition: "doc.salary_slips_created && !doc.salary_slips_submitted"}
+    - {name: get_employees, label: Get Employees, docstatus: [0], permission: write, contract: {"effect": "transactional_action", "completion": "The draft run lists the employees it will pay", "returns": {"type": "object"}}}
+    - {name: create_salary_slips, label: Create Salary Slips, docstatus: [1], permission: submit, condition: "!doc.salary_slips_submitted", contract: {"effect": "transactional_action", "completion": "A draft salary slip exists for each employee of the run", "returns": {"type": "object"}}}
+    - {name: submit_salary_slips, label: Submit Salary Slips, docstatus: [1], permission: submit, condition: "doc.salary_slips_created && !doc.salary_slips_submitted", contract: {"effect": "transactional_action", "completion": "The run's salary slips are submitted and, with the ERP connector, its accrual journal posted", "returns": {"type": "object"}}}
   list: {columns: [number, start_date, end_date, number_of_employees, total_net_pay, status], sort: start_date desc}
 
 - name: SalaryArrear
@@ -441,11 +449,15 @@
       params:
         - {name: handling, type: select, label: Handling, required: true, options: [Carry to Next Pay, Correct the Slip],
            description: "Carried: the next salary slip pays or recovers the days at this period's day's pay. Correct: nothing is carried; correct this slip (Correct) to pay the period as it is now"}
+      contract:
+        effect: transactional_action
+        completion: "How changes after this slip was paid are handled is recorded on it"
+        returns: {"type": "object", "properties": {"message": {"type": "string"}}}
     # Takes the slip back (its share of the run's accrual reversed, today) and makes a draft for the same period in its place.
-    - {name: make_correction, label: Correct, docstatus: [1], permission: submit, condition: "doc.payroll_entry != null && doc.replaced_by == null"}
-    - {name: hold_salary, label: Hold Salary, docstatus: [1], permission: submit, condition: "doc.payroll_entry != null && !doc.held",
+    - {name: make_correction, label: Correct, docstatus: [1], permission: submit, condition: "doc.payroll_entry != null && doc.replaced_by == null", contract: {"effect": "transactional_action", "completion": "The slip is cancelled with its accrual taken back and a draft correction exists; the correction is not submitted", "returns": {"type": "object", "properties": {"entity": {"type": "string"}, "id": {"type": "string"}, "message": {"type": "string"}}}}}
+    - {name: hold_salary, label: Hold Salary, docstatus: [1], permission: submit, condition: "doc.payroll_entry != null && !doc.held", contract: {"effect": "transactional_action", "completion": "The slip's net pay is held: no bank entry or bank file pays it until it is released", "returns": {"type": "object", "properties": {"message": {"type": "string"}}}, "compensate_with": "release_salary"},
        params: [{name: reason, type: text, label: Reason, required: true}]}
-    - {name: release_salary, label: Release Salary, docstatus: [1], permission: submit, condition: "doc.held"}
+    - {name: release_salary, label: Release Salary, docstatus: [1], permission: submit, condition: "doc.held", contract: {"effect": "transactional_action", "completion": "The held net pay is released for the next bank entry", "returns": {"type": "object", "properties": {"message": {"type": "string"}}}}}
     # The payslip as the template payroll.payslip (a workspace edits it): kept on the slip, filed among the employee's documents
     # (once: mailing again replaces the file) and, when asked, mailed to them through the message template payroll.payslip_mail.
     - name: mail_payslip
@@ -460,6 +472,10 @@
         - {type: generate, template: payroll.payslip, name: "'Payslip ' + doc.employee_name + ' ' + doc.number", replace: true, values: {mask: "true"}}
         - {type: find, entity: EmployeeDocument, by: {employee: "doc.employee", document_type: "results[0].id", document_number: "doc.number"}, create: {issue_date: "today", file: "results[1].url"}, update: {file: "results[1].url"}}
         - {type: message, when: "!has(params.send_mail) || params.send_mail != 'No'", template: payroll.payslip_mail, to: "expr:coalesce(links.employee.user, links.employee.company_email, links.employee.personal_email)", channels: [email], attachments: ["results[1]"]}
+      contract:
+        effect: transactional_action
+        completion: "The payslip is generated and filed among the employee's documents; with Mail It to the Employee its mail is queued, delivery is not confirmed"
+        returns: {"type": "object"}
   list: {columns: [number, employee_name, start_date, end_date, net_pay, status], sort: start_date desc}
 
 - name: PayrollOpening

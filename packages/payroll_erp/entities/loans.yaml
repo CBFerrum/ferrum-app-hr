@@ -81,6 +81,10 @@
       params:
         - {name: period, type: date, label: Month, required: true, description: "A day in the month whose instalment is skipped; the repayment ends a month later"}
         - {name: reason, type: data, label: Reason, required: true}
+      contract:
+        effect: transactional_action
+        completion: "The instalment of the month is moved to the end of the schedule: the loan ends a month later and a deferral is recorded on it"
+        returns: {"type": "object", "properties": {"message": {"type": "string"}}}
     - name: repay
       label: Repay Outside Salary
       docstatus: [1]
@@ -91,6 +95,10 @@
         - {name: posting_date, type: date, label: Received On, description: Today when empty}
         - {name: bank_account, type: link, to: Account, label: Paid Into, description: "The company's default bank account when empty"}
         - {name: reason, type: data, label: Note}
+      contract:
+        effect: transactional_action
+        completion: "The repayment made outside salary is posted to the ledger against the loan; a loan repaid in full is Repaid"
+        returns: {"type": "object", "properties": {"message": {"type": "string"}}}
     - name: write_off
       label: Write Off
       docstatus: [1]
@@ -100,4 +108,8 @@
         - {name: account, type: link, to: Account, label: Written Off To, required: true, description: "The expense account that bears it"}
         - {name: reason, type: data, label: Reason, required: true}
         - {name: posting_date, type: date, label: Posting Date, description: Today when empty}
+      contract:
+        effect: transactional_action
+        completion: "What is left of the loan is written off to the account given, as a journal entry, and the loan is Written Off"
+        returns: {"type": "object", "properties": {"message": {"type": "string"}}}
   list: {columns: [number, employee_name, loan_amount, balance, status], sort: posting_date desc}

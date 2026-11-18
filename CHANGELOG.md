@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.1
+
+Packages `hr` 0.6.2, `payroll` 0.8.2, `hr_erp` 0.5.1, `payroll_erp` 0.6.1. No behaviour or database change. Parameters the handlers already read are now declared, so the gate takes them: Post It and Posting Date on the expense claim, advance and advance-return payment entries and Post It on the full and final one; Amount, Paid From, Posting Date and Post It on the payroll bank entry; Active on Activate / Deactivate of a salary structure.
+
+**Every action says what "done" means.** Each of the 43 HR and payroll actions carries a `contract:` (effect, completion sentence, result shape; `{type: object}` where the action answers with its record). Holding a salary names Release Salary as its undo, and recording a payment made elsewhere names Undo Payment Made Elsewhere. The bank payment file is answered once: a repeat through the gate says so and does not carry the file, so no bank account numbers stay in the receipt.
+
 ## 0.17.0
 
 Needs Ferrum 0.4.0 (apps' upkeep runs one workspace at a time, on whichever replica is free). No database or interface change.
