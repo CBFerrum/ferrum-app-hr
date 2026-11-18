@@ -563,6 +563,117 @@ fn an_optional_training_warns_only_its_holder() {
     });
 }
 
+// ───────────── skills and the matrix (hr-4) ─────────────
+
+struct Skills {
+    t: T,
+    asha: Doc,
+    welding: Doc,
+}
+
+impl Skills {
+    /// Welding and First aid; Fitter needs Welding 3 and First aid 1; Asha (Fitter) holds Welding 2, Ravi (Fitter)
+    /// Welding 4 and Forklift 2.
+    async fn new(slug: &str) -> Skills {
+        let t = T::new(slug).await;
+        let sk = |name: &str| t.ins(&t.admin, "Skill", json!({"skill_name": name}));
+        let (welding, aid, forklift) = (sk("Welding").await, sk("First aid").await, sk("Forklift").await);
+        let fitter = t
+            .ins(
+                &t.admin,
+                "Designation",
+                json!({"designation_name": "Fitter", "required_skills": [{"skill": welding["id"], "level": 3}, {"skill": aid["id"], "level": 1}]}),
+            )
+            .await;
+        let asha = t.employee("Asha", json!({"designation": fitter["id"], "skills": [{"skill": welding["id"], "level": 2}]})).await;
+        t.employee("Ravi", json!({"designation": fitter["id"], "skills": [{"skill": welding["id"], "level": 4}, {"skill": forklift["id"], "level": 2}]})).await;
+        Skills { t, asha, welding }
+    }
+}
+
+fn matrix_rows(r: &Value) -> Vec<(String, String, Value, Value, i64)> {
+    r["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| {
+            (
+                x["employee_name"].as_str().unwrap().to_string(),
+                x["skill"].as_str().unwrap().to_string(),
+                x["required_level"].clone(),
+                x["held_level"].clone(),
+                x["gap"].as_i64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_skills_matrix_shows_needed_against_held() {
+    run(async {
+        let s = Skills::new("hrsk1").await;
+        let r = s.t.report(&s.t.admin, "skills_matrix", &[]).await.expect("matrix");
+        let row = |e: &str, k: &str, req: Value, held: Value, gap: i64| (format!("{e} Test"), k.to_string(), req, held, gap);
+        assert_eq!(
+            matrix_rows(&r),
+            [
+                row("Asha", "First aid", json!(1), Value::Null, 1),
+                row("Asha", "Welding", json!(3), json!(2), 1),
+                row("Ravi", "First aid", json!(1), Value::Null, 1),
+                row("Ravi", "Forklift", Value::Null, json!(2), 0),
+                row("Ravi", "Welding", json!(3), json!(4), 0),
+            ]
+        );
+        let gaps = s.t.report(&s.t.admin, "skills_matrix", &[("show", "Gaps only")]).await.expect("gaps");
+        assert_eq!((gaps["rows"].as_array().unwrap().len(), gaps["meta"]["gaps"].clone(), gaps["meta"]["people"].clone()), (3, json!(3), json!(2)));
+    });
+}
+
+#[test]
+fn a_skill_is_on_a_list_once() {
+    run(async {
+        let s = Skills::new("hrsk2").await;
+        let twice = json!([{"skill": s.welding["id"], "level": 2}, {"skill": s.welding["id"], "level": 3}]);
+        refused(s.t.k.update(&s.t.admin, "Employee", uid(&s.asha), obj(json!({"skills": twice.clone()})), None).await, "twice");
+        refused(s.t.try_ins(&s.t.admin, "Designation", json!({"designation_name": "Welder", "required_skills": twice})).await, "twice");
+    });
+}
+
+#[test]
+fn an_employee_cannot_grade_their_own_skills() {
+    run(async {
+        let s = Skills::new("hrsk3").await;
+        let me = s.t.user("asha@hrsk3.test", &["Employee"]).await;
+        s.t.k.update(&s.t.admin, "Employee", uid(&s.asha), obj(json!({"user": "asha@hrsk3.test"})), None).await.expect("sign-in");
+        let r = s.t.k.update(&me, "Employee", uid(&s.asha), obj(json!({"skills": [{"skill": s.welding["id"], "level": 5}]})), None).await;
+        assert!(r.is_err(), "{r:?}");
+        assert_eq!(s.t.get("Employee", uid(&s.asha)).await["skills"][0]["level"], json!(2));
+    });
+}
+
+#[test]
+fn an_employee_sees_only_their_own_skills_rows() {
+    run(async {
+        let s = Skills::new("hrsk4").await;
+        let me = s.t.user("asha@hrsk4.test", &["Employee"]).await;
+        s.t.k.update(&s.t.admin, "Employee", uid(&s.asha), obj(json!({"user": "asha@hrsk4.test"})), None).await.expect("sign-in");
+        let r = s.t.report(&me, "skills_matrix", &[]).await.expect("own matrix");
+        assert!(matrix_rows(&r).iter().all(|x| x.0 == "Asha Test"), "{r}");
+        assert_eq!(matrix_rows(&r).len(), 2);
+    });
+}
+
+#[test]
+fn a_level_is_one_to_five() {
+    run(async {
+        let s = Skills::new("hrsk5").await;
+        for level in [0, 6] {
+            let r = s.t.k.update(&s.t.admin, "Employee", uid(&s.asha), obj(json!({"skills": [{"skill": s.welding["id"], "level": level}]})), None).await;
+            assert!(r.is_err(), "level {level}: {r:?}");
+        }
+    });
+}
+
 async fn opening(t: &T, closes_on: chrono::NaiveDate) -> Doc {
     let eng = t.ins(&t.admin, "Designation", json!({"designation_name": format!("Engineer {closes_on}")})).await;
     t.ins(&t.admin, "JobOpening", json!({"job_title": "Backend Engineer", "company": t.c(), "designation": eng["id"], "closes_on": closes_on.to_string()}))

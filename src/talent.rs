@@ -21,10 +21,29 @@ pub(crate) fn register(h: &mut HookRegistry) {
         .register("AppraisalTemplate", Arc::new(TemplateHook))
         .register("Appraisal", Arc::new(AppraisalHook))
         .register("TrainingEvent", Arc::new(TrainingHook))
-        .register("TrainingProgram", Arc::new(ProgramHook));
+        .register("TrainingProgram", Arc::new(ProgramHook))
+        .register("Employee", Arc::new(SkillLines))
+        .register("Designation", Arc::new(SkillLines));
 }
 
 pub struct TrainingHook;
+
+/// Skills held (on an employee) or needed (on a designation): one line per skill.
+struct SkillLines;
+
+#[async_trait]
+impl DocHook for SkillLines {
+    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let table = if hc.entity.def.name == "Designation" { "required_skills" } else { "skills" };
+        let mut seen = HashSet::new();
+        for (i, row) in rows(doc, table).iter().enumerate() {
+            if !seen.insert(id(row, "skill")) {
+                return Err(Error::Validation(vec![FieldError::new("skill", "is on this list twice").in_row(table, i)]));
+            }
+        }
+        Ok(())
+    }
+}
 
 /// A program's "required for" lines: each names someone, and a department of the program's company.
 struct ProgramHook;

@@ -130,6 +130,19 @@ impl ReportSource for HrReports {
                 ],
             ),
             entry(
+                "skills_matrix",
+                "Skills Matrix",
+                "performance",
+                "Employee",
+                vec![
+                    company(),
+                    link("department", "Department", "Department"),
+                    link("designation", "Designation", "Designation"),
+                    link("skill", "Skill", "Skill"),
+                    select("show", "Show", &["All", "Gaps only"]),
+                ],
+            ),
+            entry(
                 "monthly_attendance_sheet",
                 "Monthly Attendance Sheet",
                 "attendance",
@@ -208,6 +221,7 @@ impl ReportSource for HrReports {
             "employee_events" => events(&mut tx, ctx, co.id, &p).await?,
             "expiring_documents" => expiring_documents(&mut tx, ctx, co.id, &p).await?,
             "training_compliance" => training_compliance(&mut tx, ctx, co.id, &p).await?,
+            "skills_matrix" => skills_matrix(&mut tx, ctx, co.id, &p).await?,
             "monthly_attendance_sheet" => attendance_sheet(&mut tx, ctx, co.id, &p).await?,
             "leave_balance" => leave_balance(&mut tx, ctx, co.id, &p).await?,
             "expense_claim_summary" => {
@@ -471,6 +485,59 @@ async fn training_compliance(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'
         "rows": rows,
         "totals": {"count": count},
         "meta": meta,
+    }))
+}
+
+/// Per active employee and skill their designation needs or they hold: the level needed, the level held and the gap
+/// (a skill needed and not held counts as held at 0).
+async fn skills_matrix(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result<Value> {
+    let gaps_only = p.str("show") == Some("Gaps only");
+    #[allow(clippy::type_complexity)]
+    let data: Vec<(Option<String>, Option<String>, Option<String>, String, Option<i32>, Option<i32>, Option<NaiveDate>)> = sqlx::query_as(
+        "with people as (select e.id, e.number, e.employee_name, e.designation from e_employee e where e.tenant_id = $1 and e.company = $2 \
+           and e.status = 'Active' and ($3::uuid is null or e.department = $3) and ($4::uuid is null or e.designation = $4) \
+           and ($5::text is null or lower(e.\"user\") = $5)), \
+         needed as (select x.id employee, r.skill, max(r.level)::int lvl from people x join e_designation__required_skills r \
+           on r.tenant_id = $1 and r.parent_id = x.designation group by 1, 2), \
+         held as (select h.parent_id employee, h.skill, max(h.level)::int lvl, max(h.assessed_on) assessed from e_employee__skills h \
+           where h.tenant_id = $1 and h.parent_id in (select id from people) group by 1, 2) \
+         select x.number, x.employee_name, g.designation_name, k.skill_name, n.lvl, h.lvl, h.assessed \
+         from needed n full join held h on h.employee = n.employee and h.skill = n.skill \
+         join people x on x.id = coalesce(n.employee, h.employee) join e_skill k on k.tenant_id = $1 and k.id = coalesce(n.skill, h.skill) \
+         left join e_designation g on g.tenant_id = $1 and g.id = x.designation \
+         where ($6::uuid is null or k.id = $6) and (not $7 or coalesce(n.lvl, 0) > coalesce(h.lvl, 0)) \
+         order by x.employee_name, x.number, k.skill_name limit 10001",
+    )
+    .bind(ctx.tenant)
+    .bind(company)
+    .bind(p.uuid("department")?)
+    .bind(p.uuid("designation")?)
+    .bind(own_only(ctx, "Employee"))
+    .bind(p.uuid("skill")?)
+    .bind(gaps_only)
+    .fetch_all(&mut **tx)
+    .await?;
+    let truncated = data.len() > MAX_ROWS;
+    let (mut people, mut gaps) = (std::collections::HashSet::new(), 0);
+    let rows: Vec<Value> = data
+        .into_iter()
+        .take(MAX_ROWS)
+        .map(|(no, name, designation, skill, needed, held, assessed)| {
+            let gap = needed.map_or(0, |n| (n - held.unwrap_or(0)).max(0));
+            gaps += usize::from(gap > 0);
+            people.insert(no.clone());
+            json!({"employee": no, "employee_name": name, "designation": designation, "skill": skill, "required_level": needed, "held_level": held,
+                   "gap": gap, "assessed_on": assessed})
+        })
+        .collect();
+    let count = rows.len();
+    Ok(json!({
+        "columns": [col("employee", "Employee", "data"), col("employee_name", "Name", "data"), col("designation", "Designation", "data"),
+            col("skill", "Skill", "data"), col("required_level", "Level Needed", "int"), col("held_level", "Level Held", "int"),
+            col("gap", "Gap", "int"), col("assessed_on", "Assessed On", "date")],
+        "rows": rows,
+        "totals": {"count": count},
+        "meta": {"truncated": truncated, "people": people.len(), "gaps": gaps},
     }))
 }
 

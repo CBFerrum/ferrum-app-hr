@@ -381,3 +381,32 @@
   # Records made before 0.18.0 have no source; PostgreSQL counts empty (null) values as distinct, so they stay as they are.
   unique: [[employee, source]]
   list: {columns: [employee, program_name, completed_on, valid_until], sort: completed_on desc}
+
+- name: Skill
+  label: Skill
+  kind: master
+  module: performance
+  title_field: skill_name
+  description: "Something a person can do, held at a level from 1 (beginner) to 5 (expert). Designations say which they need; employees' records say which they hold."
+  fields:
+    - {name: skill_name, type: data, required: true, unique: true, in_list: true}
+    - {name: category, type: data, in_list: true, in_filter: true}
+    - {name: description, type: text}
+    - {name: disabled, type: check, in_filter: true}
+  list: {columns: [skill_name, category], sort: skill_name asc}
+
+- name: EmployeeSkill
+  label: Skill Held
+  kind: child
+  fields:
+    - {name: skill, type: link, to: Skill, required: true, link_filters: {disabled: false}, in_list: true}
+    - {name: level, type: int, required: true, min: 1, max: 5, in_list: true, description: 1 (beginner) to 5 (expert)}
+    - {name: assessed_on, type: date, in_list: true}
+    - {name: note, type: data}
+
+- name: RequiredSkill
+  label: Skill Needed
+  kind: child
+  fields:
+    - {name: skill, type: link, to: Skill, required: true, link_filters: {disabled: false}, in_list: true}
+    - {name: level, type: int, required: true, min: 1, max: 5, default: 1, in_list: true, description: The lowest level that does the job}

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.20.0
+
+Package `hr` 0.9.0. New entity Skill and two tables (Skills on Employee, Skills Needed on Designation), made when the
+package's version moves; both tables start empty. No interface change beyond the records frame's new form sections.
+
+**Skills, and the matrix of what a job needs against what people hold.** HR keeps a list of skills, records each
+employee's level (1 to 5, with when it was assessed and a note) and says which skills and levels a designation needs;
+a skill is on a list once. The **Skills Matrix** report (Performance) shows, per active employee and each skill their
+designation needs or they hold, the level needed, the level held and the gap; Gaps only keeps the shortfalls, and
+`meta` counts the people and the gaps. An employee sees their own rows; levels change only with write on Employee
+(HR Manager, HR User). With 0.18.0 and 0.19.0 this completes learning and training records.
+
 ## 0.19.0
 
 Package `hr` 0.8.0. New fields on Training Program (Required For, Warn Days Before It Lapses) and Training Record

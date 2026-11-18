@@ -1,5 +1,5 @@
 package: hr
-version: 0.8.0
+version: 0.9.0
 label: Human Resources
 description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
 depends: [core]
@@ -50,7 +50,7 @@ modules:
     label: Performance
     icon: target
     order: 74
-    items: [Appraisal, AppraisalCycle, AppraisalTemplate, TrainingProgram, TrainingEvent, TrainingRecord, report:training_compliance]
+    items: [Appraisal, AppraisalCycle, AppraisalTemplate, TrainingProgram, TrainingEvent, TrainingRecord, Skill, report:training_compliance, report:skills_matrix]
 
 workflows:
   - name: Leave Approval
@@ -134,6 +134,7 @@ roles:
       - {entity: TrainingProgram, read: true, write: true, create: true, delete: true, export: true}
       - {entity: TrainingEvent, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: TrainingRecord, read: true, export: true}
+      - {entity: Skill, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Employee, read: true, write: true, create: true, delete: true, export: true, import: true, read_groups: [bank, identity, personal], write_groups: [bank, identity, personal]}
       - {entity: EmployeeDocumentType, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EmployeeLetter, read: true, export: true}
@@ -177,6 +178,7 @@ roles:
       - {entity: Employee, read: true, write: true, create: true, export: true, read_groups: [identity, personal], write_groups: [identity, personal]}
       - {entity: EmployeeDocumentType, read: true}
       - {entity: EmployeeLetter, read: true}
+      - {entity: Skill, read: true}
       # Documents of the categories whose employee details they see: general and identity, not bank.
       - {entity: EmployeeDocument, read: true, write: true, create: true, delete: true, where: {category: [General, Identity]}}
       - {entity: Department, read: true, write: true, create: true}
@@ -238,6 +240,7 @@ roles:
       - {entity: EmployeeSeparation, read: true, if_owner: true}
       - {entity: TrainingRecord, read: true, if_owner: true}
       - {entity: TrainingProgram, read: true}
+      - {entity: Skill, read: true}
       - {entity: LeaveType, read: true}
       - {entity: HolidayList, read: true}
       - {entity: ShiftType, read: true}
