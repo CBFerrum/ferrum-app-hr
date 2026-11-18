@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.0
+
+Needs Ferrum 0.4.0 (apps' upkeep runs one workspace at a time, on whichever replica is free). No database or interface change.
+
+**Upkeep is one workspace's.** `maintenance(k, tenant)` does HR's upkeep for the one workspace the platform hands it (attendance, leave expiry and accrual, job openings, leavers, document expiry, overdue tasks); the list of workspaces is the platform's. The suites no longer run ERP's upkeep at boot: the accounting package makes the ledger's partitions itself.
+
 ## 0.16.0
 
 Payroll and ERP 0.6.0. Needs the same platform as 0.15.2, and ERP 0.30 for the suite. No interface change.

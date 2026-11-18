@@ -65,7 +65,6 @@ async fn kernel() -> Arc<Kernel> {
             let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
             k.set_file_store(Arc::new(MemFiles::default()));
             ferrum_domain::maintenance(&k).await.expect("journal partitions");
-            ferrum_app_erp::maintenance(&k).await.expect("journal partitions");
             k
         })
         .await

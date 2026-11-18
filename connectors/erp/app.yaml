@@ -12,7 +12,7 @@ license: AGPL-3.0-only
 homepage: https://github.com/CBFerrum/ferrum-app-hr
 support: https://github.com/CBFerrum/ferrum-app-hr/issues
 runtime: native
-platform: ">=0.3.2, <0.4"
+platform: ">=0.4.0, <0.5"
 requires: {hr: ">=0.2", erp: ">=0.1"}
 packages: [hr_erp, payroll_erp]
 uninstall: ask
