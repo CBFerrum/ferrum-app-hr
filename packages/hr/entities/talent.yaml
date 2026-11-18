@@ -314,6 +314,9 @@
     - {name: manager_score, type: decimal, min: "0", max: "5", in_list: true, perm_group: review, description: 0 to 5}
     - {name: manager_comments, type: text, perm_group: review}
     - {name: score_earned, type: decimal, read_only: true, in_list: true, description: Manager score × weightage}
+    - {name: reference_entity, type: data, read_only: true, label: From, description: "The kind of record in another app this goal stands for (Objective)"}
+    - {name: reference_id, type: data, read_only: true, label: From Record}
+    - {name: note, type: text, read_only: true, label: Standing There, description: "What that record says about it, as its app last gave it"}
 
 - name: Appraisal
   label: Appraisal
@@ -359,6 +362,23 @@
       # An appraisal made before stages has none and waits for the manager, as the upgrade's backfill records.
       condition: "doc.stage == null || doc.stage == 'Manager Review'"
       contract: {effect: transactional_action, returns: {type: object, properties: {stage: {type: string}}}, completion: "Every goal has a manager score and the appraisal is at Sign-off; the HR managers are told"}
+    # For other apps (Objectives' Add to Review), processes and agents, through the platform's gate: not a button
+    # (src/talent.rs, `set_goal`). HR, or an app's declared use.
+    - name: set_goal
+      label: Set a Goal from Another Record
+      docstatus: [0]
+      permission: write
+      hidden: true
+      params:
+        - {name: title, label: Title, required: true, description: "The goal's words (its KRA), at most 140 characters"}
+        - {name: reference_entity, label: Reference Entity, required: true, description: "The kind of record the goal stands for, in the calling app (Objective)"}
+        - {name: reference_id, label: Reference Id, required: true, description: "That record's id. The appraisal has one goal per reference: a second call updates it"}
+        - {name: note, type: text, label: Note, description: "Its standing in words (progress, a score)"}
+        - {name: weightage, label: Weightage (%), description: "A decimal from 0 to 100; a new goal gets 0 when empty, and an existing one keeps its own. The goals' weightages must still total 100"}
+      contract:
+        effect: transactional_action
+        returns: {type: object, properties: {goal: {type: string}, created: {type: boolean}}}
+        completion: "The appraisal has exactly one goal for this reference, with this title and note, committed with this receipt"
     - name: send_back
       label: Send Back
       docstatus: [0]

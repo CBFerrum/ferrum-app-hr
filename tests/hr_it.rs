@@ -111,7 +111,7 @@ fn payroll_run() {
 }
 
 /// Every action of the four packages, as the capability id the gate lists it under.
-const CONTRACT_IDS: [&str; 50] = [
+const CONTRACT_IDS: [&str; 51] = [
     "hr.employee.record_training",
     "hr.appraisal_cycle.start",
     "hr.appraisal_cycle.create_appraisals",
@@ -119,6 +119,7 @@ const CONTRACT_IDS: [&str; 50] = [
     "hr.appraisal.submit_self_review",
     "hr.appraisal.complete_manager_review",
     "hr.appraisal.send_back",
+    "hr.appraisal.set_goal",
     "hr.employee.issue_appointment_letter",
     "hr.employee.issue_employment_certificate",
     "hr.employee.issue_warning_letter",
@@ -956,6 +957,31 @@ fn appraisals_from_before_stages_keep_working() {
         let ap = r.ashas().await;
         r.save(&r.maya, &ap, Review::scores(&ap, "manager_score", &["4", "3"])).await.expect("a manager scores a draft from before stages");
         assert_eq!(r.act(&r.maya, &ap, "complete_manager_review", json!({})).await.expect("for sign-off")["stage"], json!("Sign-off"));
+    });
+}
+
+#[test]
+fn an_objective_is_one_goal_of_the_appraisal() {
+    run(async {
+        let r = Review::new("hrsg1").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        let set = |note: &str, key: &str| {
+            ferrum_kernel::capability::Invocation::new(
+                "hr.appraisal.set_goal",
+                json!({"id": ap["id"], "params": {"title": "Ship the mobile app", "reference_entity": "Objective", "reference_id": "obj-1", "note": note}}),
+            )
+            .key(key)
+        };
+        let first = r.t.k.invoke(&r.hr, set("40%", "g1")).await.expect("set");
+        assert_eq!(first.result["created"], json!(true));
+        let again = r.t.k.invoke(&r.hr, set("70%", "g2")).await.expect("updated");
+        assert_eq!((again.result["created"].clone(), again.result["goal"].clone()), (json!(false), first.result["goal"].clone()), "one goal per reference");
+        let goals = r.ashas().await["goals"].as_array().unwrap().clone();
+        assert_eq!(goals.len(), 3, "the template's two and the objective");
+        let g = goals.iter().find(|g| g["reference_id"] == json!("obj-1")).unwrap();
+        assert_eq!((g["kra"].clone(), g["note"].clone(), dec(&g["per_weightage"])), (json!("Ship the mobile app"), json!("70%"), Decimal::ZERO));
+        assert_eq!(r.t.k.invoke(&r.asha, set("90%", "g3")).await.map_err(|e| e.code()).unwrap_err(), "forbidden", "not the employee's own goals");
     });
 }
 

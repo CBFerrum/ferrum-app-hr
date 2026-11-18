@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.21.0-0e7490?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.21.1-0e7490?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -37,7 +37,7 @@ People (HR and Payroll) is the employee lifecycle for Ferrum: employees and orga
 
 | | |
 |---|---|
-| **Version** | 0.21.0 (packages `hr` 0.10.0, `payroll` 0.8.2, `hr_erp` 0.5.1, `payroll_erp` 0.6.1) |
+| **Version** | 0.21.1 (packages `hr` 0.10.1, `payroll` 0.8.2, `hr_erp` 0.5.1, `payroll_erp` 0.6.1) |
 | **Kind** | Its own interface at `/people/` (your space, approvals, team calendar, directory and org chart, public careers page) with Ferrum's records screens for everything else |
 | **What it adds** | 89 entities (57 records and 32 small tables), 7 roles, 6 modules (HR, Attendance and Leave, Recruitment, Performance, Expenses, Payroll), 3 approval workflows and 2 package approval policies, 14 reports, 1 print format, 7 document templates, 11 message templates, 6 notification kinds, 8 upkeep jobs, 2 example packs |
 | **Depends on** | Ferrum platform `>=0.4.0, <0.5`. The connector **HR and ERP** (expenses and payroll posting) needs ERP `>=0.1` and ships with this app |
@@ -269,7 +269,7 @@ Records about an employee carry the employee's sign-in email, so employees see t
 - Every entity has Ferrum's REST and MCP API under each person's permissions, search, an audit trail, exports and live updates.
 - A short assistant note tells Ferrum's assistant what the records mean (states, balances from the ledger, the recruitment path) and suggests "Who is on leave this week?", "How many leave days do I have left?", "Which openings have the most applicants?" and "Who joined this quarter?". Pay, bank, identity and personal details are held back from it unless the workspace allows them.
 - `GET /api/app/hr/work` feeds Ferrum Home's My work with the requests that wait for your decision.
-- Operations other apps can call through the gate (with a declared use): `hr.employee.record_training` records a completed training once per source (Learn's completed courses, once Learn uses it); `hr.company.find_employee` answers an employee's id for a sign-in and nothing else.
+- Operations other apps can call through the gate (with a declared use): `hr.employee.record_training` records a completed training once per source (Learn's completed courses, once Learn uses it); `hr.company.find_employee` answers an employee's id for a sign-in and nothing else; `hr.appraisal.set_goal` puts a record of another app (Objectives' objective) into a draft appraisal as one goal per reference, updated on each call.
 
 ## 🧭 How it works
 
@@ -423,6 +423,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 
 ### ✅ Recently shipped
 
+- [x] **0.21.1** Another app puts a goal into an appraisal (`hr.appraisal.set_goal`, one per reference).
 - [x] **0.21.0** Appraisal cycles that start, run in stages (self, manager, sign-off) and close.
 - [x] **0.20.0** Skills: levels held and needed, and the Skills Matrix report.
 - [x] **0.19.0** Mandatory training says who must hold it; the Training Compliance report; one warning before a training lapses.

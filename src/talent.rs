@@ -750,6 +750,9 @@ impl DocHook for AppraisalHook {
     }
 
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if name == "set_goal" {
+            return set_goal(hc, doc, params).await.map(Some);
+        }
         if !["submit_self_review", "complete_manager_review", "send_back"].contains(&name) {
             return Ok(None);
         }
@@ -818,6 +821,61 @@ impl DocHook for AppraisalHook {
 }
 
 // ───────────────────────────── appraisal cycles and stages ─────────────────────────────
+
+/// `hr.appraisal.set_goal`: a goal standing for a record of another app (an objective), one per reference: a second
+/// call updates its words and note (and its weightage when given). HR, or an app's declared use.
+async fn set_goal(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -> Result<Value> {
+    if !crate::full_access(hc.ctx, "Appraisal", &[Action::Write]) {
+        return Err(Error::Forbidden("goals come from other records through HR or an app's declared use".into()));
+    }
+    cycle_open(hc, doc, false).await?;
+    let text = |k: &str| params.get(k).and_then(Value::as_str).map(str::trim).unwrap_or_default();
+    let title = text("title");
+    if title.is_empty() || title.chars().count() > 140 {
+        return Err(Error::field("title", "is required, at most 140 characters"));
+    }
+    let (kind, reference) = (text("reference_entity"), text("reference_id"));
+    if kind.is_empty() || kind.len() > 100 {
+        return Err(Error::field("reference_entity", "is required"));
+    }
+    if reference.is_empty() || reference.len() > 200 {
+        return Err(Error::field("reference_id", "is required"));
+    }
+    let weight = match text("weightage") {
+        "" => None,
+        w => match w.parse::<Decimal>() {
+            Ok(v) if v >= Decimal::ZERO && v <= Decimal::ONE_HUNDRED => Some(v),
+            _ => return Err(Error::field("weightage", "must be a number from 0 to 100")),
+        },
+    };
+    let mut goals = rows(doc, "goals");
+    let found = goals.iter().position(|g| s(g, "reference_entity") == Some(kind) && s(g, "reference_id") == Some(reference));
+    let created = found.is_none();
+    let i = match found {
+        Some(i) => i,
+        None => {
+            let mut g = Doc::new();
+            set(&mut g, "id", uuid::Uuid::now_v7().to_string());
+            set(&mut g, "reference_entity", kind);
+            set(&mut g, "reference_id", reference);
+            set(&mut g, "per_weightage", money(Decimal::ZERO));
+            goals.push(g);
+            goals.len() - 1
+        }
+    };
+    set(&mut goals[i], "kra", title);
+    set(&mut goals[i], "note", text("note"));
+    if let Some(w) = weight {
+        set(&mut goals[i], "per_weightage", money(w));
+    }
+    let me = id(doc, "id").ok_or_else(|| Error::internal("appraisal without id"))?;
+    let mut patch = Doc::new();
+    set(&mut patch, "goals", Value::Array(goals.into_iter().map(Value::Object).collect()));
+    let saved = hc.kernel.update_tx(&elevated(hc.ctx), hc.tx, "Appraisal", me, patch, None).await?;
+    // The goal's id as stored (the kernel keys a table's lines itself).
+    let goal = rows(&saved, "goals").into_iter().find(|g| s(g, "reference_entity") == Some(kind) && s(g, "reference_id") == Some(reference));
+    Ok(json!({"goal": goal.and_then(|g| g.get("id").cloned()), "created": created}))
+}
 
 /// At most this many appraisals are made by one Start or Create Appraisals; the rest wait for the next call.
 const APPRAISALS_PER_CALL: usize = 500;

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.21.1
+
+Package `hr` 0.10.1. Three read-only fields on an appraisal's goals (From, From Record, Standing There), made when the
+package's version moves. No interface change.
+
+**A goal from another app.** `hr.appraisal.set_goal` (a hidden action on Appraisal, for Objectives' Add to Review,
+processes and agents; its version is the `hr` package's, first 0.10.1) puts a record of another app into a draft
+appraisal as a goal: one goal per reference (`reference_entity`, `reference_id`), so a second call updates its words
+and note, and its weightage when given (a new goal starts at 0; the weightages must still total 100). HR, or an app's
+declared use; an employee cannot add goals to their own appraisal this way, and a completed cycle takes none.
+
 ## 0.21.0
 
 Package `hr` 0.10.0. New fields on Appraisal (Stage, Manager, the two sent-on times) and a unique index of one live
