@@ -4,6 +4,7 @@ use crate::people::{person_name, same_company};
 use crate::{lookup, opt_date, stamp_company, stored};
 use async_trait::async_trait;
 use ferrum_domain::util::{d, elevated, find, get, id, money, rows, s, set, sys};
+use ferrum_kernel::messages::{self, Message, Recipient};
 use ferrum_kernel::{Action, Ctx, Doc, DocHook, Error, FieldError, Filter, HookCtx, HookRegistry, Kernel, Result};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -19,10 +20,32 @@ pub(crate) fn register(h: &mut HookRegistry) {
         .register("JobOffer", Arc::new(OfferHook))
         .register("AppraisalTemplate", Arc::new(TemplateHook))
         .register("Appraisal", Arc::new(AppraisalHook))
-        .register("TrainingEvent", Arc::new(TrainingHook));
+        .register("TrainingEvent", Arc::new(TrainingHook))
+        .register("TrainingProgram", Arc::new(ProgramHook));
 }
 
 pub struct TrainingHook;
+
+/// A program's "required for" lines: each names someone, and a department of the program's company.
+struct ProgramHook;
+
+#[async_trait]
+impl DocHook for ProgramHook {
+    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let company = id(doc, "company");
+        let mut errors = Vec::new();
+        for (i, line) in rows(doc, "required_for").iter().enumerate() {
+            if ["department", "designation", "branch", "employment_type"].iter().all(|f| s(line, f).is_none()) {
+                errors.push(FieldError::new("department", "say who: a department, a designation, a branch or an employment type").in_row("required_for", i));
+            } else if let Some(dept) = lookup(hc, "Department", id(line, "department")).await?
+                && id(&dept, "company").is_some_and(|c| Some(c) != company)
+            {
+                errors.push(FieldError::new("department", "belongs to another company").in_row("required_for", i));
+            }
+        }
+        if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
+    }
+}
 
 /// When completing a program on `held` stops counting, for one valid for `months`.
 pub(crate) fn valid_until(held: chrono::NaiveDate, months: Option<i64>) -> Option<chrono::NaiveDate> {
@@ -130,6 +153,47 @@ pub(crate) async fn record_training(hc: &mut HookCtx<'_>, employee: &Doc, params
     });
     let made = hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, "TrainingRecord", record.as_object().cloned().unwrap_or_default()).await?;
     Ok(json!({"training_record": made.get("id"), "program": program.get("id"), "created": true}))
+}
+
+/// Maintenance: tells the holder (and, for a mandatory program, the HR managers) once before a training record lapses.
+/// The mark and the sends commit together, and the mark is taken by an update only one run can win for a row.
+pub(crate) async fn warn_training_expiring(k: &Kernel, ctx: &Ctx) -> Result<()> {
+    if ctx.schema.entity("TrainingRecord").is_none() {
+        return Ok(());
+    }
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let due: Vec<(Uuid, bool)> = sqlx::query_as(
+        "with due as (select r.id, coalesce(p.mandatory, false) mandatory from e_training_record r \
+           join e_training_program p on p.tenant_id = r.tenant_id and p.id = r.program \
+           where r.tenant_id = $1 and r.expiry_warned_on is null and r.valid_until is not null \
+           and r.valid_until >= $2 and r.valid_until - coalesce(p.warn_days_before::int, 30) <= $2 \
+           and exists (select 1 from e_employee e where e.tenant_id = r.tenant_id and e.id = r.employee and e.status = 'Active') \
+           and not exists (select 1 from e_training_record n where n.tenant_id = r.tenant_id and n.employee = r.employee and n.program = r.program \
+             and n.id <> r.id and (n.valid_until is null or n.valid_until > r.valid_until)) \
+           order by r.valid_until, r.id limit 200 for update of r skip locked) \
+         update e_training_record t set expiry_warned_on = $2 from due where t.tenant_id = $1 and t.id = due.id returning t.id, due.mandatory",
+    )
+    .bind(ctx.tenant)
+    .bind(ctx.today())
+    .fetch_all(&mut *tx)
+    .await?;
+    let sctx = sys(ctx);
+    for (record, mandatory) in due {
+        let doc = Value::Object(get(k, &sctx, &mut tx, "TrainingRecord", record).await?);
+        let mut to: Vec<Recipient> = Vec::new();
+        let specs: &[&str] = if mandatory { &["field:employee_user", "role:HR Manager"] } else { &["field:employee_user"] };
+        for spec in specs {
+            for r in messages::recipients(k, &mut tx, &sctx, "TrainingRecord", &doc, spec).await? {
+                if !to.contains(&r) {
+                    to.push(r);
+                }
+            }
+        }
+        let m = Message { template: "hr.training_expiring".into(), entity: Some("TrainingRecord".into()), record: Some(record), to, ..Default::default() };
+        messages::send(k, &mut tx, &sctx, &m).await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Maintenance: openings past their closing date, the workspace's day, close through the record path. At most 200 a

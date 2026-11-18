@@ -378,6 +378,191 @@ fn a_cancelled_session_deletes_its_records_on_the_record_path() {
     });
 }
 
+// ───────────── mandatory training: who must hold it, and a warning before it lapses (hr-3) ─────────────
+
+/// A training record made through the operation, `completed_on` and `valid_until` as given.
+async fn held(t: &T, emp: &Doc, program: &str, done: chrono::NaiveDate, until: Option<chrono::NaiveDate>) -> Value {
+    let mut p = json!({"program_name": program, "source": format!("test:{}:{done}:{until:?}", emp["id"].as_str().unwrap()), "completed_on": done.to_string()});
+    if let Some(u) = until {
+        p["valid_until"] = json!(u.to_string());
+    }
+    let key = p["source"].as_str().unwrap().to_string();
+    t.k.invoke(&t.admin, record_training(emp, p).key(key)).await.expect("recorded").result
+}
+
+fn days_from(t: &T, n: i64) -> chrono::NaiveDate {
+    t.admin.today() + chrono::Duration::days(n)
+}
+
+async fn compliance(t: &T, ctx: &Ctx, params: &[(&str, &str)]) -> Value {
+    t.report(ctx, "training_compliance", params).await.unwrap_or_else(|e| panic!("training_compliance: {}", describe(&e)))
+}
+
+fn statuses(report: &Value) -> Vec<(String, String)> {
+    report["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["employee_name"].as_str().unwrap_or_default().to_string(), r["status"].as_str().unwrap_or_default().to_string()))
+        .collect()
+}
+
+#[test]
+fn training_compliance_lists_missing_expired_expiring_and_valid() {
+    run(async {
+        let t = T::new("hrtc1").await;
+        let (a, b, c, d) =
+            (t.employee("Anu", json!({})).await, t.employee("Bea", json!({})).await, t.employee("Cal", json!({})).await, t.employee("Dev", json!({})).await);
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c(), "mandatory": true})).await;
+        let _ = a;
+        held(&t, &b, "Fire safety", days_from(&t, -400), Some(days_from(&t, -30))).await;
+        held(&t, &c, "Fire safety", days_from(&t, -355), Some(days_from(&t, 10))).await;
+        held(&t, &d, "Fire safety", days_from(&t, -1), Some(days_from(&t, 365))).await;
+        let r = compliance(&t, &t.admin, &[]).await;
+        let mut got = statuses(&r);
+        got.sort();
+        let want: Vec<(String, String)> = [("Anu Test", "Missing"), ("Bea Test", "Expired"), ("Cal Test", "Expiring"), ("Dev Test", "Valid")]
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        assert_eq!(got, want);
+        assert_eq!(
+            (r["meta"]["missing"].clone(), r["meta"]["expired"].clone(), r["meta"]["expiring"].clone(), r["meta"]["valid"].clone()),
+            (json!(1), json!(1), json!(1), json!(1))
+        );
+        assert_eq!(statuses(&compliance(&t, &t.admin, &[("status", "Missing")]).await), [("Anu Test".to_string(), "Missing".to_string())]);
+    });
+}
+
+#[test]
+fn required_for_narrows_who_must_hold_it() {
+    run(async {
+        let t = T::new("hrtc2").await;
+        let ops = t.ins(&t.admin, "Department", json!({"department_name": "Operations", "company": t.c()})).await;
+        let sales = t.ins(&t.admin, "Department", json!({"department_name": "Sales", "company": t.c()})).await;
+        let driver = t.ins(&t.admin, "Designation", json!({"designation_name": "Driver"})).await;
+        t.employee("Ops", json!({"department": ops["id"]})).await;
+        t.employee("Seller", json!({"department": sales["id"]})).await;
+        t.employee("Driver", json!({"department": sales["id"], "designation": driver["id"]})).await;
+        let p = t
+            .ins(
+                &t.admin,
+                "TrainingProgram",
+                json!({"program_name": "Forklift", "company": t.c(), "mandatory": true, "required_for": [{"department": ops["id"]}]}),
+            )
+            .await;
+        let names = |r: &Value| -> Vec<String> { statuses(r).into_iter().map(|(n, _)| n).collect() };
+        assert_eq!(names(&compliance(&t, &t.admin, &[]).await), ["Ops Test"]);
+        t.k.update(&t.admin, "TrainingProgram", uid(&p), obj(json!({"required_for": [{"department": ops["id"]}, {"designation": driver["id"]}]})), None)
+            .await
+            .expect("a second line");
+        assert_eq!(names(&compliance(&t, &t.admin, &[]).await), ["Driver Test", "Ops Test"]);
+        refused(t.k.update(&t.admin, "TrainingProgram", uid(&p), obj(json!({"required_for": [{}]})), None).await, "say who");
+        let other = t
+            .ins(
+                &t.admin,
+                "Company",
+                json!({"company_name": "Other Co", "abbr": "OTH", "default_currency": t.get("Company", t.company).await["default_currency"]}),
+            )
+            .await;
+        let theirs = t.ins(&t.admin, "Department", json!({"department_name": "Theirs", "company": other["id"]})).await;
+        refused(t.k.update(&t.admin, "TrainingProgram", uid(&p), obj(json!({"required_for": [{"department": theirs["id"]}]})), None).await, "another company");
+    });
+}
+
+#[test]
+fn a_program_that_is_not_mandatory_is_not_in_the_report() {
+    run(async {
+        let t = T::new("hrtc3").await;
+        t.employee("Anu", json!({})).await;
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Excel", "company": t.c()})).await;
+        assert!(statuses(&compliance(&t, &t.admin, &[]).await).is_empty());
+    });
+}
+
+#[test]
+fn an_employee_sees_only_their_own_compliance() {
+    run(async {
+        let t = T::new("hrtc4").await;
+        let me = t.user("anu@hrtc4.test", &["Employee"]).await;
+        let nobody = t.user("nobody@hrtc4.test", &["Leave Approver"]).await;
+        t.employee("Anu", json!({"user": "anu@hrtc4.test"})).await;
+        t.employee("Bea", json!({})).await;
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c(), "mandatory": true})).await;
+        assert_eq!(statuses(&compliance(&t, &me, &[]).await), [("Anu Test".to_string(), "Missing".to_string())]);
+        assert!(t.report(&nobody, "training_compliance", &[]).await.is_err(), "no read on training records, no report");
+    });
+}
+
+#[test]
+fn only_hr_managers_say_what_is_mandatory() {
+    run(async {
+        let t = T::new("hrtc5").await;
+        let hu = t.user("hu@hrtc5.test", &["HR User"]).await;
+        let p = t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Excel", "company": t.c()})).await;
+        assert!(t.k.update(&hu, "TrainingProgram", uid(&p), obj(json!({"mandatory": true})), None).await.is_err());
+        assert_eq!(t.get("TrainingProgram", uid(&p)).await["mandatory"], json!(false));
+    });
+}
+
+#[test]
+fn a_lapsing_training_is_warned_about_once() {
+    run(async {
+        let t = T::new("hrtc6").await;
+        t.user("hr@hrtc6.test", &["HR Manager"]).await;
+        t.user("anu@hrtc6.test", &["Employee"]).await;
+        let anu = t.employee("Anu", json!({"user": "anu@hrtc6.test"})).await;
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c(), "mandatory": true})).await;
+        let r = held(&t, &anu, "Fire safety", days_from(&t, -355), Some(days_from(&t, 10))).await;
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        assert_eq!(sends(&t, "hr.training_expiring").await, 2, "Anu and the HR manager");
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        assert_eq!(sends(&t, "hr.training_expiring").await, 2, "once");
+        assert_eq!(t.get("TrainingRecord", as_id(&r["training_record"])).await["expiry_warned_on"], json!(t.admin.today().to_string()));
+    });
+}
+
+#[test]
+fn a_training_taken_again_is_not_warned_about() {
+    run(async {
+        let t = T::new("hrtc7").await;
+        t.user("anu@hrtc7.test", &["Employee"]).await;
+        let anu = t.employee("Anu", json!({"user": "anu@hrtc7.test"})).await;
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c(), "mandatory": true})).await;
+        held(&t, &anu, "Fire safety", days_from(&t, -355), Some(days_from(&t, 10))).await;
+        held(&t, &anu, "Fire safety", days_from(&t, -1), Some(days_from(&t, 365))).await;
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        assert_eq!(sends(&t, "hr.training_expiring").await, 0);
+    });
+}
+
+#[test]
+fn a_training_that_lapsed_before_is_not_announced() {
+    run(async {
+        let t = T::new("hrtc8").await;
+        t.user("anu@hrtc8.test", &["Employee"]).await;
+        let anu = t.employee("Anu", json!({"user": "anu@hrtc8.test"})).await;
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c(), "mandatory": true})).await;
+        let r = held(&t, &anu, "Fire safety", days_from(&t, -400), Some(days_from(&t, -30))).await;
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        assert_eq!(sends(&t, "hr.training_expiring").await, 0);
+        assert!(t.get("TrainingRecord", as_id(&r["training_record"])).await["expiry_warned_on"].is_null());
+    });
+}
+
+#[test]
+fn an_optional_training_warns_only_its_holder() {
+    run(async {
+        let t = T::new("hrtc9").await;
+        t.user("hr@hrtc9.test", &["HR Manager"]).await;
+        t.user("anu@hrtc9.test", &["Employee"]).await;
+        let anu = t.employee("Anu", json!({"user": "anu@hrtc9.test"})).await;
+        held(&t, &anu, "Excel", days_from(&t, -355), Some(days_from(&t, 10))).await;
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        assert_eq!(sends(&t, "hr.training_expiring").await, 1);
+    });
+}
+
 async fn opening(t: &T, closes_on: chrono::NaiveDate) -> Doc {
     let eng = t.ins(&t.admin, "Designation", json!({"designation_name": format!("Engineer {closes_on}")})).await;
     t.ins(&t.admin, "JobOpening", json!({"job_title": "Backend Engineer", "company": t.c(), "designation": eng["id"], "closes_on": closes_on.to_string()}))

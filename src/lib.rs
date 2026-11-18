@@ -81,6 +81,7 @@ pub async fn upkeep(k: &Kernel, tenant: Uuid) -> Result<()> {
         ("leave expiry", leave::expire_allocations(k, &ctx).await),
         ("leave accrual", leave::accrue_leaves(k, &ctx).await),
         ("job openings", talent::close_openings(k, &ctx).await),
+        ("training expiry", talent::warn_training_expiring(k, &ctx).await),
         ("leavers", people::offboard_leavers(k, &ctx).await),
         ("document expiry", documents::warn_expiring(k, &ctx).await),
         ("overdue tasks", people::remind_overdue_tasks(k, &ctx).await),

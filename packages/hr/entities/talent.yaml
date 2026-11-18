@@ -306,6 +306,15 @@
     - {name: remarks, type: text, perm_group: review}
   list: {columns: [number, employee_name, appraisal_cycle, final_score], sort: created_at desc}
 
+- name: TrainingRequirement
+  label: Required For
+  kind: child
+  fields:
+    - {name: department, type: link, to: Department, in_list: true}
+    - {name: designation, type: link, to: Designation, in_list: true}
+    - {name: branch, type: link, to: Branch, in_list: true}
+    - {name: employment_type, type: link, to: EmploymentType, in_list: true}
+
 - name: TrainingProgram
   label: Training Program
   kind: master
@@ -316,7 +325,11 @@
     - {name: program_name, type: data, label: Name, required: true, unique: true, in_list: true}
     - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
     - {name: valid_for_months, type: int, min: 1, in_list: true, description: "How long completing it counts; empty: for good"}
-    - {name: mandatory, type: check, in_list: true, in_filter: true}
+    - {name: mandatory, type: check, in_list: true, in_filter: true, description: "Listed in the Training Compliance report for everyone it is required for, and its lapse is also told to the HR managers"}
+    - {name: required_for, type: table, of: TrainingRequirement, visible_if: "doc.mandatory",
+       description: "Who must hold it. Each line names the people who fit everything it fills; a person fits when any line does. No lines: every active employee of the company"}
+    - {name: warn_days_before, type: int, min: "0", default: 30, label: Warn Days Before It Lapses,
+       description: "Days before a record's last valid day that its holder is told. 30 when empty"}
     - {name: description, type: text}
   list: {columns: [program_name, valid_for_months, mandatory], sort: program_name asc}
 
@@ -364,6 +377,7 @@
     - {name: valid_until, type: date, read_only: true, in_list: true, in_filter: true}
     - {name: source, type: data, max_length: 200, read_only: true, no_copy: true, in_filter: true,
        description: "What made this record: session:<id> for a training session, or the reference another app gave (lms:<enrolment id>). An employee has one record per source"}
+    - {name: expiry_warned_on, type: date, read_only: true, no_copy: true, label: Lapse Warning Sent On}
   # Records made before 0.18.0 have no source; PostgreSQL counts empty (null) values as distinct, so they stay as they are.
   unique: [[employee, source]]
   list: {columns: [employee, program_name, completed_on, valid_until], sort: completed_on desc}

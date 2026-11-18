@@ -117,6 +117,19 @@ impl ReportSource for HrReports {
                 ],
             ),
             entry(
+                "training_compliance",
+                "Training Compliance",
+                "performance",
+                "TrainingRecord",
+                vec![
+                    company(),
+                    link("program", "Training Program", "TrainingProgram"),
+                    link("department", "Department", "Department"),
+                    select("status", "Status", &["Missing", "Expired", "Expiring", "Valid"]),
+                    json!({"name": "days", "label": "Days Ahead", "type": "int", "description": "Days ahead that count as expiring; each program's warning days when empty"}),
+                ],
+            ),
+            entry(
                 "monthly_attendance_sheet",
                 "Monthly Attendance Sheet",
                 "attendance",
@@ -194,6 +207,7 @@ impl ReportSource for HrReports {
             "headcount" => headcount(&mut tx, ctx, co.id, &p, &co).await?,
             "employee_events" => events(&mut tx, ctx, co.id, &p).await?,
             "expiring_documents" => expiring_documents(&mut tx, ctx, co.id, &p).await?,
+            "training_compliance" => training_compliance(&mut tx, ctx, co.id, &p).await?,
             "monthly_attendance_sheet" => attendance_sheet(&mut tx, ctx, co.id, &p).await?,
             "leave_balance" => leave_balance(&mut tx, ctx, co.id, &p).await?,
             "expense_claim_summary" => {
@@ -388,6 +402,75 @@ async fn expiring_documents(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_
         "rows": rows,
         "totals": {"count": count},
         "meta": {"truncated": truncated, "as_of": today},
+    }))
+}
+
+/// Mandatory programs against the people they are required for: the latest record of each says Missing, Expired,
+/// Expiring (within `days`, or the program's warning days, or 30) or Valid.
+async fn training_compliance(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result<Value> {
+    let today = ctx.today();
+    let days: Option<i32> = p.str("days").map(|d| d.parse().map_err(|_| Error::field("days", "must be a whole number"))).transpose()?;
+    let status = p.str("status").map(str::to_string);
+    #[allow(clippy::type_complexity)]
+    let data: Vec<(Option<String>, Option<String>, Option<String>, Option<String>, String, Option<NaiveDate>, Option<NaiveDate>)> = sqlx::query_as(
+        "with people as (select e.* from e_employee e where e.tenant_id = $1 and e.company = $2 and e.status = 'Active' and e.date_of_joining <= $3 \
+           and ($4::uuid is null or e.department = $4) and ($5::text is null or lower(e.\"user\") = $5)), \
+         programs as (select p.* from e_training_program p where p.tenant_id = $1 and p.company = $2 and p.mandatory and ($6::uuid is null or p.id = $6)), \
+         pairs as (select e.id employee, p.id program, p.program_name, coalesce($7, p.warn_days_before::int, 30) window_days from people e join programs p \
+           on not exists (select 1 from e_training_program__required_for r where r.tenant_id = $1 and r.parent_id = p.id) \
+           or exists (select 1 from e_training_program__required_for r where r.tenant_id = $1 and r.parent_id = p.id \
+             and (r.department is null or r.department = e.department) and (r.designation is null or r.designation = e.designation) \
+             and (r.branch is null or r.branch = e.branch) and (r.employment_type is null or r.employment_type = e.employment_type))), \
+         latest as (select x.*, l.completed_on, l.valid_until, l.id record from pairs x left join lateral (select r.id, r.completed_on, r.valid_until \
+           from e_training_record r where r.tenant_id = $1 and r.employee = x.employee and r.program = x.program \
+           order by r.completed_on desc nulls last, r.created_at desc limit 1) l on true) \
+         select e.number, e.employee_name, d.department_name, x.program_name, \
+           case when x.record is null then 'Missing' when x.valid_until < $3 then 'Expired' \
+             when x.valid_until <= $3 + x.window_days then 'Expiring' else 'Valid' end st, x.completed_on, x.valid_until \
+         from latest x join e_employee e on e.tenant_id = $1 and e.id = x.employee \
+         left join e_department d on d.tenant_id = $1 and d.id = e.department \
+         where $8::text is null or (case when x.record is null then 'Missing' when x.valid_until < $3 then 'Expired' \
+             when x.valid_until <= $3 + x.window_days then 'Expiring' else 'Valid' end) = $8 \
+         order by x.program_name, e.employee_name, e.number limit 10001",
+    )
+    .bind(ctx.tenant)
+    .bind(company)
+    .bind(today)
+    .bind(p.uuid("department")?)
+    .bind(own_only(ctx, "TrainingRecord"))
+    .bind(p.uuid("program")?)
+    .bind(days)
+    .bind(status)
+    .fetch_all(&mut **tx)
+    .await?;
+    let truncated = data.len() > MAX_ROWS;
+    let mut counts: BTreeMap<&str, i64> = [("missing", 0), ("expired", 0), ("expiring", 0), ("valid", 0)].into_iter().collect();
+    let rows: Vec<Value> = data
+        .into_iter()
+        .take(MAX_ROWS)
+        .map(|(no, name, dept, program, st, done, until)| {
+            let key = match st.as_str() {
+                "Missing" => "missing",
+                "Expired" => "expired",
+                "Expiring" => "expiring",
+                _ => "valid",
+            };
+            *counts.entry(key).or_default() += 1;
+            json!({"employee": no, "employee_name": name, "department": dept, "program_name": program, "status": st, "completed_on": done, "valid_until": until})
+        })
+        .collect();
+    let count = rows.len();
+    let mut meta = json!({"truncated": truncated, "as_of": today});
+    for (k, v) in counts {
+        meta[k] = json!(v);
+    }
+    Ok(json!({
+        "columns": [col("employee", "Employee", "data"), col("employee_name", "Name", "data"), col("department", "Department", "data"),
+            col("program_name", "Training", "data"), col("status", "Status", "data"), col("completed_on", "Completed On", "date"),
+            col("valid_until", "Valid Until", "date")],
+        "rows": rows,
+        "totals": {"count": count},
+        "meta": meta,
     }))
 }
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.19.0
+
+Package `hr` 0.8.0. New fields on Training Program (Required For, Warn Days Before It Lapses) and Training Record
+(Lapse Warning Sent On), made when the package's version moves; existing programs read as required for everyone and
+warned 30 days ahead, existing records as not warned. No interface change.
+
+**Mandatory training means something.** A mandatory program says who must hold it: each Required For line names a
+department, designation, branch or employment type (a person fits when everything a line fills matches, and any
+line does); no lines means every active employee of the program's company. A line naming nobody, or a department of
+another company, is refused.
+
+- **Training Compliance** (Performance): for each mandatory program and each person it is required for, the latest
+  record says Missing, Expired, Expiring (within Days Ahead, else the program's warning days, else 30) or Valid,
+  with counts. HR, a process or an agent runs it; an employee sees their own rows.
+- **A warning before a training lapses.** The upkeep tells the holder once, the program's warning days before the
+  record's last valid day, through the message template `hr.training_expiring`, and the HR managers too when the
+  program is mandatory. A record already lapsed when this release arrives, or taken again since, is not announced.
+  The mark and the message commit together, and two runs at once send one warning.
+
 ## 0.18.0
 
 Package `hr` 0.7.0. A new field and unique index on Training Record (made when the package's version moves; records that

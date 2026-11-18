@@ -1,5 +1,5 @@
 package: hr
-version: 0.7.0
+version: 0.8.0
 label: Human Resources
 description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
 depends: [core]
@@ -50,7 +50,7 @@ modules:
     label: Performance
     icon: target
     order: 74
-    items: [Appraisal, AppraisalCycle, AppraisalTemplate, TrainingProgram, TrainingEvent, TrainingRecord]
+    items: [Appraisal, AppraisalCycle, AppraisalTemplate, TrainingProgram, TrainingEvent, TrainingRecord, report:training_compliance]
 
 workflows:
   - name: Leave Approval
@@ -314,6 +314,17 @@ messages:
         inapp:
           title: "{{ values.document_type }} of {{ doc.employee_name }} expires on {{ doc.expiry_date }}"
           text: "Renew it and add the new one to the employee's documents."
+  - key: hr.training_expiring
+    label: Training about to lapse
+    entity: TrainingRecord
+    languages:
+      en:
+        email:
+          subject: "{{ doc.program_name }} lapses on {{ doc.valid_until }}"
+          body: "<p>The training {{ doc.program_name }} completed on {{ doc.completed_on }} counts until {{ doc.valid_until }}.</p><p>Please take it again before then.</p>"
+        inapp:
+          title: "{{ doc.program_name }} lapses on {{ doc.valid_until }}"
+          text: "Take it again before then."
   - key: hr.letter_issued
     label: Letter or certificate sent
     values: [serial]
