@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.23.0-0e7490?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.24.0-0e7490?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -37,9 +37,9 @@ People (HR and Payroll) is the employee lifecycle for Ferrum: employees and orga
 
 | | |
 |---|---|
-| **Version** | 0.23.0 (packages `hr` 0.11.0, `payroll` 0.8.2, `hr_erp` 0.5.1, `payroll_erp` 0.6.1) |
+| **Version** | 0.24.0 (packages `hr` 0.12.0, `payroll` 0.8.2, `hr_erp` 0.5.1, `payroll_erp` 0.6.1) |
 | **Kind** | Its own interface at `/people/` (your space, approvals, team calendar, rosters, directory and org chart, public careers page) with Ferrum's records screens for everything else |
-| **What it adds** | 91 entities (59 records and 32 small tables), 7 roles, 6 modules (HR, Attendance and Leave, Recruitment, Performance, Expenses, Payroll), 4 approval workflows and 2 package approval policies, 15 reports, 1 print format, 7 document templates, 15 message templates, 6 notification kinds, 8 upkeep jobs, 2 example packs |
+| **What it adds** | 93 entities (61 records and 32 small tables), 7 roles, 6 modules (HR, Attendance and Leave, Recruitment, Performance, Expenses, Payroll), 5 approval workflows and 2 package approval policies, 15 reports, 1 print format, 7 document templates, 17 message templates, 6 notification kinds, 8 upkeep jobs, 2 example packs |
 | **Depends on** | Ferrum platform `>=0.4.0, <0.5`. The connector **HR and ERP** (expenses and payroll posting) needs ERP `>=0.1` and ships with this app |
 | **Works with** | ERP (ledger, accounts, cost centers, company letterhead), Finance (bank accounts), Projects and Objectives (people), Helpdesk and others through the shared Employee record |
 | **Languages** | English, Arabic and Hindi (255 interface words and 1,190 names in each), right-to-left |
@@ -144,6 +144,7 @@ People (HR and Payroll) is the employee lifecycle for Ferrum: employees and orga
 ### 🌴 Leave
 
 - **Leave Types:** maximum per year, applicable after, maximum continuous days, leave without pay, include holidays, allow negative balance, carry forward with a cap, encashment with a threshold.
+- **Overtime and time off in lieu.** **Overtime Rules** (per company, a shift or any, working days or days off) say what counts: on a working day the hours worked beyond the shift after a grace, on a holiday or weekly off the span between the first and last check-in, with a monthly cap. An **Overtime Request** is asked by the employee, checked against what was recorded, and approved through the Overtime Approval workflow; approval turns the hours (times the rule's multiplier, over its hours per leave day) into leave days of the rule's type, on the allocation covering the day or a new one valid for the rule's days. Cancelling takes them back unless they were taken.
 - **Shift Rosters** plan who works which shift over up to 62 days for a company, a department or a branch: **Fill with a Shift** gives everyone (or one person) a draft shift assignment, skipping those who have one; **Publish** submits the drafts, whole people at a time, and tells each person once (`hr.roster_published`). Drafts count for nothing until published. The **Shift Roster** report shows people by days with holidays, approved leave and drafts marked.
 - **Shift Swap Requests**: two colleagues exchange their shifts on one day. The colleague accepts or declines, the approver (or an HR manager) approves through the Shift Swap Approval workflow, and approval changes both shifts together (a longer assignment is split around the day); cancelling an approved swap puts both back. Two shift assignments of one employee submitted at once can no longer overlap.
 - **Leave Policies** list a type and its annual allocation, granted all at once or by **Monthly**, **Quarterly** or **Half-yearly** accrual. A policy chosen on the employee drives their allocation; the upkeep accrues each share when it is due, once a day whichever server runs it (the policy records the day).
@@ -366,7 +367,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 | Biometric device vendor protocols | ❌ | 🟡¹ | 🟡¹ | 🟡¹ | 🟡¹ | ✅ | 🟡¹ |
 | Native mobile apps | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Rostering grid and shift swaps | ✅¹¹ | 🟡¹ | 🟡¹ | 🟡¹ | 🟡¹ | ✅ | 🟡¹ |
-| Overtime rules and comp-off | ❌ | ✅ | ✅ | 🟡¹ | ✅ | ✅ | 🟡¹ |
+| Overtime rules and comp-off | 🟡¹² | ✅ | ✅ | 🟡¹ | ✅ | ✅ | 🟡¹ |
 | Recruiting with stages and scorecards | ✅ | ✅ | ✅ | ✅ | ✅ | 🟡² | 🟡¹ |
 | Requisition and offer approval | ✅ | ✅ | ✅ | 🟡¹ | ✅ | 🟡² | 🟡¹ |
 | Job board multiposting, resume parsing | ❌ | ✅ | ✅ | ✅ | ✅ | 🟡² | ❌ |
@@ -398,7 +399,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 | One data set with accounting, projects and helpdesk | ✅ | 🟡¹ | 🟡¹ | ➖ | 🟡¹ | 🟡¹ | ✅ |
 | No per-employee price | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | 🟡¹⁰ |
 
-<sub>¹ Present in some form or not confirmed; check the product, country and edition. ² Through a separate product from the same vendor. ³ BambooHR's payroll is for the United States. ⁴ A separate vendor product that works with the HR product. ⁵ No country's rules are built into this app: they are formulas, lookup tables and templates, and a country pack is data. A test compares the tax engine with a fixture of India's published new-regime figures for FY 2025-26; statutory returns and contribution files are not built. ⁶ A cycle started for everyone, a template of goals with weights, and stages (self, manager, sign-off); goals are not linked to Objectives. ⁷ Programs, events and records with validity; mandatory training with a compliance report and lapse warnings; skills with levels held and needed and a skills matrix. Ferrum's learning app records completed courses here through `hr.employee.record_training` once it uses it. ⁸ Promotions and transfers keep the previous values on the document; there is no "as of" date for the whole record. ⁹ Fifteen reports; no dashboards. ¹⁰ Self-hosting is free; the vendor's cloud is priced per user. ¹¹ A roster grid, publishing once, and same-day swaps with the colleague's consent and an approval; no open shifts or swaps across days.</sub>
+<sub>¹ Present in some form or not confirmed; check the product, country and edition. ² Through a separate product from the same vendor. ³ BambooHR's payroll is for the United States. ⁴ A separate vendor product that works with the HR product. ⁵ No country's rules are built into this app: they are formulas, lookup tables and templates, and a country pack is data. A test compares the tax engine with a fixture of India's published new-regime figures for FY 2025-26; statutory returns and contribution files are not built. ⁶ A cycle started for everyone, a template of goals with weights, and stages (self, manager, sign-off); goals are not linked to Objectives. ⁷ Programs, events and records with validity; mandatory training with a compliance report and lapse warnings; skills with levels held and needed and a skills matrix. Ferrum's learning app records completed courses here through `hr.employee.record_training` once it uses it. ⁸ Promotions and transfers keep the previous values on the document; there is no "as of" date for the whole record. ⁹ Fifteen reports; no dashboards. ¹⁰ Self-hosting is free; the vendor's cloud is priced per user. ¹² Overtime rules as records and approved overtime turned into time off of a leave type, with caps; pay for overtime through payroll is not built. ¹¹ A roster grid, publishing once, and same-day swaps with the colleague's consent and an approval; no open shifts or swaps across days.</sub>
 
 ### 🏆 Where People stands out
 
@@ -426,6 +427,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 
 ### ✅ Recently shipped
 
+- [x] **0.24.0** Overtime rules and time off in lieu: asked, checked against what was recorded, approved, credited as leave.
 - [x] **0.23.0** The roster grid at `/people/roster`.
 - [x] **0.22.0** Rosters (fill, publish once) and same-day shift swaps with the colleague's consent and an approval; two overlapping shift assignments submitted at once make one.
 - [x] **0.21.1** Another app puts a goal into an appraisal (`hr.appraisal.set_goal`, one per reference).
@@ -459,8 +461,8 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 - [ ] **Bank file layouts** for more banks.
 
 **Time and leave**
-- [ ] **Overtime rules**: multipliers by day type, approval, pay or compensatory leave, caps.
-- [ ] **Compensatory leave**: a request for work on a holiday, approval and a credit with expiry.
+- [ ] **Overtime rules**: pay through payroll (time off, multipliers by day type, approval and caps are built in 0.24.0).
+- [x] **Compensatory leave**: a request for overtime worked (a holiday or a working day), approval and a credit with expiry (0.24.0).
 - [ ] **Late-mark policies**: N late entries make a half day.
 - [ ] **Rostering**: a grid, rotating patterns, shift swaps and open shifts.
 - [ ] **Leave policy by rule** (grade, tenure, location), multi-step approval, delegation and escalation.

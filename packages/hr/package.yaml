@@ -1,5 +1,5 @@
 package: hr
-version: 0.11.0
+version: 0.12.0
 label: Human Resources
 description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
 depends: [core]
@@ -39,7 +39,7 @@ modules:
     label: Attendance & Leave
     icon: calendar
     order: 71
-    items: [Attendance, AttendanceRequest, EmployeeCheckin, ShiftType, ShiftAssignment, ShiftRoster, ShiftSwapRequest, report:shift_roster, HolidayList, LeaveApplication, LeaveAllocation, LeaveEncashment,
+    items: [Attendance, AttendanceRequest, EmployeeCheckin, ShiftType, ShiftAssignment, ShiftRoster, ShiftSwapRequest, OvertimeRequest, OvertimeRule, report:shift_roster, HolidayList, LeaveApplication, LeaveAllocation, LeaveEncashment,
             LeaveType, LeavePolicy, LeaveLedgerEntry, report:monthly_attendance_sheet, report:leave_balance]
   - name: recruitment
     label: Recruitment
@@ -68,6 +68,19 @@ workflows:
       - {action: Cancel, from: Rejected, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
   - name: Attendance Request Approval
     entity: AttendanceRequest
+    initial_state: Open
+    states:
+      - {name: Open, docstatus: 0}
+      - {name: Approved, docstatus: 1}
+      - {name: Rejected, docstatus: 1}
+      - {name: Cancelled, docstatus: 2}
+    transitions:
+      - {action: Approve, from: Open, to: Approved, roles: [Leave Approver, HR Manager]}
+      - {action: Reject, from: Open, to: Rejected, roles: [Leave Approver, HR Manager]}
+      - {action: Cancel, from: Approved, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
+      - {action: Cancel, from: Rejected, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
+  - name: Overtime Approval
+    entity: OvertimeRequest
     initial_state: Open
     states:
       - {name: Open, docstatus: 0}
@@ -138,6 +151,7 @@ personal_data:
   - {entity: Appraisal, match: employee_user, retain: "Employment records"}
   - {entity: TrainingRecord, match: employee_user, retain: "Employment records"}
   - {entity: ShiftSwapRequest, match: employee_user, retain: "Employment records"}
+  - {entity: OvertimeRequest, match: employee_user, retain: "Employment records"}
   - {entity: EmployeeDocument, match: employee_user, retain: "Employment records"}
   - {entity: EmployeeLetter, match: recipient_email, name: recipient_name, erase: [recipient_name, recipient_email, sent_to]}
 roles:
@@ -168,6 +182,8 @@ roles:
       - {entity: ShiftAssignment, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
       - {entity: ShiftRoster, read: true, write: true, create: true, delete: true, export: true}
       - {entity: ShiftSwapRequest, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: OvertimeRule, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: OvertimeRequest, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: EmployeeCheckin, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Attendance, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
       - {entity: AttendanceRequest, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
@@ -212,6 +228,8 @@ roles:
       - {entity: ShiftAssignment, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
       - {entity: ShiftRoster, read: true, write: true, create: true}
       - {entity: ShiftSwapRequest, read: true, write: true, create: true, delete: true, cancel: true}
+      - {entity: OvertimeRule, read: true}
+      - {entity: OvertimeRequest, read: true, write: true, create: true, delete: true, cancel: true}
       - {entity: EmployeeCheckin, read: true, write: true, create: true, delete: true, import: true}
       - {entity: Attendance, read: true, write: true, create: true, delete: true, submit: true, cancel: true, import: true}
       - {entity: AttendanceRequest, read: true, write: true, create: true, delete: true, cancel: true}
@@ -250,6 +268,7 @@ roles:
       - {entity: AttendanceRequest, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: ShiftAssignment, read: true, if_owner: true}
       - {entity: ShiftSwapRequest, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: OvertimeRequest, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: ShiftRoster, read: true}
       - {entity: LeaveAllocation, read: true, if_owner: true}
       - {entity: LeaveLedgerEntry, read: true, if_owner: true}
@@ -278,6 +297,7 @@ roles:
       - {entity: LeaveApplication, read: true, write: true, submit: true, cancel: true}
       - {entity: AttendanceRequest, read: true, write: true, submit: true, cancel: true}
       - {entity: ShiftSwapRequest, read: true, write: true, submit: true, cancel: true}
+      - {entity: OvertimeRequest, read: true, write: true, submit: true, cancel: true}
       - {entity: LeaveAllocation, read: true}
       - {entity: LeaveLedgerEntry, read: true}
       - {entity: LeaveType, read: true}
@@ -320,6 +340,7 @@ handover:
   - {entity: LeaveApplication, field: leave_approver, where: {status: Open}}
   - {entity: AttendanceRequest, field: approver, where: {status: Open}}
   - {entity: ShiftSwapRequest, field: approver, where: {status: Open}}
+  - {entity: OvertimeRequest, field: approver, where: {status: Open}}
 
 # What the app sends; a workspace edits the wording under Settings.
 messages:
@@ -458,6 +479,29 @@ messages:
         inapp:
           title: "Shift swap on {{ doc.swap_date }}"
           text: "{% if values.outcome == 'approved' %}Approved: your shifts are changed.{% elif values.outcome == 'rejected' %}Rejected: your shifts stay.{% else %}Declined.{% endif %}"
+  - key: hr.overtime_to_approve
+    label: Overtime waiting for approval
+    entity: OvertimeRequest
+    languages:
+      en:
+        email:
+          subject: "{{ doc.employee_name }}'s overtime on {{ doc.work_date }} waits for your approval"
+          body: "<p>{{ doc.employee_name }} asks for {{ doc.hours }} hours of overtime worked on {{ doc.work_date }}.</p>"
+        inapp:
+          title: "{{ doc.employee_name }}'s overtime on {{ doc.work_date }} waits for your approval"
+          text: "Approve or reject it."
+  - key: hr.overtime_decided
+    label: Overtime decided
+    entity: OvertimeRequest
+    values: [outcome, days]
+    languages:
+      en:
+        email:
+          subject: "Your overtime on {{ doc.work_date }}"
+          body: "<p>{% if values.outcome == 'approved' %}Your {{ doc.hours }} hours of overtime on {{ doc.work_date }} are approved: {{ values.days }} days of time off are credited.{% else %}Your overtime on {{ doc.work_date }} was rejected.{% endif %}</p>"
+        inapp:
+          title: "Your overtime on {{ doc.work_date }}"
+          text: "{% if values.outcome == 'approved' %}Approved: {{ values.days }} days of time off.{% else %}Rejected.{% endif %}"
   - key: hr.letter_issued
     label: Letter or certificate sent
     values: [serial]

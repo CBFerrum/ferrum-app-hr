@@ -1342,6 +1342,222 @@ fn two_swaps_for_the_same_person_and_day() {
     });
 }
 
+// ───────────── overtime and time off in lieu (hr-9, HR-04) ─────────────
+
+/// An 8-hour Day shift; Asha (reports to Maya, a Leave Approver) on it; a time-off type and a working-day rule.
+struct Ot {
+    t: T,
+    asha: Ctx,
+    maya: Ctx,
+    asha_emp: Doc,
+    day: Doc,
+    rule: Doc,
+    toil: Doc,
+}
+
+/// The latest weekday before today (the suite's company list makes Saturdays and Sundays weekly offs).
+fn last_weekday(t: &T, back: i64) -> chrono::NaiveDate {
+    use chrono::Datelike;
+    let mut d = days_from(t, -back);
+    while matches!(d.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun) {
+        d -= chrono::Duration::days(1);
+    }
+    d
+}
+
+impl Ot {
+    async fn new(slug: &str) -> Ot {
+        let t = T::new(slug).await;
+        let u = |n: &str| format!("{n}@{slug}.test");
+        let asha = t.user(&u("asha"), &["Employee"]).await;
+        let maya = t.user(&u("maya"), &["Employee", "Leave Approver"]).await;
+        let day = t.ins(&t.admin, "ShiftType", json!({"shift_name": "Day", "start_time": "09:00", "end_time": "17:00"})).await;
+        let maya_emp = t.employee("Maya", json!({"user": u("maya")})).await;
+        let asha_emp = t.employee("Asha", json!({"user": u("asha"), "reports_to": maya_emp["id"], "default_shift": day["id"]})).await;
+        let toil = t.ins(&t.admin, "LeaveType", json!({"leave_type_name": "Time Off in Lieu"})).await;
+        let rule = t
+            .ins(
+                &t.admin,
+                "OvertimeRule",
+                json!({"rule_name": "Weekday overtime", "company": t.c(), "day_kind": "Working Day", "leave_type": toil["id"], "hours_per_day": "8"}),
+            )
+            .await;
+        Ot { t, asha, maya, asha_emp, day, rule, toil }
+    }
+
+    /// Submitted attendance of `hours` on `on`.
+    async fn worked(&self, on: chrono::NaiveDate, hours: &str) {
+        self.t
+            .ins_submit(&self.t.admin, "Attendance", json!({"employee": self.asha_emp["id"], "attendance_date": on.to_string(), "status": "Present", "shift": self.day["id"], "working_hours": hours}))
+            .await;
+    }
+
+    async fn ask(&self, on: chrono::NaiveDate, hours: &str) -> ferrum_kernel::Result<Doc> {
+        self.t.try_ins(&self.asha, "OvertimeRequest", json!({"employee": self.asha_emp["id"], "work_date": on.to_string(), "hours": hours})).await
+    }
+
+    async fn approve(&self, req: &Doc) -> Doc {
+        self.t.trans(&self.maya, "OvertimeRequest", uid(req), "Approve").await.unwrap_or_else(|e| panic!("approve: {}", describe(&e)))
+    }
+
+    async fn balance(&self) -> Decimal {
+        let mut tx = self.t.k.db.tenant_tx(self.t.tenant).await.unwrap();
+        sqlx::query_scalar("select coalesce(sum(leaves), 0) from e_leave_ledger_entry where tenant_id = $1 and employee = $2 and leave_type = $3")
+            .bind(self.t.tenant)
+            .bind(uid(&self.asha_emp))
+            .bind(uid(&self.toil))
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap()
+    }
+}
+
+#[test]
+fn overtime_on_a_working_day_becomes_time_off() {
+    run(async {
+        let o = Ot::new("hrot1").await;
+        let on = last_weekday(&o.t, 1);
+        o.worked(on, "10").await;
+        let req = o.ask(on, "2").await.expect("asked");
+        assert_eq!(req["rule"], o.rule["id"]);
+        assert_eq!(sends(&o.t, "hr.overtime_to_approve").await, 1, "Maya is asked");
+        o.approve(&req).await;
+        let done = o.t.get("OvertimeRequest", uid(&req)).await;
+        assert_eq!((done["status"].clone(), dec(&done["days_credited"])), (json!("Approved"), n("0.25")));
+        assert_eq!(o.balance().await, n("0.25"));
+        assert_eq!(o.t.get("LeaveAllocation", vid(&json!({"id": done["leave_allocation"]}))).await["docstatus"], json!(1));
+        assert_eq!(sends(&o.t, "hr.overtime_decided").await, 1);
+    });
+}
+
+#[test]
+fn overtime_beyond_what_was_recorded_is_refused() {
+    run(async {
+        let o = Ot::new("hrot2").await;
+        let on = last_weekday(&o.t, 1);
+        refused(o.ask(on, "1").await, "no attendance");
+        o.worked(on, "10").await;
+        refused(o.ask(on, "3").await, "2 hours of overtime are recorded");
+        let ahead = days_from(&o.t, 2);
+        refused(o.ask(ahead, "1").await, "after it is worked");
+    });
+}
+
+#[test]
+fn overtime_on_a_holiday_counts_the_check_in_span() {
+    run(async {
+        use chrono::Datelike;
+        let o = Ot::new("hrot3").await;
+        o.t.ins(
+            &o.t.admin,
+            "OvertimeRule",
+            json!({"rule_name": "Day off", "company": o.t.c(), "day_kind": "Holiday or Weekly Off", "leave_type": o.toil["id"], "multiplier": "2"}),
+        )
+        .await;
+        let mut sat = days_from(&o.t, -1);
+        while sat.weekday() != chrono::Weekday::Sat {
+            sat -= chrono::Duration::days(1);
+        }
+        for (time, kind) in [("10:00:00", "IN"), ("14:30:00", "OUT")] {
+            o.t.ins(&o.t.admin, "EmployeeCheckin", json!({"employee": o.asha_emp["id"], "log_type": kind, "log_time": format!("{sat}T{time}")})).await;
+        }
+        refused(o.ask(sat, "5").await, "4.5 hours");
+        let req = o.ask(sat, "4").await.expect("asked");
+        o.approve(&req).await;
+        assert_eq!(o.balance().await, n("1"), "4 hours at twice, 8 hours a day");
+    });
+}
+
+#[test]
+fn a_second_credit_goes_onto_the_open_allocation() {
+    run(async {
+        let o = Ot::new("hrot4").await;
+        let (d1, d2) = (last_weekday(&o.t, 1), last_weekday(&o.t, 3));
+        let (d1, d2) = (d1.max(d2), d1.min(d2));
+        o.worked(d2, "10").await;
+        o.worked(d1, "12").await;
+        let first = o.ask(d2, "2").await.expect("first");
+        o.approve(&first).await;
+        let second = o.ask(d1, "4").await.expect("second");
+        o.approve(&second).await;
+        let (a, b) = (o.t.get("OvertimeRequest", uid(&first)).await, o.t.get("OvertimeRequest", uid(&second)).await);
+        assert_eq!(a["leave_allocation"], b["leave_allocation"], "one allocation");
+        assert_eq!(o.balance().await, n("0.75"));
+    });
+}
+
+#[test]
+fn the_monthly_cap_is_kept() {
+    run(async {
+        let o = Ot::new("hrot5").await;
+        o.t.k.update(&o.t.admin, "OvertimeRule", uid(&o.rule), obj(json!({"max_hours_per_month": "3"})), None).await.expect("cap");
+        use chrono::Datelike;
+        // Two weekdays of one month before today.
+        let mut days = Vec::new();
+        let mut d = days_from(&o.t, -1);
+        while days.len() < 2 {
+            if !matches!(d.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun) && (days.is_empty() || d.month() == days_from(&o.t, -1).month()) {
+                days.push(d);
+            }
+            d -= chrono::Duration::days(1);
+        }
+        if days[0].month() != days[1].month() {
+            return; // ponytail: the first two days of a month have no two earlier weekdays in it; the check needs them.
+        }
+        for on in &days {
+            o.worked(*on, "11").await;
+        }
+        o.ask(days[0], "2").await.expect("2 of 3");
+        refused(o.ask(days[1], "2").await, "at most 3 hours a month");
+        o.ask(days[1], "1").await.expect("the third hour");
+    });
+}
+
+#[test]
+fn an_employee_asks_only_for_themselves_and_does_not_approve_it() {
+    run(async {
+        let o = Ot::new("hrot6").await;
+        let on = last_weekday(&o.t, 1);
+        let maya_emp = o.t.one("Employee", json!({"first_name": "Maya"})).await;
+        o.t.ins_submit(
+            &o.t.admin,
+            "Attendance",
+            json!({"employee": maya_emp["id"], "attendance_date": on.to_string(), "status": "Present", "shift": o.day["id"], "working_hours": "10"}),
+        )
+        .await;
+        assert!(o.t.try_ins(&o.asha, "OvertimeRequest", json!({"employee": maya_emp["id"], "work_date": on.to_string(), "hours": "1"})).await.is_err());
+        o.worked(on, "10").await;
+        let req = o.ask(on, "1").await.expect("asked");
+        assert!(o.t.trans(&o.asha, "OvertimeRequest", uid(&req), "Approve").await.is_err(), "not her own");
+    });
+}
+
+#[test]
+fn cancelling_an_approved_request_takes_the_days_back() {
+    run(async {
+        let o = Ot::new("hrot7").await;
+        let on = last_weekday(&o.t, 1);
+        o.worked(on, "16").await;
+        let req = o.ask(on, "8").await.expect("asked");
+        o.approve(&req).await;
+        assert_eq!(o.balance().await, n("1"));
+        o.t.trans(&o.maya, "OvertimeRequest", uid(&req), "Cancel").await.expect("cancelled");
+        assert_eq!(o.balance().await, Decimal::ZERO);
+        assert_eq!(o.t.get("OvertimeRequest", uid(&req)).await["status"], json!("Cancelled"));
+    });
+}
+
+#[test]
+fn one_request_per_person_and_day() {
+    run(async {
+        let o = Ot::new("hrot8").await;
+        let on = last_weekday(&o.t, 1);
+        o.worked(on, "12").await;
+        o.ask(on, "1").await.expect("first");
+        assert!(o.ask(on, "1").await.is_err(), "a second for the day");
+    });
+}
+
 async fn opening(t: &T, closes_on: chrono::NaiveDate) -> Doc {
     let eng = t.ins(&t.admin, "Designation", json!({"designation_name": format!("Engineer {closes_on}")})).await;
     t.ins(&t.admin, "JobOpening", json!({"job_title": "Backend Engineer", "company": t.c(), "designation": eng["id"], "closes_on": closes_on.to_string()}))

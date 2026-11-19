@@ -437,3 +437,52 @@
     - {name: is_reversal, type: check, read_only: true}
   indexes: [[employee, leave_type], [transaction_id]]
   list: {columns: [employee_name, leave_type, transaction_type, leaves, from_date], sort: created_at desc}
+
+- name: OvertimeRule
+  label: Overtime Rule
+  kind: master
+  module: attendance
+  title_field: rule_name
+  company_scoped: true
+  description: "What overtime counts and what it earns: on a working day the hours worked beyond the shift (after a grace), on a holiday or weekly off the hours between the first and last check-in; each hour earns time off of the leave type it names."
+  fields:
+    - {name: rule_name, type: data, required: true, unique: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: shift_type, type: link, to: ShiftType, in_list: true, description: "Only for this shift; any shift when empty. A rule naming the shift is chosen over one naming none"}
+    - {name: day_kind, type: select, options: [Working Day, Holiday or Weekly Off], required: true, default: Working Day, in_list: true}
+    - {name: grace_minutes, type: int, min: 0, default: 0, label: Grace (Minutes), description: "Minutes past the shift's length that do not count (working days)"}
+    - {name: compensation, type: select, options: [Time Off], required: true, default: Time Off, description: "Pay through payroll is a later release"}
+    - {name: leave_type, type: link, to: LeaveType, required: true, label: Time Off As, description: "The leave type the hours become"}
+    - {name: hours_per_day, type: decimal, min: "0.5", default: 8, required: true, label: Hours per Leave Day}
+    - {name: multiplier, type: decimal, min: "1", default: 1, required: true, description: "Leave hours earned per overtime hour"}
+    - {name: valid_for_days, type: int, min: 1, default: 90, required: true, label: Valid for (Days), description: "How long a new allocation made by a credit lasts"}
+    - {name: max_hours_per_month, type: decimal, min: "0", label: Most Hours a Month, description: "Asked and approved together, per employee and calendar month; no cap when empty"}
+    - {name: disabled, type: check, in_filter: true}
+  list: {columns: [rule_name, day_kind, shift_type, leave_type, disabled], sort: rule_name asc}
+
+- name: OvertimeRequest
+  label: Overtime Request
+  kind: document
+  module: attendance
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user]
+  numbering: {template: "HR-OVT-{YYYY}-{seq:5}", date_field: work_date}
+  description: "Overtime worked on a day, asked for by the employee and decided by their approver (or an HR manager) through the Overtime Approval workflow; approval turns the hours into time off of the rule's leave type."
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: work_date, type: date, required: true, in_list: true, in_filter: true}
+    - {name: hours, type: decimal, required: true, min: "0.25", max: "24", in_list: true}
+    - {name: reason, type: text}
+    - {name: rule, type: link, to: OvertimeRule, read_only: true, in_list: true, description: "The rule that covers the day, found when it is asked"}
+    - {name: approver, type: email, in_filter: true, description: "Defaults to the employee's leave approver, else the user of the employee they report to"}
+    - {name: status, type: select, options: [Open, Approved, Rejected, Cancelled], default: Open, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: days_credited, type: decimal, read_only: true, no_copy: true, label: Leave Days Credited}
+    - {name: leave_allocation, type: link, to: LeaveAllocation, read_only: true, no_copy: true, label: Credited To}
+  # One live request per employee and day (an index over documents not cancelled).
+  unique: [[employee, work_date]]
+  list: {columns: [number, employee_name, work_date, hours, status], sort: work_date desc}

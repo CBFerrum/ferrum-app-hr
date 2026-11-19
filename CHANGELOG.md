@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.24.0
+
+Package `hr` 0.12.0. New entities Overtime Rule and Overtime Request, the Overtime Approval workflow and two message
+templates, made when the package's version moves. No interface change beyond the records frame.
+
+**Overtime and time off in lieu (HR-04, first part).** Overtime rules are records: per company, for a shift or any,
+on working days (hours worked beyond the shift's length after a grace) or on holidays and weekly offs (the span
+between the first and last check-in), a leave type the hours become, hours per leave day, a multiplier, how long a
+new credit lasts and a monthly cap. An employee asks for overtime on a day they worked; it is refused beyond what
+attendance or check-ins recorded, for a day to come, or past the cap, and one request per day. The approver (or an HR
+manager) approves through the Overtime Approval workflow (`hr.overtime_to_approve`, `hr.overtime_decided`); the
+hours become leave days on the employee's allocation of that type covering the day, or a new allocation from the
+day. Cancelling an approved request takes the days back, refused once they were taken. Pay for overtime through
+payroll is planned separately (`gapclose/packets/hr-9/BRIEF.md`, section 13).
+
 ## 0.23.0
 
 No package or database change; the interface is rebuilt.
