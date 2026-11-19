@@ -75,6 +75,48 @@
         returns: {"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "marked": {"type": "integer"}, "absent": {"type": "integer"}}}
   list: {columns: [shift_name, start_time, end_time, enable_auto_attendance], sort: shift_name asc}
 
+- name: ShiftRoster
+  label: Shift Roster
+  kind: master
+  module: attendance
+  title_field: title
+  company_scoped: true
+  description: "A plan of who works which shift over a range of days, for a company, a department or a branch. Its shift assignments are drafts until it is published; publishing submits them and tells each person once."
+  fields:
+    - {name: title, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: department, type: link, to: Department, in_list: true, in_filter: true, description: "Only its people; everyone in the company when empty"}
+    - {name: branch, type: link, to: Branch, in_filter: true, description: "Only its people"}
+    - {name: from_date, type: date, required: true, in_list: true}
+    - {name: to_date, type: date, required: true, in_list: true}
+    - {name: status, type: select, options: [Draft, Published], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: published_on, type: datetime, read_only: true, no_copy: true}
+    - {name: published_by, type: email, read_only: true, no_copy: true}
+  rules:
+    - {name: ordered_dates, check: "doc.from_date == null || doc.to_date == null || doc.to_date >= doc.from_date", message: "To date must not be before from date"}
+  actions:
+    - name: fill
+      label: Fill with a Shift
+      permission: write
+      params:
+        - {name: shift_type, type: link, to: ShiftType, label: Shift, required: true}
+        - {name: from_date, type: date, label: From, description: "The roster's first day when empty"}
+        - {name: to_date, type: date, label: To, description: "The roster's last day when empty"}
+        - {name: employee, type: link, to: Employee, label: Only For, description: "One person of the roster; everyone in it when empty"}
+      contract:
+        effect: transactional_action
+        returns: {type: object, properties: {created: {type: integer}, skipped: {type: integer}}}
+        completion: "Each person of the roster without a shift assignment in those days has a draft one for the shift; people who already had one are skipped. Nothing counts for attendance until the roster is published"
+    - name: publish
+      label: Publish
+      permission: write
+      confirm: "Publish this roster? Its draft shifts start to count and each person is told."
+      contract:
+        effect: transactional_action
+        returns: {type: object, properties: {published: {type: integer}, remaining: {type: integer}}}
+        completion: "The draft shift assignments of the next people of the roster (about 500 assignments a call, whole people) are submitted and each of those people is sent the message hr.roster_published once; when remaining is 0 the roster is Published"
+  list: {columns: [title, department, from_date, to_date, status], sort: from_date desc}
+
 - name: ShiftAssignment
   label: Shift Assignment
   kind: document
@@ -92,6 +134,8 @@
     - {name: shift_type, type: link, to: ShiftType, required: true, in_list: true, in_filter: true}
     - {name: start_date, type: date, required: true, default_expr: today, in_list: true}
     - {name: end_date, type: date, in_list: true, description: Empty = until further notice}
+    - {name: roster, type: link, to: ShiftRoster, in_filter: true, on_delete: set_null, description: "The roster it was planned in"}
+    - {name: swap_request, type: link, to: ShiftSwapRequest, read_only: true, no_copy: true, on_delete: set_null, description: "The approved swap that set this day"}
   rules:
     - {name: ordered_dates, check: "doc.end_date == null || doc.start_date == null || doc.end_date >= doc.start_date", message: "End date must not be before start date"}
   list: {columns: [number, employee_name, shift_type, start_date, end_date], sort: start_date desc}
@@ -193,6 +237,48 @@
     - {name: in_format, check: "doc.in_time == null || doc.in_time == '' || doc.in_time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')", message: "Came in at must look like 09:00"}
     - {name: out_format, check: "doc.out_time == null || doc.out_time == '' || doc.out_time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')", message: "Left at must look like 18:00"}
   list: {columns: [number, employee_name, reason, from_date, to_date, status], sort: from_date desc}
+
+- name: ShiftSwapRequest
+  label: Shift Swap Request
+  kind: document
+  module: attendance
+  submittable: true
+  company_scoped: true
+  title_field: employee_name
+  owner_fields: [employee_user, with_employee_user]
+  numbering: {template: "HR-SWP-{YYYY}-{seq:5}", date_field: swap_date}
+  description: "Two people exchange their shifts on one day. The colleague accepts, then the approver (or an HR manager) approves through the Shift Swap Approval workflow; approval changes both shifts together."
+  fields:
+    - {name: employee, type: link, to: Employee, required: true, in_filter: true}
+    - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
+    - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
+    - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
+    - {name: swap_date, type: date, required: true, in_list: true, in_filter: true}
+    - {name: with_employee, type: link, to: Employee, required: true, label: Swap With, in_filter: true}
+    - {name: with_employee_name, type: data, fetch_from: with_employee.employee_name, read_only: true, in_list: true}
+    - {name: with_employee_user, type: email, fetch_from: with_employee.user, read_only: true, hidden: true, label: Colleague's User}
+    - {name: shift_type, type: link, to: ShiftType, read_only: true, in_list: true, label: Gives, description: "The shift the employee has that day"}
+    - {name: with_shift_type, type: link, to: ShiftType, read_only: true, in_list: true, label: Takes, description: "The shift the colleague has that day"}
+    - {name: reason, type: text}
+    - {name: colleague_response, type: select, options: [Waiting, Accepted, Declined], default: Waiting, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: colleague_responded_on, type: datetime, read_only: true, no_copy: true}
+    - {name: approver, type: email, in_filter: true, description: "Defaults to the employee's leave approver, else the user of the employee they report to"}
+    - {name: status, type: select, options: [Open, Approved, Rejected, Cancelled], default: Open, read_only: true, no_copy: true, in_list: true, in_filter: true}
+  actions:
+    - name: accept
+      label: Accept the Swap
+      docstatus: [0]
+      permission: read
+      condition: "doc.colleague_response == 'Waiting'"
+      contract: {effect: transactional_action, returns: {type: object, properties: {colleague_response: {type: string}}}, completion: "The colleague's acceptance is recorded and the approver is told; no shift has changed yet"}
+    - name: decline
+      label: Decline the Swap
+      docstatus: [0]
+      permission: read
+      condition: "doc.colleague_response == 'Waiting'"
+      contract: {effect: transactional_action, returns: {type: object, properties: {colleague_response: {type: string}}}, completion: "The colleague's refusal is recorded and the employee is told; the request can no longer be approved"}
+  indexes: [[employee, swap_date], [with_employee, swap_date]]
+  list: {columns: [number, employee_name, with_employee_name, swap_date, colleague_response, status], sort: swap_date desc}
 
 - name: LeaveType
   label: Leave Type

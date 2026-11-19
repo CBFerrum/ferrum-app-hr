@@ -18,6 +18,7 @@ mod leave;
 mod payroll;
 mod people;
 mod reports;
+mod roster;
 mod settlement;
 mod site;
 mod talent;
@@ -44,6 +45,7 @@ pub fn register(h: &mut HookRegistry) {
     leave::register(h);
     expense::register(h);
     talent::register(h);
+    roster::register(h);
     h.register("EmployeeDocument", Arc::new(documents::DocumentHook));
     payroll::register(h);
     h.add_site("hr", Arc::new(site::HrSite));

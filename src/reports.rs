@@ -143,6 +143,13 @@ impl ReportSource for HrReports {
                 ],
             ),
             entry(
+                "shift_roster",
+                "Shift Roster",
+                "attendance",
+                "ShiftAssignment",
+                vec![json!({"name": "roster", "label": "Roster", "type": "link", "to": "ShiftRoster", "required": true})],
+            ),
+            entry(
                 "monthly_attendance_sheet",
                 "Monthly Attendance Sheet",
                 "attendance",
@@ -214,6 +221,11 @@ impl ReportSource for HrReports {
     async fn run(&self, k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, String>) -> Result<Value> {
         let p = Params { raw };
         let mut tx = read_tx(k, ctx).await?;
+        if name == "shift_roster" {
+            let out = shift_roster(&mut tx, ctx, &p).await?;
+            tx.rollback().await?;
+            return Ok(out);
+        }
         let co = resolve_company(&mut tx, ctx, &p).await?;
         let mut out = match name {
             "employee_directory" => directory(&mut tx, ctx, co.id, &p).await?,
@@ -538,6 +550,103 @@ async fn skills_matrix(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) ->
         "rows": rows,
         "totals": {"count": count},
         "meta": {"truncated": truncated, "people": people.len(), "gaps": gaps},
+    }))
+}
+
+/// A roster's people by its days: each cell the shift that day (an assignment covering it, a submitted one before a
+/// draft, else the default shift), with holidays and approved leave, for the roster grid and for agents.
+async fn shift_roster(tx: &mut Tx, ctx: &Ctx, p: &Params<'_>) -> Result<Value> {
+    let rid = p.uuid("roster")?.ok_or_else(|| Error::field("roster", "is required"))?;
+    let roster: Option<(String, String, Uuid, Option<Uuid>, Option<Uuid>, NaiveDate, NaiveDate)> =
+        sqlx::query_as("select title, status, company, department, branch, from_date, to_date from e_shift_roster where tenant_id = $1 and id = $2")
+            .bind(ctx.tenant)
+            .bind(rid)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let (title, status, company, department, branch, from, to) = roster.ok_or_else(|| Error::NotFound("Shift Roster".into()))?;
+    let mut qb = QueryBuilder::new(
+        "select e.id, e.number, e.employee_name, d.department_name, e.default_shift from e_employee e \
+         left join e_department d on d.tenant_id = e.tenant_id and d.id = e.department where e.status = 'Active' and e.tenant_id = ",
+    );
+    qb.push_bind(ctx.tenant).push(" and e.company = ").push_bind(company);
+    push_eq(&mut qb, "e.department", department);
+    push_eq(&mut qb, "e.branch", branch);
+    qb.push(" and e.date_of_joining <= ").push_bind(to).push(" and (e.relieving_date is null or e.relieving_date >= ").push_bind(from).push(")");
+    push_own(&mut qb, &own_only(ctx, "ShiftAssignment"));
+    qb.push(" order by e.employee_name, e.number limit ").push_bind(MAX_ROWS as i64);
+    let people: Vec<(Uuid, Option<String>, Option<String>, Option<String>, Option<Uuid>)> = qb.build_query_as().fetch_all(&mut **tx).await?;
+    let ids: Vec<Uuid> = people.iter().map(|p| p.0).collect();
+    let assignments: Vec<(Uuid, Uuid, Uuid, i16, NaiveDate, Option<NaiveDate>)> = sqlx::query_as(
+        "select id, employee, shift_type, docstatus, start_date, end_date from e_shift_assignment where tenant_id = $1 and employee = any($2) \
+         and docstatus < 2 and start_date <= $4 and (end_date is null or end_date >= $3) order by docstatus desc, start_date desc",
+    )
+    .bind(ctx.tenant)
+    .bind(&ids)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&mut **tx)
+    .await?;
+    let leave: Vec<(Uuid, NaiveDate, NaiveDate)> = sqlx::query_as(
+        "select employee, from_date, to_date from e_leave_application where tenant_id = $1 and employee = any($2) and status = 'Approved' \
+         and docstatus = 1 and from_date <= $4 and to_date >= $3",
+    )
+    .bind(ctx.tenant)
+    .bind(&ids)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&mut **tx)
+    .await?;
+    let types: Vec<(Uuid, String, String, String)> =
+        sqlx::query_as("select id, shift_name, start_time, end_time from e_shift_type where tenant_id = $1 order by shift_name")
+            .bind(ctx.tenant)
+            .fetch_all(&mut **tx)
+            .await?;
+    let name_of: HashMap<Uuid, &str> = types.iter().map(|t| (t.0, t.1.as_str())).collect();
+    let drafts: i64 = sqlx::query_scalar("select count(*) from e_shift_assignment where tenant_id = $1 and roster = $2 and docstatus = 0")
+        .bind(ctx.tenant)
+        .bind(rid)
+        .fetch_one(&mut **tx)
+        .await?;
+    let days: Vec<NaiveDate> = crate::calendar::days(from, to).collect();
+    let mut cells = Map::new();
+    let mut rows = Vec::new();
+    for (emp, no, name, dept, default) in &people {
+        let holidays = crate::calendar::employee_holidays(tx, ctx.tenant, *emp, from, to).await?;
+        let mut r = Map::new();
+        r.insert("employee".into(), json!(no));
+        r.insert("employee_id".into(), json!(emp));
+        r.insert("employee_name".into(), json!(name));
+        r.insert("department".into(), json!(dept));
+        for day in &days {
+            let cover = assignments.iter().find(|a| a.1 == *emp && a.4 <= *day && a.5.is_none_or(|e| e >= *day));
+            let (shift, from_default) = match cover {
+                Some(a) => (Some(a.2), false),
+                None => (*default, default.is_some()),
+            };
+            let label =
+                shift.and_then(|s| name_of.get(&s).copied()).map(|n| if cover.is_some_and(|a| a.3 == 0) { format!("{n} (draft)") } else { n.to_string() });
+            r.insert(format!("d{}", day.format("%Y%m%d")), json!(label.unwrap_or_default()));
+            cells.insert(
+                format!("{emp}:{day}"),
+                json!({"shift_type": shift, "assignment": cover.map(|a| a.0), "docstatus": cover.map(|a| a.3), "start_date": cover.map(|a| a.4),
+                       "end_date": cover.and_then(|a| a.5), "from_default": from_default, "holiday": holidays.contains(day),
+                       "leave": leave.iter().any(|l| l.0 == *emp && l.1 <= *day && l.2 >= *day)}),
+            );
+        }
+        rows.push(Value::Object(r));
+    }
+    let mut columns = vec![col("employee", "Employee", "data"), col("employee_name", "Name", "data"), col("department", "Department", "data")];
+    columns.extend(days.iter().map(|d| col(&format!("d{}", d.format("%Y%m%d")), &d.format("%a %d").to_string(), "data")));
+    Ok(json!({
+        "columns": columns,
+        "rows": rows,
+        "totals": {"count": people.len()},
+        "meta": {
+            "days": days,
+            "shift_types": types.iter().map(|t| json!({"id": t.0, "name": t.1, "start_time": t.2, "end_time": t.3})).collect::<Vec<_>>(),
+            "cells": cells,
+            "roster": {"id": rid, "title": title, "status": status, "from_date": from, "to_date": to, "drafts": drafts},
+        },
     }))
 }
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.22.0
+
+Package `hr` 0.11.0. New entities Shift Roster and Shift Swap Request, two fields on Shift Assignment (Roster, Swap
+Request), the Shift Swap Approval workflow and four message templates, made when the package's version moves.
+Existing assignments keep working (attendance never reads the new fields). No interface change; the grid is next.
+
+**Rosters and shift swaps, the server side.**
+- A **Shift Roster** covers up to 62 days of a company, department or branch. **Fill with a Shift** gives each of its
+  people without a shift in those days a draft assignment (at most 1,000 people a call); **Publish** submits the drafts
+  of whole people, about 500 assignments a call (`remaining` says when to call again), tells each person once
+  (`hr.roster_published`), and marks the roster Published when none is left. A publish that meets an overlap is
+  refused with the person's name and publishes nothing. Once shifts are planned in it, a roster's company, department,
+  branch and days cannot change.
+- The **Shift Roster** report gives the people by days with each cell's shift, draft or submitted, default shift,
+  holiday and approved leave, for the grid and for agents; an employee sees their own row.
+- A **Shift Swap Request** exchanges two colleagues' shifts on one day: the colleague accepts or declines
+  (`hr.shift_swap_asked`, `hr.shift_swap_to_approve`, `hr.shift_swap_decided`), the approver approves, and both
+  shifts change in the approval's transaction, or neither does (refused when either shift changed since it was asked,
+  the day has passed or is marked). Cancelling an approved swap puts both back. Only the employee asks for
+  themselves; the colleague cannot edit or delete it.
+- **Fixed:** two overlapping shift assignments of one employee submitted at the same moment both passed. Every save
+  and submit of an assignment now locks its employee first.
+
 ## 0.21.1
 
 Package `hr` 0.10.1. Three read-only fields on an appraisal's goals (From, From Record, Standing There), made when the

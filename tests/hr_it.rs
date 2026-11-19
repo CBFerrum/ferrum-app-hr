@@ -111,7 +111,11 @@ fn payroll_run() {
 }
 
 /// Every action of the four packages, as the capability id the gate lists it under.
-const CONTRACT_IDS: [&str; 51] = [
+const CONTRACT_IDS: [&str; 55] = [
+    "hr.shift_roster.fill",
+    "hr.shift_roster.publish",
+    "hr.shift_swap_request.accept",
+    "hr.shift_swap_request.decline",
     "hr.employee.record_training",
     "hr.appraisal_cycle.start",
     "hr.appraisal_cycle.create_appraisals",
@@ -982,6 +986,359 @@ fn an_objective_is_one_goal_of_the_appraisal() {
         let g = goals.iter().find(|g| g["reference_id"] == json!("obj-1")).unwrap();
         assert_eq!((g["kra"].clone(), g["note"].clone(), dec(&g["per_weightage"])), (json!("Ship the mobile app"), json!("70%"), Decimal::ZERO));
         assert_eq!(r.t.k.invoke(&r.asha, set("90%", "g3")).await.map_err(|e| e.code()).unwrap_err(), "forbidden", "not the employee's own goals");
+    });
+}
+
+// ───────────── rosters and shift swaps (hr-6) ─────────────
+
+/// Day and Night shifts; Operations with Asha, Ravi (both with sign-ins, reporting to Maya, a Leave Approver), Kiran
+/// and Lee; an HR manager and a planner (HR User).
+struct Rota {
+    t: T,
+    hr: Ctx,
+    planner: Ctx,
+    asha: Ctx,
+    ravi: Ctx,
+    maya: Ctx,
+    day: Doc,
+    night: Doc,
+    ops: Doc,
+    asha_emp: Doc,
+    ravi_emp: Doc,
+}
+
+impl Rota {
+    async fn new(slug: &str) -> Rota {
+        let t = T::new(slug).await;
+        let u = |n: &str| format!("{n}@{slug}.test");
+        let hr = t.user(&u("hr"), &["HR Manager"]).await;
+        let planner = t.user(&u("planner"), &["HR User"]).await;
+        let asha = t.user(&u("asha"), &["Employee"]).await;
+        let ravi = t.user(&u("ravi"), &["Employee"]).await;
+        let maya = t.user(&u("maya"), &["Employee", "Leave Approver"]).await;
+        let shift = |n: &str, a: &str, b: &str| t.ins(&t.admin, "ShiftType", json!({"shift_name": n, "start_time": a, "end_time": b}));
+        let (day, night) = (shift("Day", "09:00", "17:00").await, shift("Night", "21:00", "05:00").await);
+        let ops = t.ins(&t.admin, "Department", json!({"department_name": "Operations", "company": t.c()})).await;
+        let maya_emp = t.employee("Maya", json!({"user": u("maya")})).await;
+        let asha_emp = t.employee("Asha", json!({"user": u("asha"), "department": ops["id"], "reports_to": maya_emp["id"]})).await;
+        let ravi_emp = t.employee("Ravi", json!({"user": u("ravi"), "department": ops["id"], "reports_to": maya_emp["id"]})).await;
+        t.employee("Kiran", json!({"department": ops["id"]})).await;
+        t.employee("Lee", json!({"department": ops["id"], "default_shift": day["id"]})).await;
+        Rota { t, hr, planner, asha, ravi, maya, day, night, ops, asha_emp, ravi_emp }
+    }
+
+    fn on(&self, n: i64) -> String {
+        days_from(&self.t, n).to_string()
+    }
+
+    async fn roster(&self, from: i64, to: i64) -> Doc {
+        self.t
+            .ins(
+                &self.planner,
+                "ShiftRoster",
+                json!({"title": "Next week", "company": self.t.c(), "department": self.ops["id"], "from_date": self.on(from), "to_date": self.on(to)}),
+            )
+            .await
+    }
+
+    async fn fill(&self, roster: &Doc, params: Value) -> ferrum_kernel::Result<Value> {
+        self.t.k.run_action(&self.planner, "ShiftRoster", uid(roster), "fill", params).await
+    }
+
+    async fn publish(&self, roster: &Doc) -> ferrum_kernel::Result<Value> {
+        self.t.k.run_action(&self.hr, "ShiftRoster", uid(roster), "publish", json!({})).await
+    }
+
+    /// A submitted assignment of `shift` over days `from..=to` from today.
+    async fn assign(&self, emp: &Doc, shift: &Doc, from: i64, to: i64) -> Doc {
+        self.t
+            .ins_submit(
+                &self.hr,
+                "ShiftAssignment",
+                json!({"employee": emp["id"], "shift_type": shift["id"], "start_date": self.on(from), "end_date": self.on(to)}),
+            )
+            .await
+    }
+
+    async fn shift_of(&self, emp: &Doc, n: i64) -> Option<String> {
+        let mut tx = self.t.k.db.tenant_tx(self.t.tenant).await.unwrap();
+        let s: Option<Uuid> = sqlx::query_scalar(
+            "select shift_type from e_shift_assignment where tenant_id = $1 and employee = $2 and docstatus = 1 and start_date <= $3 \
+             and (end_date is null or end_date >= $3) order by start_date desc limit 1",
+        )
+        .bind(self.t.tenant)
+        .bind(uid(emp))
+        .bind(days_from(&self.t, n))
+        .fetch_optional(&mut *tx)
+        .await
+        .unwrap()
+        .flatten();
+        s.map(|s| if s == uid(&self.day) { "Day".to_string() } else { "Night".to_string() })
+    }
+
+    /// Asha (Day) asks Ravi (Night) to swap on day `n`, both inside longer assignments.
+    async fn ask(&self, n: i64) -> Doc {
+        self.assign(&self.asha_emp, &self.day, n - 3, n + 3).await;
+        self.assign(&self.ravi_emp, &self.night, n - 3, n + 3).await;
+        self.t
+            .ins(&self.asha, "ShiftSwapRequest", json!({"employee": self.asha_emp["id"], "with_employee": self.ravi_emp["id"], "swap_date": self.on(n)}))
+            .await
+    }
+
+    async fn swap_act(&self, who: &Ctx, req: &Doc, action: &str) -> ferrum_kernel::Result<Value> {
+        self.t.k.run_action(who, "ShiftSwapRequest", uid(req), action, json!({})).await
+    }
+
+    async fn approve(&self, who: &Ctx, req: &Doc) -> ferrum_kernel::Result<Doc> {
+        self.t.trans(who, "ShiftSwapRequest", uid(req), "Approve").await
+    }
+}
+
+#[test]
+fn two_overlapping_assignments_submitted_at_once_make_one() {
+    run(async {
+        let r = Rota::new("hrro1").await;
+        for _ in 0..3 {
+            let draft = |shift: &Doc| {
+                r.t.ins(
+                    &r.hr,
+                    "ShiftAssignment",
+                    json!({"employee": r.asha_emp["id"], "shift_type": shift["id"], "start_date": r.on(40), "end_date": r.on(45)}),
+                )
+            };
+            let (a, b) = (draft(&r.day).await, draft(&r.night).await);
+            let (x, y) = tokio::join!(r.t.k.submit(&r.hr, "ShiftAssignment", uid(&a), None), r.t.k.submit(&r.hr, "ShiftAssignment", uid(&b), None));
+            assert_eq!(usize::from(x.is_ok()) + usize::from(y.is_ok()), 1, "{x:?} {y:?}");
+            let loser = if x.is_err() { x.map(|_| ()) } else { y.map(|_| ()) };
+            refused(loser, "overlaps");
+            let won = if r.t.get("ShiftAssignment", uid(&a)).await["docstatus"] == json!(1) { a } else { b };
+            r.t.k.cancel(&r.hr, "ShiftAssignment", uid(&won), None).await.expect("next round");
+        }
+    });
+}
+
+#[test]
+fn fill_gives_everyone_a_draft_and_skips_those_who_have_one() {
+    run(async {
+        let r = Rota::new("hrro2").await;
+        let ro = r.roster(7, 13).await;
+        assert_eq!(r.fill(&ro, json!({"shift_type": r.day["id"]})).await.expect("filled"), json!({"created": 4, "skipped": 0}));
+        assert_eq!(r.fill(&ro, json!({"shift_type": r.day["id"]})).await.expect("again"), json!({"created": 0, "skipped": 4}));
+        let ro2 =
+            r.t.ins(
+                &r.planner,
+                "ShiftRoster",
+                json!({"title": "Later", "company": r.t.c(), "department": r.ops["id"], "from_date": r.on(20), "to_date": r.on(26)}),
+            )
+            .await;
+        assert_eq!(r.fill(&ro2, json!({"shift_type": r.night["id"], "employee": r.asha_emp["id"]})).await.expect("one"), json!({"created": 1, "skipped": 0}));
+        refused(r.fill(&ro2, json!({"shift_type": r.day["id"], "from_date": r.on(19)})).await, "from_date");
+        let maya = r.t.one("Employee", json!({"first_name": "Maya"})).await;
+        refused(r.fill(&ro2, json!({"shift_type": r.day["id"], "employee": maya["id"]})).await, "not one of this roster");
+    });
+}
+
+#[test]
+fn drafts_do_not_count_until_published() {
+    run(async {
+        let r = Rota::new("hrro3").await;
+        let ro = r.roster(7, 9).await;
+        r.fill(&ro, json!({"shift_type": r.night["id"]})).await.expect("filled");
+        let lee = r.t.one("Employee", json!({"first_name": "Lee"})).await;
+        let cell = |rep: &Value| rep["meta"]["cells"][format!("{}:{}", uid(&lee), r.on(8))].clone();
+        let before = r.t.report(&r.hr, "shift_roster", &[("roster", &uid(&ro).to_string())]).await.expect("report");
+        assert_eq!((cell(&before)["docstatus"].clone(), r.shift_of(&lee, 8).await), (json!(0), None), "a draft counts for nothing");
+        r.publish(&ro).await.expect("published");
+        let after = r.t.report(&r.hr, "shift_roster", &[("roster", &uid(&ro).to_string())]).await.expect("report");
+        assert_eq!((cell(&after)["docstatus"].clone(), r.shift_of(&lee, 8).await), (json!(1), Some("Night".to_string())));
+    });
+}
+
+#[test]
+fn publish_submits_the_drafts_and_tells_each_person_once() {
+    run(async {
+        let r = Rota::new("hrro4").await;
+        let ro = r.roster(7, 13).await;
+        r.fill(&ro, json!({"shift_type": r.day["id"]})).await.expect("filled");
+        assert_eq!(r.publish(&ro).await.expect("published"), json!({"published": 4, "remaining": 0}));
+        assert_eq!(r.t.get("ShiftRoster", uid(&ro)).await["status"], json!("Published"));
+        assert_eq!(sends(&r.t, "hr.roster_published").await, 2, "Asha and Ravi have sign-ins");
+        refused(r.publish(&ro).await, "nothing to publish");
+        assert_eq!(sends(&r.t, "hr.roster_published").await, 2);
+        let refused_planner = r.t.k.run_action(&r.asha, "ShiftRoster", uid(&ro), "publish", json!({})).await;
+        assert!(refused_planner.is_err());
+    });
+}
+
+#[test]
+fn a_publish_that_meets_an_overlap_publishes_nothing() {
+    run(async {
+        let r = Rota::new("hrro5").await;
+        let ro = r.roster(7, 13).await;
+        r.fill(&ro, json!({"shift_type": r.day["id"]})).await.expect("filled");
+        // Made elsewhere after the fill, over the same days: it is submitted, the roster's draft is not.
+        r.assign(&r.ravi_emp, &r.night, 9, 9).await;
+        refused(r.publish(&ro).await, "Ravi Test");
+        assert!(r.t.list(&r.t.admin, "ShiftAssignment", json!({"roster": ro["id"], "docstatus": 1})).await.is_empty(), "nothing published");
+    });
+}
+
+#[test]
+fn the_roster_report_shows_people_by_days() {
+    run(async {
+        let r = Rota::new("hrro6").await;
+        let ro = r.roster(7, 13).await;
+        r.fill(&ro, json!({"shift_type": r.day["id"]})).await.expect("filled");
+        let on = uid(&ro).to_string();
+        // Asha on approved leave on the 8th day.
+        let mut tx = r.t.k.db.tenant_tx(r.t.tenant).await.unwrap();
+        sqlx::query("insert into e_leave_application (tenant_id, id, employee, from_date, to_date, status, docstatus, company) values ($1, $2, $3, $4, $4, 'Approved', 1, $5)")
+            .bind(r.t.tenant)
+            .bind(Uuid::now_v7())
+            .bind(uid(&r.asha_emp))
+            .bind(days_from(&r.t, 8))
+            .bind(r.t.company)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let rep = r.t.report(&r.hr, "shift_roster", &[("roster", &on)]).await.expect("report");
+        assert_eq!(rep["meta"]["days"].as_array().unwrap().len(), 7);
+        assert_eq!(rep["rows"].as_array().unwrap().len(), 4);
+        let cell = |e: &Doc, n: i64| rep["meta"]["cells"][format!("{}:{}", uid(e), r.on(n))].clone();
+        // A weekly off (the company's list) is in every week.
+        use chrono::Datelike;
+        let sat = (7..=13).find(|n| days_from(&r.t, *n).weekday() == chrono::Weekday::Sat).unwrap();
+        assert_eq!(cell(&r.asha_emp, sat)["holiday"], json!(true));
+        assert_eq!(cell(&r.asha_emp, 8)["leave"], json!(true));
+        let asha_row = rep["rows"].as_array().unwrap().iter().find(|x| x["employee_id"] == r.asha_emp["id"]).unwrap().clone();
+        assert_eq!(asha_row[format!("d{}", days_from(&r.t, 7).format("%Y%m%d"))], json!("Day (draft)"));
+        let own = r.t.report(&r.asha, "shift_roster", &[("roster", &on)]).await.expect("own row");
+        assert_eq!(own["rows"].as_array().unwrap().len(), 1);
+    });
+}
+
+#[test]
+fn a_swap_changes_both_shifts_together() {
+    run(async {
+        let r = Rota::new("hrro7").await;
+        let req = r.ask(10).await;
+        assert_eq!(sends(&r.t, "hr.shift_swap_asked").await, 1, "Ravi is asked");
+        r.swap_act(&r.ravi, &req, "accept").await.expect("accepted");
+        r.approve(&r.maya, &req).await.expect("approved");
+        assert_eq!((r.shift_of(&r.asha_emp, 10).await, r.shift_of(&r.ravi_emp, 10).await), (Some("Night".into()), Some("Day".into())));
+        for n in [9, 11] {
+            assert_eq!((r.shift_of(&r.asha_emp, n).await, r.shift_of(&r.ravi_emp, n).await), (Some("Day".into()), Some("Night".into())), "day {n}");
+        }
+        assert_eq!(sends(&r.t, "hr.shift_swap_decided").await, 2, "both are told");
+        assert_eq!(r.t.get("ShiftSwapRequest", uid(&req)).await["status"], json!("Approved"));
+    });
+}
+
+#[test]
+fn a_swap_needs_the_colleague_and_the_approver() {
+    run(async {
+        let r = Rota::new("hrro8").await;
+        let req = r.ask(10).await;
+        refused(r.approve(&r.maya, &req).await, "has not accepted");
+        assert!(r.approve(&r.asha, &req).await.is_err(), "not her own");
+        r.swap_act(&r.ravi, &req, "decline").await.expect("declined");
+        refused(r.approve(&r.maya, &req).await, "has not accepted");
+        let rejected = r.t.trans(&r.maya, "ShiftSwapRequest", uid(&req), "Reject").await.expect("rejected");
+        assert_eq!(rejected["status"], json!("Rejected"));
+        assert_eq!((r.shift_of(&r.asha_emp, 10).await, r.shift_of(&r.ravi_emp, 10).await), (Some("Day".into()), Some("Night".into())));
+    });
+}
+
+#[test]
+fn the_colleague_cannot_edit_or_delete_the_request() {
+    run(async {
+        let r = Rota::new("hrro9").await;
+        let req = r.ask(10).await;
+        assert!(r.t.k.update(&r.ravi, "ShiftSwapRequest", uid(&req), obj(json!({"reason": "mine now"})), None).await.is_err());
+        assert!(r.t.k.delete(&r.ravi, "ShiftSwapRequest", uid(&req), None).await.is_err());
+        let kiran = r.t.user("kiran@hrro9.test", &["Employee"]).await;
+        assert!(r.swap_act(&kiran, &req, "accept").await.is_err());
+        r.swap_act(&r.ravi, &req, "accept").await.expect("Ravi accepts");
+    });
+}
+
+#[test]
+fn an_employee_asks_only_for_themselves() {
+    run(async {
+        let r = Rota::new("hrro10").await;
+        r.assign(&r.asha_emp, &r.day, 9, 11).await;
+        r.assign(&r.ravi_emp, &r.night, 9, 11).await;
+        let ask =
+            r.t.try_ins(&r.asha, "ShiftSwapRequest", json!({"employee": r.ravi_emp["id"], "with_employee": r.asha_emp["id"], "swap_date": r.on(10)})).await;
+        assert!(ask.is_err(), "{ask:?}");
+    });
+}
+
+#[test]
+fn a_swap_is_refused_when_the_shifts_changed() {
+    run(async {
+        let r = Rota::new("hrro11").await;
+        let req = r.ask(10).await;
+        r.swap_act(&r.ravi, &req, "accept").await.expect("accepted");
+        for a in r.t.list(&r.t.admin, "ShiftAssignment", json!({"employee": r.ravi_emp["id"], "docstatus": 1})).await {
+            r.t.k.cancel(&r.hr, "ShiftAssignment", uid(&a), None).await.expect("HR changes Ravi's shifts");
+        }
+        r.assign(&r.ravi_emp, &r.day, 10, 10).await;
+        refused(r.approve(&r.maya, &req).await, "shifts changed since");
+        assert_eq!(r.shift_of(&r.asha_emp, 10).await, Some("Day".into()), "nothing changed");
+    });
+}
+
+#[test]
+fn a_swap_is_refused_for_a_day_that_is_marked_or_past() {
+    run(async {
+        let r = Rota::new("hrro12").await;
+        r.assign(&r.asha_emp, &r.day, -5, 5).await;
+        r.assign(&r.ravi_emp, &r.night, -5, 5).await;
+        let v = |n: i64| json!({"employee": r.asha_emp["id"], "with_employee": r.ravi_emp["id"], "swap_date": r.on(n)});
+        refused(r.t.try_ins(&r.asha, "ShiftSwapRequest", v(-1)).await, "has passed");
+        let mut tx = r.t.k.db.tenant_tx(r.t.tenant).await.unwrap();
+        sqlx::query(
+            "insert into e_attendance (tenant_id, id, employee, attendance_date, status, docstatus, company) values ($1, $2, $3, $4, 'Present', 1, $5)",
+        )
+        .bind(r.t.tenant)
+        .bind(Uuid::now_v7())
+        .bind(uid(&r.ravi_emp))
+        .bind(days_from(&r.t, 0))
+        .bind(r.t.company)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        refused(r.t.try_ins(&r.asha, "ShiftSwapRequest", v(0)).await, "already marked");
+    });
+}
+
+#[test]
+fn cancelling_an_approved_swap_puts_both_shifts_back() {
+    run(async {
+        let r = Rota::new("hrro13").await;
+        let req = r.ask(10).await;
+        r.swap_act(&r.ravi, &req, "accept").await.expect("accepted");
+        r.approve(&r.maya, &req).await.expect("approved");
+        r.t.trans(&r.maya, "ShiftSwapRequest", uid(&req), "Cancel").await.expect("cancelled");
+        assert_eq!((r.shift_of(&r.asha_emp, 10).await, r.shift_of(&r.ravi_emp, 10).await), (Some("Day".into()), Some("Night".into())));
+        assert_eq!(r.t.get("ShiftSwapRequest", uid(&req)).await["status"], json!("Cancelled"));
+    });
+}
+
+#[test]
+fn two_swaps_for_the_same_person_and_day() {
+    run(async {
+        let r = Rota::new("hrro14").await;
+        r.ask(10).await;
+        let kiran = r.t.one("Employee", json!({"first_name": "Kiran"})).await;
+        r.assign(&kiran, &r.night, 10, 10).await;
+        refused(
+            r.t.try_ins(&r.hr, "ShiftSwapRequest", json!({"employee": kiran["id"], "with_employee": r.asha_emp["id"], "swap_date": r.on(10)})).await,
+            "already has a swap",
+        );
     });
 }
 
