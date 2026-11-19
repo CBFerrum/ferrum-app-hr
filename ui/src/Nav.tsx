@@ -8,6 +8,7 @@ import { NavLink } from "react-router";
 import { ApiError, api, t } from "@ferrum/client";
 import { StatePanel, useLiveEntity } from "@ferrum/kit";
 import { useMe } from "@ferrum/records";
+import { useCanRead } from "./data";
 import type { Item } from "./inbox";
 
 export const INBOX = ["people", "inbox"];
@@ -29,6 +30,7 @@ export function Nav() {
   const me = useMe().data;
   const waiting = useInbox().data?.length ?? 0;
   const decides = !!me && (me.user.is_admin || me.user.roles.some((r) => DECIDERS.includes(r)));
+  const rosters = useCanRead("ShiftRoster");
   return (
     <nav className="ppl-tabs" aria-label={t("People")}>
       <NavLink to="/" end>
@@ -45,6 +47,7 @@ export function Nav() {
         </NavLink>
       )}
       <NavLink to="/calendar">{t("Calendar")}</NavLink>
+      {rosters && <NavLink to="/roster">{t("Roster")}</NavLink>}
       <NavLink to="/directory">{t("People")}</NavLink>
     </nav>
   );

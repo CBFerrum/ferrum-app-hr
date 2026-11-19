@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.23.0
+
+No package or database change; the interface is rebuilt.
+
+**The roster grid.** People has a Roster tab (for those who may read rosters): `/people/roster` lists the rosters
+with their state, and `/people/roster/{id}` shows a roster's people by its days, each cell the shift that day with
+drafts, holidays, approved leave and default shifts told apart in words. A planner sets an empty day, changes or
+removes a one-day draft, cancels a one-day shift (a longer one opens its record), fills a shift for everyone or one
+person, and publishes (called again until nothing remains, with the progress shown; a refusal stops it and says how
+many were published before). Everything goes through operations an agent can use: the Shift Roster report, the
+shift assignment's record operations and the roster's Fill and Publish. Someone who may only read sees the grid
+without buttons; an employee sees their own row. The grid is one tab stop: arrows, Home and End move, Enter opens.
+The route table moved to `ui/src/routes.tsx` so that a test opens it.
+
 ## 0.22.0
 
 Package `hr` 0.11.0. New entities Shift Roster and Shift Swap Request, two fields on Shift Assignment (Roster, Swap

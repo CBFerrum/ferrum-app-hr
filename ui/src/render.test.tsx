@@ -14,6 +14,8 @@ import { Month } from "./Month";
 import { Pay } from "./Pay";
 import { Careers } from "./Openings";
 import { TeamCalendar } from "./Team";
+import { RosterGrid, Rosters } from "./Rosters";
+import type { RosterReport } from "./roster";
 import type { Item } from "./inbox";
 
 const ME = { tenant: "t", user: { id: "u1", email: "boss@acme.test", full_name: "Maya Boss", is_admin: false, roles: ["Employee", "Leave Approver"] }, default_company: null, scopes: {}, fiscal_year_start_month: 4, timezone: "Asia/Kolkata", packages: [] };
@@ -277,5 +279,68 @@ describe("The careers page", () => {
     );
     for (const word of ["Support Engineer", "Help", "printers", "Apply for this role", "Your name", "Email address", "Link to your CV or profile", "A few words about you", "Send my application", "We use what you send only to consider you", "All openings"]) expect(html, word).toContain(word);
     expect(html).toContain('tabindex="-1"');
+  });
+});
+
+describe("Roster", () => {
+  const D1 = "2026-11-26";
+  const D2 = "2026-11-27";
+  const REPORT: RosterReport = {
+    rows: [
+      { employee: "HR-EMP-00001", employee_id: "e1", employee_name: "Asha Test", department: "Operations" },
+      { employee: "HR-EMP-00002", employee_id: "e2", employee_name: "Ravi Test", department: "Operations" },
+    ],
+    meta: {
+      days: [D1, D2],
+      shift_types: [{ id: "day", name: "Day", start_time: "09:00", end_time: "17:00" }],
+      cells: {
+        [`e1:${D1}`]: { shift_type: "day", assignment: "a1", docstatus: 0, start_date: D1, end_date: D2, from_default: false, holiday: false, leave: false },
+        [`e1:${D2}`]: { shift_type: "day", assignment: "a1", docstatus: 0, start_date: D1, end_date: D2, from_default: false, holiday: true, leave: false },
+        [`e2:${D1}`]: { shift_type: null, assignment: null, docstatus: null, start_date: null, end_date: null, from_default: false, holiday: false, leave: true },
+      },
+      roster: { id: "r1", title: "Last week of November", status: "Draft", from_date: D1, to_date: D2, drafts: 2 },
+    },
+  };
+  const grid = (write: "none" | "all", report: RosterReport = REPORT) =>
+    draw(
+      <Routes>
+        <Route path="roster/:id" element={<RosterGrid />} />
+      </Routes>,
+      "/roster/r1",
+      (qc) => {
+        qc.setQueryData(["meta"], { ...META, entities: [...META.entities, ...["ShiftRoster", "ShiftAssignment"].map((name) => ({ name, label: name, label_plural: name, kind: "document", submittable: true, permissions: perm("all", write) }))] });
+        qc.setQueryData(["people", "roster", "r1"], report);
+      },
+    );
+
+  it("shows every person and day, a draft marked, a holiday named, and Publish for a planner", () => {
+    const html = grid("all");
+    for (const word of ["Last week of November", "Asha Test", "Ravi Test", "2 drafts not published", "Publish", "Fill with a shift"]) expect(html, word).toContain(word);
+    expect(html).toContain("Day (09:00 to 17:00), draft");
+    expect(html).toContain("no shift, on leave");
+    expect(html).toContain("draft, holiday");
+    expect(html).toContain("<caption");
+  });
+
+  it("draws plain cells and no Fill or Publish for someone who may only read", () => {
+    const html = grid("none");
+    expect(html).not.toContain("Publish");
+    expect(html).not.toContain("Fill with a shift");
+    expect(html).not.toContain('class="ppl-roster-cell"');
+  });
+
+  it("says so when nobody is in the roster", () => {
+    expect(grid("all", { ...REPORT, rows: [] })).toContain("Nobody is in this roster");
+  });
+
+  it("lists rosters with their state, and says when there are none", () => {
+    const seed = (rows: unknown[]) => (qc: QueryClient) => {
+      qc.setQueryData(["meta"], { ...META, entities: [...META.entities, { name: "ShiftRoster", label: "Shift Roster", label_plural: "Shift Rosters", kind: "master", submittable: false, permissions: perm("all", "all") }] });
+      qc.setQueryData(["people", "rosters"], rows);
+    };
+    const html = draw(<Rosters />, "/roster", seed([{ id: "r1", title: "Last week of November", from_date: D1, to_date: D2, status: "Published", _titles: { department: "Operations" } }]));
+    for (const word of ["Last week of November", "Operations", "Published", "New roster"]) expect(html, word).toContain(word);
+    expect(html).toContain('href="/roster/r1"');
+    expect(draw(<Rosters />, "/roster", seed([]))).toContain("No rosters yet");
   });
 });
