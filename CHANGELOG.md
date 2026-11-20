@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.25.2
+
+No package or database change.
+
+**Reports read only what their caller reads (K0-7).** Each report's filters (department, designation, status,
+document type, program, skill, roster, employee, leave type, payroll entry) are refused when the caller cannot read
+the field they filter by, as a list refuses them. Headcount's grouping is refused the same way, and with none chosen it
+groups by the first of Department, Designation, Branch, Grade, Employment Type and Gender the caller reads. A column of
+a field the caller cannot read is left out of the columns, the rows and the totals; work anniversaries show only to
+those who read the joining date.
+
 ## 0.25.1
 
 Packages `hr` 0.13.1, `payroll_erp` 0.6.2. No interface change.

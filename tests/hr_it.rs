@@ -6366,3 +6366,78 @@ fn a_reader_cannot_make_an_employee_from_an_offer() {
         t.k.run_action(&clerk, "JobOffer", uid(&offer), "make_employee", json!({})).await.expect("an HR user, who changes offers, makes it");
     });
 }
+
+// ───────────── K0-7: a report groups, filters and shows only what its caller reads ─────────────
+
+/// A workspace's role reading every employee with their department, gender and mobile number hidden.
+async fn hiding_viewer(t: &T, email: &str) -> Ctx {
+    own_role(
+        t,
+        "Headcount Viewer",
+        json!([{"entity": "Employee", "read": true, "hide": ["department", "gender", "cell_number"]}, {"entity": "Company", "read": true}]),
+    )
+    .await;
+    t.user(email, &["Headcount Viewer"]).await
+}
+
+/// A department and a designation, and Asha in both with a mobile number.
+async fn asha_in_engineering(t: &T) -> (Doc, Doc) {
+    let dept = t.ins(&t.admin, "Department", json!({"department_name": "Engineering", "company": t.c()})).await;
+    let eng = t.ins(&t.admin, "Designation", json!({"designation_name": "Engineer"})).await;
+    t.employee("Asha", json!({"department": dept["id"], "designation": eng["id"], "cell_number": "+919876543210"})).await;
+    (dept, eng)
+}
+
+#[test]
+fn a_report_refuses_grouping_by_a_field_the_caller_cannot_read() {
+    run(async {
+        let slug = "hrk07g";
+        let t = T::new(slug).await;
+        let (dept, _) = asha_in_engineering(&t).await;
+        let viewer = hiding_viewer(&t, &format!("v@{slug}.test")).await;
+        for g in ["Gender", "Department"] {
+            forbidden(t.report(&viewer, "headcount", &[("group_by", g)]).await);
+        }
+        forbidden(t.report(&viewer, "employee_directory", &[("department", dept["id"].as_str().unwrap())]).await);
+        let by = t.report(&viewer, "headcount", &[("group_by", "Designation")]).await.expect("a field they read");
+        assert_eq!(row(&by, "group", "Engineer")["headcount"], json!(1));
+        let hr = t.user(&format!("hr@{slug}.test"), &["HR Manager"]).await;
+        t.report(&hr, "headcount", &[("group_by", "Gender")]).await.expect("HR managers group by any");
+    });
+}
+
+#[test]
+fn a_report_s_default_falls_back_to_a_readable_grouping() {
+    run(async {
+        let slug = "hrk07d";
+        let t = T::new(slug).await;
+        asha_in_engineering(&t).await;
+        let viewer = hiding_viewer(&t, &format!("v@{slug}.test")).await;
+        let out = t.report(&viewer, "headcount", &[]).await.expect("headcount without a grouping");
+        assert_eq!(out["columns"][0]["label"], json!("Designation"), "the department, its default, is hidden from them");
+        assert_eq!(row(&out, "group", "Engineer")["headcount"], json!(1));
+        assert!(!serde_json::to_string(&out).unwrap().contains("Engineering"));
+        let hr = t.user(&format!("hr@{slug}.test"), &["HR Manager"]).await;
+        let theirs = t.report(&hr, "headcount", &[]).await.unwrap();
+        assert_eq!((theirs["columns"][0]["label"].clone(), row(&theirs, "group", "Engineering")["headcount"].clone()), (json!("Department"), json!(1)));
+    });
+}
+
+#[test]
+fn a_report_leaves_out_columns_the_caller_cannot_read() {
+    run(async {
+        let slug = "hrk07c";
+        let t = T::new(slug).await;
+        asha_in_engineering(&t).await;
+        let viewer = hiding_viewer(&t, &format!("v@{slug}.test")).await;
+        let out = t.report(&viewer, "employee_directory", &[]).await.expect("the directory");
+        let names: Vec<&str> = out["columns"].as_array().unwrap().iter().filter_map(|c| c["name"].as_str()).collect();
+        assert!(!names.contains(&"department") && !names.contains(&"cell_number") && names.contains(&"designation"), "{names:?}");
+        let text = serde_json::to_string(&out["rows"]).unwrap();
+        assert!(!text.contains("9876543210") && !text.contains("Engineering"), "{text}");
+        assert_eq!(row(&out, "employee_name", "Asha Test")["designation"], json!("Engineer"));
+        let hr = t.user(&format!("hr@{slug}.test"), &["HR Manager"]).await;
+        let theirs = t.report(&hr, "employee_directory", &[]).await.unwrap();
+        assert_eq!(row(&theirs, "employee_name", "Asha Test")["cell_number"], json!("+919876543210"));
+    });
+}

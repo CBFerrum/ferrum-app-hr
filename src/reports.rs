@@ -2,7 +2,7 @@
 //! report's entity is limited to their own records only see their own employee's rows.
 
 use chrono::{Datelike, Duration, NaiveDate};
-use ferrum_domain::reports::{Params, ReportSource, col, param_def, period, read_tx, resolve_company};
+use ferrum_domain::reports::{Params, ReportSource, col, param_def, period, read_tx, readable_choice, readable_columns, readable_default, resolve_company};
 use ferrum_domain::util::money;
 use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, Result, Tx};
 use rust_decimal::Decimal;
@@ -14,6 +14,61 @@ use uuid::Uuid;
 const MAX_ROWS: usize = 10_000;
 
 pub struct HrReports;
+
+/// The field each report's caller-chosen filter reads, by parameter: (report, parameter, entity, field). A caller who
+/// cannot read the field is refused it, as a list refuses filtering by it (S9 T9). Headcount's grouping is checked
+/// where it is chosen.
+const CHOSEN: &[(&str, &str, &str, &str)] = &[
+    ("employee_directory", "department", "Employee", "department"),
+    ("employee_directory", "designation", "Employee", "designation"),
+    ("employee_directory", "status", "Employee", "status"),
+    ("expiring_documents", "document_type", "EmployeeDocument", "document_type"),
+    ("training_compliance", "program", "TrainingRecord", "program"),
+    ("training_compliance", "department", "Employee", "department"),
+    ("skills_matrix", "department", "Employee", "department"),
+    ("skills_matrix", "designation", "Employee", "designation"),
+    ("skills_matrix", "skill", "EmployeeSkill", "skill"),
+    ("shift_roster", "roster", "ShiftAssignment", "roster"),
+    ("monthly_attendance_sheet", "department", "Employee", "department"),
+    ("leave_balance", "employee", "LeaveAllocation", "employee"),
+    ("leave_balance", "leave_type", "LeaveAllocation", "leave_type"),
+    ("leave_balance", "department", "Employee", "department"),
+    ("expense_claim_summary", "employee", "ExpenseClaim", "employee"),
+    ("expense_claim_summary", "status", "ExpenseClaim", "status"),
+    ("recruitment_pipeline", "status", "JobOpening", "status"),
+    ("salary_register", "department", "SalarySlip", "department"),
+    ("bank_remittance", "payroll_entry", "SalarySlip", "payroll_entry"),
+];
+
+/// Headcount's groupings: the label a caller picks and the Employee field it groups by, the default first.
+const GROUPINGS: [(&str, &str); 6] = [
+    ("Department", "department"),
+    ("Designation", "designation"),
+    ("Branch", "branch"),
+    ("Grade", "grade"),
+    ("Employment Type", "employment_type"),
+    ("Gender", "gender"),
+];
+
+/// Leaves out of a report's output the columns of `entity`'s fields the caller cannot read, from its rows and totals
+/// too (S9 T9). A column that is no field of `entity` stays: a report checks what it reads elsewhere itself.
+fn readable_only(ctx: &Ctx, entity: &str, out: &mut Value) {
+    let Some(columns) = out.get("columns").and_then(Value::as_array).cloned() else { return };
+    let kept = readable_columns(ctx, entity, columns.clone());
+    if kept.len() == columns.len() {
+        return;
+    }
+    let gone: Vec<String> = columns.iter().filter(|c| !kept.contains(c)).filter_map(|c| c["name"].as_str().map(str::to_string)).collect();
+    if let Some(rows) = out.get_mut("rows").and_then(Value::as_array_mut) {
+        for r in rows.iter_mut().filter_map(Value::as_object_mut) {
+            r.retain(|k, _| !gone.contains(k));
+        }
+    }
+    if let Some(totals) = out.get_mut("totals").and_then(Value::as_object_mut) {
+        totals.retain(|k, _| !gone.contains(k));
+    }
+    out["columns"] = Value::Array(kept);
+}
 
 fn link(name: &str, label: &str, to: &str) -> Value {
     json!({"name": name, "label": label, "type": "link", "to": to})
@@ -220,10 +275,17 @@ impl ReportSource for HrReports {
 
     async fn run(&self, k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, String>) -> Result<Value> {
         let p = Params { raw };
+        for (_, param, entity, field) in CHOSEN.iter().filter(|c| c.0 == name) {
+            if p.str(param).is_some() {
+                readable_choice(ctx, entity, field)?;
+            }
+        }
+        let entity = self.catalog().iter().find(|e| e["name"] == name).and_then(|e| e["entity"].as_str().map(str::to_string)).unwrap_or_default();
         let mut tx = read_tx(k, ctx).await?;
         if name == "shift_roster" {
-            let out = shift_roster(&mut tx, ctx, &p).await?;
+            let mut out = shift_roster(&mut tx, ctx, &p).await?;
             tx.rollback().await?;
+            readable_only(ctx, &entity, &mut out);
             return Ok(out);
         }
         let co = resolve_company(&mut tx, ctx, &p).await?;
@@ -258,6 +320,7 @@ impl ReportSource for HrReports {
             _ => return Err(Error::NotFound(format!("report {name}"))),
         };
         tx.rollback().await?;
+        readable_only(ctx, &entity, &mut out);
         if let Value::Object(m) = &mut out {
             let meta = m.entry("meta").or_insert_with(|| json!({}));
             if let Value::Object(meta) = meta {
@@ -322,12 +385,23 @@ async fn directory(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Res
 
 async fn headcount(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>, co: &ferrum_domain::reports::ReportCompany) -> Result<Value> {
     let (from, to) = period(p, co)?;
-    let (label, join) = match p.str("group_by").unwrap_or("Department") {
-        "Designation" => ("x.designation_name", "left join e_designation x on x.tenant_id = e.tenant_id and x.id = e.designation"),
-        "Branch" => ("x.branch_name", "left join e_branch x on x.tenant_id = e.tenant_id and x.id = e.branch"),
-        "Grade" => ("x.grade_name", "left join e_employee_grade x on x.tenant_id = e.tenant_id and x.id = e.grade"),
-        "Employment Type" => ("x.employment_type_name", "left join e_employment_type x on x.tenant_id = e.tenant_id and x.id = e.employment_type"),
-        "Gender" => ("e.gender", ""),
+    // The grouping chosen (an unknown one is the default), else the first the caller may read.
+    let field = match p.str("group_by") {
+        Some(g) => {
+            let f = GROUPINGS.iter().find(|x| x.0 == g).map_or(GROUPINGS[0].1, |x| x.1);
+            readable_choice(ctx, "Employee", f)?;
+            f
+        }
+        None => readable_default(ctx, "Employee", &GROUPINGS.map(|g| g.1))
+            .ok_or_else(|| Error::Forbidden("you cannot read any field this report groups employees by".into()))?,
+    };
+    let by = GROUPINGS.iter().find(|x| x.1 == field).map_or(GROUPINGS[0].0, |x| x.0);
+    let (label, join) = match field {
+        "designation" => ("x.designation_name", "left join e_designation x on x.tenant_id = e.tenant_id and x.id = e.designation"),
+        "branch" => ("x.branch_name", "left join e_branch x on x.tenant_id = e.tenant_id and x.id = e.branch"),
+        "grade" => ("x.grade_name", "left join e_employee_grade x on x.tenant_id = e.tenant_id and x.id = e.grade"),
+        "employment_type" => ("x.employment_type_name", "left join e_employment_type x on x.tenant_id = e.tenant_id and x.id = e.employment_type"),
+        "gender" => ("e.gender", ""),
         _ => ("x.department_name", "left join e_department x on x.tenant_id = e.tenant_id and x.id = e.department"),
     };
     let sql = format!(
@@ -361,7 +435,7 @@ async fn headcount(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>, co: &f
     let avg = Decimal::from(start_count + hc) / Decimal::TWO;
     let attrition = if avg.is_zero() { Decimal::ZERO } else { (Decimal::from(left) * Decimal::ONE_HUNDRED / avg).round_dp(2) };
     Ok(json!({
-        "columns": [col("group", p.str("group_by").unwrap_or("Department"), "data"), col("headcount", "Headcount", "int"),
+        "columns": [col("group", by, "data"), col("headcount", "Headcount", "int"),
             col("joined", "Joined", "int"), col("left", "Left", "int")],
         "rows": rows,
         "totals": {"headcount": hc, "joined": joined, "left": left},
@@ -667,9 +741,10 @@ async fn events(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result
     // A birthday is a date of birth: only for those who may see one, and never to an AI provider
     // the workspace has not allowed it.
     let birthdays = sees(ctx, "date_of_birth", own.is_some());
+    let anniversaries = ctx.schema.entity("Employee").is_some_and(|e| ferrum_kernel::query::readable(ctx, e, "date_of_joining"));
     let mut found: Vec<(NaiveDate, Value)> = Vec::new();
     for (no, name, dept, born, joined) in data {
-        for (event, date) in [("Birthday", born.filter(|_| birthdays)), ("Work Anniversary", joined)] {
+        for (event, date) in [("Birthday", born.filter(|_| birthdays)), ("Work Anniversary", joined.filter(|_| anniversaries))] {
             let Some(date) = date else { continue };
             let (next, years) = next_occurrence(date, from);
             if next <= until && years > 0 {
