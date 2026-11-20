@@ -6308,3 +6308,61 @@ fn a_payroll_report_or_file_shows_bank_and_tax_details_only_to_those_who_read_ev
         assert_eq!(row(&all, "employee_name", "Otto Test")["tax_id"], otto["tax_id"]);
     });
 }
+
+// ───────────── K0-6: an action that changes its record needs the right to change it ─────────────
+
+#[test]
+fn a_reader_cannot_write_a_bank_file_onto_a_payroll_run() {
+    run(async {
+        let slug = "hrk06b";
+        let p = P::new(slug).await;
+        let t = &p.t;
+        p.hire("Otto", "60000").await;
+        let run_id = p.run("2026-09-01", "2026-09-30", true).await;
+        // Reads the runs and everyone's bank details; changes neither.
+        own_role(
+            t,
+            "Payroll Auditor",
+            json!([{"entity": "PayrollEntry", "read": true}, {"entity": "Employee", "read": true, "read_groups": ["bank", "identity", "personal"]}]),
+        )
+        .await;
+        let auditor = t.user(&format!("audit@{slug}.test"), &["Payroll Auditor"]).await;
+        let params = json!({"from_account": "50100012345678", "from_bic": "HDFCINBB", "execution_date": "2026-10-01"});
+        let r = t.k.run_action(&auditor, "PayrollEntry", run_id, "bank_file", params.clone()).await;
+        assert!(r.is_err(), "the auditor wrote a bank file onto the run: {r:?}");
+        let pe = t.get("PayrollEntry", run_id).await;
+        assert_eq!((pe["bank_file_rounds"].as_i64().unwrap_or(0), pe["last_bank_file"].as_str().unwrap_or("")), (0, ""), "nothing kept on the run");
+        // The payroll manager, who changes runs, makes it.
+        let file = t.k.run_action(&p.pm, "PayrollEntry", run_id, "bank_file", params).await.expect("the payroll manager's file");
+        assert_eq!(file["payments"], json!(1));
+    });
+}
+
+#[test]
+fn a_reader_cannot_make_an_employee_from_an_offer() {
+    run(async {
+        let slug = "hrk06o";
+        let t = T::new(slug).await;
+        let hr = t.user(&format!("hr@{slug}.test"), &["HR Manager"]).await;
+        let eng = t.ins(&hr, "Designation", json!({"designation_name": "Engineer"})).await;
+        let opening = t.ins(&hr, "JobOpening", json!({"job_title": "Engineer", "company": t.c(), "designation": eng["id"]})).await;
+        let applicant = t.ins(&hr, "JobApplicant", json!({"applicant_name": "Kiran Rao", "email_id": "kiran@mail.test", "job_opening": opening["id"]})).await;
+        let offer =
+            t.ins_submit(&hr, "JobOffer", json!({"job_applicant": applicant["id"], "company": t.c(), "offer_date": "2026-10-10", "ctc": "1800000"})).await;
+        t.act(&hr, "JobOffer", uid(&offer), "accept", json!({})).await;
+        // Reads offers and may add employees; changes no offer.
+        own_role(
+            &t,
+            "Offer Reader",
+            json!([{"entity": "JobOffer", "read": true}, {"entity": "JobApplicant", "read": true}, {"entity": "Employee", "read": true, "create": true}]),
+        )
+        .await;
+        let reader = t.user(&format!("reader@{slug}.test"), &["Offer Reader"]).await;
+        let r = t.k.run_action(&reader, "JobOffer", uid(&offer), "make_employee", json!({})).await;
+        assert!(r.is_err(), "the reader made an employee: {r:?}");
+        assert!(t.get("JobOffer", uid(&offer)).await.get("employee").is_none_or(Value::is_null), "the offer is unchanged");
+        assert!(t.list(&t.admin, "Employee", json!({"first_name": "Kiran"})).await.is_empty(), "no employee made");
+        let clerk = t.user(&format!("clerk@{slug}.test"), &["HR User"]).await;
+        t.k.run_action(&clerk, "JobOffer", uid(&offer), "make_employee", json!({})).await.expect("an HR user, who changes offers, makes it");
+    });
+}

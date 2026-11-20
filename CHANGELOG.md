@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.25.1
+
+Packages `hr` 0.13.1, `payroll_erp` 0.6.2. No interface change.
+
+**Two actions that change their record need the right to change it (K0-6).** Job Offer's Create Employee (it links the
+new employee on the offer) and Payroll Entry's Bank Payment File (it keeps each round's file on the run) were declared
+for anyone who reads the record. Both now need write on it: HR managers and HR users make employees from offers as
+before, payroll and HR managers make bank files; someone who only reads an offer or a run is refused and nothing
+changes. A workspace role that only read runs and was used to fetch the bank file needs write on Payroll Entry.
+
 ## 0.25.0
 
 Package `hr` 0.13.0 (a field group and two roles' rules change when the package's version moves). No interface change.

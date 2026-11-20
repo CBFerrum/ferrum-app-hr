@@ -204,7 +204,7 @@
     - name: make_employee
       label: Create Employee
       docstatus: [1]
-      permission: read
+      permission: write
       condition: "doc.status == 'Accepted'"
       params:
         - {name: date_of_joining, type: date, label: Date of Joining, description: "The offer's expected joining date when empty"}

@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.25.0-0e7490?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.25.1-0e7490?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -37,7 +37,7 @@ People (HR and Payroll) is the employee lifecycle for Ferrum: employees and orga
 
 | | |
 |---|---|
-| **Version** | 0.25.0 (packages `hr` 0.13.0, `payroll` 0.8.3, `hr_erp` 0.5.1, `payroll_erp` 0.6.1) |
+| **Version** | 0.25.1 (packages `hr` 0.13.1, `payroll` 0.8.3, `hr_erp` 0.5.1, `payroll_erp` 0.6.2) |
 | **Kind** | Its own interface at `/people/` (your space, approvals, team calendar, rosters, directory and org chart, public careers page) with Ferrum's records screens for everything else |
 | **What it adds** | 93 entities (61 records and 32 small tables), 7 roles, 6 modules (HR, Attendance and Leave, Recruitment, Performance, Expenses, Payroll), 5 approval workflows and 2 package approval policies, 15 reports, 1 print format, 7 document templates, 17 message templates, 6 notification kinds, 8 upkeep jobs, 2 example packs |
 | **Depends on** | Ferrum platform `>=0.4.0, <0.5`. The connector **HR and ERP** (expenses and payroll posting) needs ERP `>=0.1` and ships with this app |
@@ -222,7 +222,7 @@ One **Full and Final Statement** gathers, from the employee's records, what is o
 - **Hold and release a salary** with a reason: accrued as everyone's, left out of the bank entry and file, paid with the next payment that lists the employee.
 - **Leave and attendance changed after payroll ran** is refused until someone chooses on the slip: **Carry to Next Pay** (a pay adjustment on the next slip at that day's pay as paid) or **Correct the Slip**.
 - **Employee loans** (with the ERP connector): paid from the bank, repaid from each monthly slip over a number of months or an amount a month, with interest on the balance at a yearly rate. **Defer an Instalment**, **Repay Outside Salary**, **Write Off**. A slip that cannot take it all leaves the rest to the next; a corrected or cancelled slip gives its instalment back. A leaver's balance is a recovery on the final statement.
-- **Bank payment file** from a run: **ISO 20022** salary credit transfer (`pain.001.001.09`, purpose `SALA`) or a **CSV** for a bank's bulk upload, one payment to each employee paid by bank, from the company's account. Refused while anyone paid by bank has no account, and to those who may not read bank details. The bank entry and the file pay the same. Each file is a **round** of the run under message id `<run number>-<round>`, kept on the run (Last Bank File): asked again, the run gives that file unchanged, so a file uploaded twice is one instruction to the bank. **New Round** makes a file under the next message id for whoever no earlier round's file pays (each employee row shows its Bank File Round).
+- **Bank payment file** from a run: **ISO 20022** salary credit transfer (`pain.001.001.09`, purpose `SALA`) or a **CSV** for a bank's bulk upload, one payment to each employee paid by bank, from the company's account. Refused while anyone paid by bank has no account, and to those who may not read every employee's bank details or may not change the run. The bank entry and the file pay the same. Each file is a **round** of the run under message id `<run number>-<round>`, kept on the run (Last Bank File): asked again, the run gives that file unchanged, so a file uploaded twice is one instruction to the bank. **New Round** makes a file under the next message id for whoever no earlier round's file pays (each employee row shows its Bank File Round).
 - **A run paid outside Ferrum** can be recorded as paid elsewhere (with a date and a reference), and undone.
 - **Reports:** Salary Register, Payroll Summary, Bank Remittance and Income Tax Deductions (with opening figures and a previous employer's).
 
@@ -427,6 +427,7 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 
 ### ✅ Recently shipped
 
+- [x] **0.25.1** Making an employee from an offer and a run's bank payment file need the right to change the offer or the run.
 - [x] **0.25.0** Every field group closed under the rule that reaches the record; a job opening's salary range is in `pay`.
 - [x] **0.24.0** Overtime rules and time off in lieu: asked, checked against what was recorded, approved, credited as leave.
 - [x] **0.23.0** The roster grid at `/people/roster`.
