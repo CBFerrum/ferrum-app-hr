@@ -111,7 +111,19 @@ fn payroll_run() {
 }
 
 /// Every action of the four packages, as the capability id the gate lists it under.
-const CONTRACT_IDS: [&str; 43] = [
+const CONTRACT_IDS: [&str; 55] = [
+    "hr.shift_roster.fill",
+    "hr.shift_roster.publish",
+    "hr.shift_swap_request.accept",
+    "hr.shift_swap_request.decline",
+    "hr.employee.record_training",
+    "hr.appraisal_cycle.start",
+    "hr.appraisal_cycle.create_appraisals",
+    "hr.appraisal_cycle.close",
+    "hr.appraisal.submit_self_review",
+    "hr.appraisal.complete_manager_review",
+    "hr.appraisal.send_back",
+    "hr.appraisal.set_goal",
     "hr.employee.issue_appointment_letter",
     "hr.employee.issue_employment_certificate",
     "hr.employee.issue_warning_letter",
@@ -157,6 +169,9 @@ const CONTRACT_IDS: [&str; 43] = [
     "payroll_erp.payroll_entry.bank_file",
 ];
 
+/// Actions that only read, offered to other apps.
+const LOOKUP_IDS: [&str; 1] = ["hr.company.find_employee"];
+
 #[test]
 fn every_action_says_what_done_means() {
     run(async {
@@ -167,6 +182,11 @@ fn every_action_says_what_done_means() {
             assert!(!c.completion.ends_with("is done, committed with this receipt"), "{id} still has the derived promise: {}", c.completion);
             assert_eq!(serde_json::to_value(c.effect).unwrap(), json!("transactional_action"), "{id}");
         }
+        for id in LOOKUP_IDS {
+            let c = catalog.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("{id} is not in the catalog"));
+            assert!(!c.completion.ends_with("is done, committed with this receipt"), "{id}: {}", c.completion);
+            assert_eq!(serde_json::to_value(c.effect).unwrap(), json!("query"), "{id}");
+        }
         let actions: Vec<&str> = catalog
             .iter()
             .filter(|c| serde_json::to_value(&c.operation).unwrap()["op"] == json!("action"))
@@ -174,9 +194,9 @@ fn every_action_says_what_done_means() {
             .map(|c| c.id.as_str())
             .collect();
         for id in &actions {
-            assert!(CONTRACT_IDS.contains(id), "{id} is an action of HR or payroll with no contract here");
+            assert!(CONTRACT_IDS.contains(id) || LOOKUP_IDS.contains(id), "{id} is an action of HR or payroll with no contract here");
         }
-        assert_eq!(actions.len(), CONTRACT_IDS.len(), "{actions:?}");
+        assert_eq!(actions.len(), CONTRACT_IDS.len() + LOOKUP_IDS.len(), "{actions:?}");
     });
 }
 
@@ -227,6 +247,1381 @@ fn an_action_through_the_gate_is_done_once() {
         assert_eq!((first.result.clone(), first.repeated), (json!({"status": "Accepted"}), false));
         let again = t.k.invoke(&hr, accept(Some("accept-1"))).await.expect("answered again");
         assert_eq!((again.result, again.repeated), (json!({"status": "Accepted"}), true));
+    });
+}
+
+// ───────────── a completed training, through the gate (hr-2) ─────────────
+
+fn record_training(emp: &Doc, params: Value) -> ferrum_kernel::capability::Invocation {
+    ferrum_kernel::capability::Invocation::new("hr.employee.record_training", json!({"id": emp["id"], "params": params}))
+}
+
+fn as_id(v: &Value) -> Uuid {
+    v.as_str().unwrap_or_else(|| panic!("not an id: {v}")).parse().unwrap()
+}
+
+async fn records_of(t: &T, emp: &Doc) -> Vec<Doc> {
+    t.list(&t.admin, "TrainingRecord", json!({"employee": emp["id"]})).await
+}
+
+#[test]
+fn a_completed_training_is_recorded_through_the_gate() {
+    run(async {
+        let t = T::new("hrrt1").await;
+        let hr = t.user("hr@hrrt1.test", &["HR Manager"]).await;
+        let asha = t.employee("Asha", json!({})).await;
+        let r =
+            t.k.invoke(&hr, record_training(&asha, json!({"program_name": "Data protection", "source": "lms:e1", "completed_on": "2026-03-01"})).key("t1"))
+                .await
+                .expect("recorded");
+        assert_eq!((r.result["created"].clone(), r.repeated), (json!(true), false));
+        let program = t.one("TrainingProgram", json!({"program_name": "Data protection"})).await;
+        assert_eq!((program["company"].clone(), r.result["program"].clone()), (json!(t.c()), program["id"].clone()), "made in the employee's company");
+        let rec = t.get("TrainingRecord", as_id(&r.result["training_record"])).await;
+        assert_eq!(
+            (rec["employee"].clone(), rec["company"].clone(), rec["completed_on"].clone(), rec["valid_until"].clone(), rec["source"].clone()),
+            (asha["id"].clone(), json!(t.c()), json!("2026-03-01"), Value::Null, json!("lms:e1"))
+        );
+    });
+}
+
+#[test]
+fn the_same_source_is_one_record() {
+    run(async {
+        let t = T::new("hrrt2").await;
+        let hr = t.user("hr@hrrt2.test", &["HR Manager"]).await;
+        let (asha, ravi) = (t.employee("Asha", json!({})).await, t.employee("Ravi", json!({})).await);
+        let p = json!({"program_name": "Data protection", "source": "lms:e1", "completed_on": "2026-03-01"});
+        let first = t.k.invoke(&hr, record_training(&asha, p.clone()).key("t1")).await.expect("recorded");
+        let again = t.k.invoke(&hr, record_training(&asha, p.clone()).key("t1")).await.expect("answered");
+        assert_eq!((again.repeated, again.result.clone()), (true, first.result.clone()), "the same key is answered");
+        let other_key = t.k.invoke(&hr, record_training(&asha, p.clone()).key("t2")).await.expect("answered by the record");
+        assert_eq!(
+            (other_key.repeated, other_key.result["created"].clone(), other_key.result["training_record"].clone()),
+            (false, json!(false), first.result["training_record"].clone()),
+            "a new key with the same source finds the first record"
+        );
+        assert_eq!(records_of(&t, &asha).await.len(), 1);
+        let theirs = t.k.invoke(&hr, record_training(&ravi, p).key("t3")).await.expect("recorded for Ravi");
+        assert_eq!(theirs.result["created"], json!(true));
+        assert_ne!(theirs.result["training_record"], first.result["training_record"]);
+        assert_eq!(records_of(&t, &ravi).await.len(), 1, "another employee's source is their own");
+    });
+}
+
+#[test]
+fn only_hr_records_a_training() {
+    run(async {
+        let t = T::new("hrrt3").await;
+        let me = t.user("asha@hrrt3.test", &["Employee"]).await;
+        let asha = t.employee("Asha", json!({"user": "asha@hrrt3.test"})).await;
+        let r = t.k.invoke(&me, record_training(&asha, json!({"program_name": "Data protection", "source": "self:1"})).key("t1")).await;
+        assert_eq!(r.map_err(|e| e.code()).unwrap_err(), "forbidden", "an employee does not certify themselves");
+        assert!(records_of(&t, &asha).await.is_empty());
+    });
+}
+
+#[test]
+fn validity_comes_from_the_program_unless_given() {
+    run(async {
+        let t = T::new("hrrt4").await;
+        let hr = t.user("hr@hrrt4.test", &["HR Manager"]).await;
+        let asha = t.employee("Asha", json!({})).await;
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Forklift", "company": t.c(), "valid_for_months": 12})).await;
+        let go = |source: &str, extra: Value| {
+            let mut p = obj(json!({"program_name": "Forklift", "source": source, "completed_on": "2026-03-01"}));
+            p.extend(obj(extra));
+            record_training(&asha, Value::Object(p)).key(source)
+        };
+        let r = t.k.invoke(&hr, go("a", json!({}))).await.expect("from the program");
+        assert_eq!(t.get("TrainingRecord", as_id(&r.result["training_record"])).await["valid_until"], json!("2027-03-01"));
+        let r = t.k.invoke(&hr, go("b", json!({"valid_until": "2026-09-30"}))).await.expect("given");
+        assert_eq!(t.get("TrainingRecord", as_id(&r.result["training_record"])).await["valid_until"], json!("2026-09-30"));
+        refused(t.k.invoke(&hr, go("c", json!({"valid_until": "2026-01-01"}))).await, "valid_until");
+        let tomorrow = (hr.today() + chrono::Days::new(1)).to_string();
+        refused(t.k.invoke(&hr, go("d", json!({"completed_on": tomorrow}))).await, "completed_on");
+        refused(t.k.invoke(&hr, go("e", json!({"program_name": "   "}))).await, "program_name");
+        refused(t.k.invoke(&hr, record_training(&asha, json!({"program_name": "Forklift", "source": "lms: e1"})).key("f")).await, "source");
+        assert_eq!(records_of(&t, &asha).await.len(), 2, "a refusal leaves nothing");
+    });
+}
+
+#[test]
+fn two_first_uses_of_a_program_name_make_one_program() {
+    run(async {
+        let t = T::new("hrrt5").await;
+        let hr = t.user("hr@hrrt5.test", &["HR Manager"]).await;
+        let (asha, ravi) = (t.employee("Asha", json!({})).await, t.employee("Ravi", json!({})).await);
+        let p = json!({"program_name": "Ladder safety", "source": "lms:e9"});
+        let (a, b) = tokio::join!(t.k.invoke(&hr, record_training(&asha, p.clone()).key("a")), t.k.invoke(&hr, record_training(&ravi, p).key("b")));
+        let (a, b) = (a.expect("Asha's"), b.expect("Ravi's"));
+        assert_eq!(a.result["program"], b.result["program"], "one program");
+        assert_eq!(t.list(&t.admin, "TrainingProgram", json!({"program_name": "Ladder safety"})).await.len(), 1);
+    });
+}
+
+#[test]
+fn a_cancelled_session_deletes_its_records_on_the_record_path() {
+    run(async {
+        let t = T::new("hrrt6").await;
+        let (asha, ravi) = (t.employee("Asha", json!({})).await, t.employee("Ravi", json!({})).await);
+        let program = t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c()})).await;
+        let session = t
+            .ins_submit(
+                &t.admin,
+                "TrainingEvent",
+                json!({"title": "Fire safety, March", "program": program["id"], "company": t.c(), "held_on": "2026-03-31",
+                       "attendees": [{"employee": asha["id"], "result": "Passed"}, {"employee": ravi["id"], "result": "Passed"}]}),
+            )
+            .await;
+        let made = t.list(&t.admin, "TrainingRecord", json!({"program": program["id"]})).await;
+        assert_eq!(made.len(), 2);
+        assert!(made.iter().all(|r| r["source"] == json!(format!("session:{}", uid(&session)))), "{made:?}");
+        t.k.cancel(&t.admin, "TrainingEvent", uid(&session), None).await.expect("cancelled");
+        assert!(t.list(&t.admin, "TrainingRecord", json!({"program": program["id"]})).await.is_empty());
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        let deletes: i64 = sqlx::query_scalar("select count(*) from audit_event where tenant_id = $1 and entity = 'TrainingRecord' and action = 'delete'")
+            .bind(t.tenant)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(deletes, 2, "each record goes through the record path");
+    });
+}
+
+// ───────────── mandatory training: who must hold it, and a warning before it lapses (hr-3) ─────────────
+
+/// A training record made through the operation, `completed_on` and `valid_until` as given.
+async fn held(t: &T, emp: &Doc, program: &str, done: chrono::NaiveDate, until: Option<chrono::NaiveDate>) -> Value {
+    let mut p = json!({"program_name": program, "source": format!("test:{}:{done}:{until:?}", emp["id"].as_str().unwrap()), "completed_on": done.to_string()});
+    if let Some(u) = until {
+        p["valid_until"] = json!(u.to_string());
+    }
+    let key = p["source"].as_str().unwrap().to_string();
+    t.k.invoke(&t.admin, record_training(emp, p).key(key)).await.expect("recorded").result
+}
+
+fn days_from(t: &T, n: i64) -> chrono::NaiveDate {
+    t.admin.today() + chrono::Duration::days(n)
+}
+
+async fn compliance(t: &T, ctx: &Ctx, params: &[(&str, &str)]) -> Value {
+    t.report(ctx, "training_compliance", params).await.unwrap_or_else(|e| panic!("training_compliance: {}", describe(&e)))
+}
+
+fn statuses(report: &Value) -> Vec<(String, String)> {
+    report["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["employee_name"].as_str().unwrap_or_default().to_string(), r["status"].as_str().unwrap_or_default().to_string()))
+        .collect()
+}
+
+#[test]
+fn training_compliance_lists_missing_expired_expiring_and_valid() {
+    run(async {
+        let t = T::new("hrtc1").await;
+        let (a, b, c, d) =
+            (t.employee("Anu", json!({})).await, t.employee("Bea", json!({})).await, t.employee("Cal", json!({})).await, t.employee("Dev", json!({})).await);
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c(), "mandatory": true})).await;
+        let _ = a;
+        held(&t, &b, "Fire safety", days_from(&t, -400), Some(days_from(&t, -30))).await;
+        held(&t, &c, "Fire safety", days_from(&t, -355), Some(days_from(&t, 10))).await;
+        held(&t, &d, "Fire safety", days_from(&t, -1), Some(days_from(&t, 365))).await;
+        let r = compliance(&t, &t.admin, &[]).await;
+        let mut got = statuses(&r);
+        got.sort();
+        let want: Vec<(String, String)> = [("Anu Test", "Missing"), ("Bea Test", "Expired"), ("Cal Test", "Expiring"), ("Dev Test", "Valid")]
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        assert_eq!(got, want);
+        assert_eq!(
+            (r["meta"]["missing"].clone(), r["meta"]["expired"].clone(), r["meta"]["expiring"].clone(), r["meta"]["valid"].clone()),
+            (json!(1), json!(1), json!(1), json!(1))
+        );
+        assert_eq!(statuses(&compliance(&t, &t.admin, &[("status", "Missing")]).await), [("Anu Test".to_string(), "Missing".to_string())]);
+    });
+}
+
+#[test]
+fn required_for_narrows_who_must_hold_it() {
+    run(async {
+        let t = T::new("hrtc2").await;
+        let ops = t.ins(&t.admin, "Department", json!({"department_name": "Operations", "company": t.c()})).await;
+        let sales = t.ins(&t.admin, "Department", json!({"department_name": "Sales", "company": t.c()})).await;
+        let driver = t.ins(&t.admin, "Designation", json!({"designation_name": "Driver"})).await;
+        t.employee("Ops", json!({"department": ops["id"]})).await;
+        t.employee("Seller", json!({"department": sales["id"]})).await;
+        t.employee("Driver", json!({"department": sales["id"], "designation": driver["id"]})).await;
+        let p = t
+            .ins(
+                &t.admin,
+                "TrainingProgram",
+                json!({"program_name": "Forklift", "company": t.c(), "mandatory": true, "required_for": [{"department": ops["id"]}]}),
+            )
+            .await;
+        let names = |r: &Value| -> Vec<String> { statuses(r).into_iter().map(|(n, _)| n).collect() };
+        assert_eq!(names(&compliance(&t, &t.admin, &[]).await), ["Ops Test"]);
+        t.k.update(&t.admin, "TrainingProgram", uid(&p), obj(json!({"required_for": [{"department": ops["id"]}, {"designation": driver["id"]}]})), None)
+            .await
+            .expect("a second line");
+        assert_eq!(names(&compliance(&t, &t.admin, &[]).await), ["Driver Test", "Ops Test"]);
+        refused(t.k.update(&t.admin, "TrainingProgram", uid(&p), obj(json!({"required_for": [{}]})), None).await, "say who");
+        let other = t
+            .ins(
+                &t.admin,
+                "Company",
+                json!({"company_name": "Other Co", "abbr": "OTH", "default_currency": t.get("Company", t.company).await["default_currency"]}),
+            )
+            .await;
+        let theirs = t.ins(&t.admin, "Department", json!({"department_name": "Theirs", "company": other["id"]})).await;
+        refused(t.k.update(&t.admin, "TrainingProgram", uid(&p), obj(json!({"required_for": [{"department": theirs["id"]}]})), None).await, "another company");
+    });
+}
+
+#[test]
+fn a_program_that_is_not_mandatory_is_not_in_the_report() {
+    run(async {
+        let t = T::new("hrtc3").await;
+        t.employee("Anu", json!({})).await;
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Excel", "company": t.c()})).await;
+        assert!(statuses(&compliance(&t, &t.admin, &[]).await).is_empty());
+    });
+}
+
+#[test]
+fn an_employee_sees_only_their_own_compliance() {
+    run(async {
+        let t = T::new("hrtc4").await;
+        let me = t.user("anu@hrtc4.test", &["Employee"]).await;
+        let nobody = t.user("nobody@hrtc4.test", &["Leave Approver"]).await;
+        t.employee("Anu", json!({"user": "anu@hrtc4.test"})).await;
+        t.employee("Bea", json!({})).await;
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c(), "mandatory": true})).await;
+        assert_eq!(statuses(&compliance(&t, &me, &[]).await), [("Anu Test".to_string(), "Missing".to_string())]);
+        assert!(t.report(&nobody, "training_compliance", &[]).await.is_err(), "no read on training records, no report");
+    });
+}
+
+#[test]
+fn only_hr_managers_say_what_is_mandatory() {
+    run(async {
+        let t = T::new("hrtc5").await;
+        let hu = t.user("hu@hrtc5.test", &["HR User"]).await;
+        let p = t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Excel", "company": t.c()})).await;
+        assert!(t.k.update(&hu, "TrainingProgram", uid(&p), obj(json!({"mandatory": true})), None).await.is_err());
+        assert_eq!(t.get("TrainingProgram", uid(&p)).await["mandatory"], json!(false));
+    });
+}
+
+#[test]
+fn a_lapsing_training_is_warned_about_once() {
+    run(async {
+        let t = T::new("hrtc6").await;
+        t.user("hr@hrtc6.test", &["HR Manager"]).await;
+        t.user("anu@hrtc6.test", &["Employee"]).await;
+        let anu = t.employee("Anu", json!({"user": "anu@hrtc6.test"})).await;
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c(), "mandatory": true})).await;
+        let r = held(&t, &anu, "Fire safety", days_from(&t, -355), Some(days_from(&t, 10))).await;
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        assert_eq!(sends(&t, "hr.training_expiring").await, 2, "Anu and the HR manager");
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        assert_eq!(sends(&t, "hr.training_expiring").await, 2, "once");
+        assert_eq!(t.get("TrainingRecord", as_id(&r["training_record"])).await["expiry_warned_on"], json!(t.admin.today().to_string()));
+    });
+}
+
+#[test]
+fn a_training_taken_again_is_not_warned_about() {
+    run(async {
+        let t = T::new("hrtc7").await;
+        t.user("anu@hrtc7.test", &["Employee"]).await;
+        let anu = t.employee("Anu", json!({"user": "anu@hrtc7.test"})).await;
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c(), "mandatory": true})).await;
+        held(&t, &anu, "Fire safety", days_from(&t, -355), Some(days_from(&t, 10))).await;
+        held(&t, &anu, "Fire safety", days_from(&t, -1), Some(days_from(&t, 365))).await;
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        assert_eq!(sends(&t, "hr.training_expiring").await, 0);
+    });
+}
+
+#[test]
+fn a_training_that_lapsed_before_is_not_announced() {
+    run(async {
+        let t = T::new("hrtc8").await;
+        t.user("anu@hrtc8.test", &["Employee"]).await;
+        let anu = t.employee("Anu", json!({"user": "anu@hrtc8.test"})).await;
+        t.ins(&t.admin, "TrainingProgram", json!({"program_name": "Fire safety", "company": t.c(), "mandatory": true})).await;
+        let r = held(&t, &anu, "Fire safety", days_from(&t, -400), Some(days_from(&t, -30))).await;
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        assert_eq!(sends(&t, "hr.training_expiring").await, 0);
+        assert!(t.get("TrainingRecord", as_id(&r["training_record"])).await["expiry_warned_on"].is_null());
+    });
+}
+
+#[test]
+fn an_optional_training_warns_only_its_holder() {
+    run(async {
+        let t = T::new("hrtc9").await;
+        t.user("hr@hrtc9.test", &["HR Manager"]).await;
+        t.user("anu@hrtc9.test", &["Employee"]).await;
+        let anu = t.employee("Anu", json!({"user": "anu@hrtc9.test"})).await;
+        held(&t, &anu, "Excel", days_from(&t, -355), Some(days_from(&t, 10))).await;
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        assert_eq!(sends(&t, "hr.training_expiring").await, 1);
+    });
+}
+
+// ───────────── skills and the matrix (hr-4) ─────────────
+
+struct Skills {
+    t: T,
+    asha: Doc,
+    welding: Doc,
+}
+
+impl Skills {
+    /// Welding and First aid; Fitter needs Welding 3 and First aid 1; Asha (Fitter) holds Welding 2, Ravi (Fitter)
+    /// Welding 4 and Forklift 2.
+    async fn new(slug: &str) -> Skills {
+        let t = T::new(slug).await;
+        let sk = |name: &str| t.ins(&t.admin, "Skill", json!({"skill_name": name}));
+        let (welding, aid, forklift) = (sk("Welding").await, sk("First aid").await, sk("Forklift").await);
+        let fitter = t
+            .ins(
+                &t.admin,
+                "Designation",
+                json!({"designation_name": "Fitter", "required_skills": [{"skill": welding["id"], "level": 3}, {"skill": aid["id"], "level": 1}]}),
+            )
+            .await;
+        let asha = t.employee("Asha", json!({"designation": fitter["id"], "skills": [{"skill": welding["id"], "level": 2}]})).await;
+        t.employee("Ravi", json!({"designation": fitter["id"], "skills": [{"skill": welding["id"], "level": 4}, {"skill": forklift["id"], "level": 2}]})).await;
+        Skills { t, asha, welding }
+    }
+}
+
+fn matrix_rows(r: &Value) -> Vec<(String, String, Value, Value, i64)> {
+    r["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| {
+            (
+                x["employee_name"].as_str().unwrap().to_string(),
+                x["skill"].as_str().unwrap().to_string(),
+                x["required_level"].clone(),
+                x["held_level"].clone(),
+                x["gap"].as_i64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_skills_matrix_shows_needed_against_held() {
+    run(async {
+        let s = Skills::new("hrsk1").await;
+        let r = s.t.report(&s.t.admin, "skills_matrix", &[]).await.expect("matrix");
+        let row = |e: &str, k: &str, req: Value, held: Value, gap: i64| (format!("{e} Test"), k.to_string(), req, held, gap);
+        assert_eq!(
+            matrix_rows(&r),
+            [
+                row("Asha", "First aid", json!(1), Value::Null, 1),
+                row("Asha", "Welding", json!(3), json!(2), 1),
+                row("Ravi", "First aid", json!(1), Value::Null, 1),
+                row("Ravi", "Forklift", Value::Null, json!(2), 0),
+                row("Ravi", "Welding", json!(3), json!(4), 0),
+            ]
+        );
+        let gaps = s.t.report(&s.t.admin, "skills_matrix", &[("show", "Gaps only")]).await.expect("gaps");
+        assert_eq!((gaps["rows"].as_array().unwrap().len(), gaps["meta"]["gaps"].clone(), gaps["meta"]["people"].clone()), (3, json!(3), json!(2)));
+    });
+}
+
+#[test]
+fn a_skill_is_on_a_list_once() {
+    run(async {
+        let s = Skills::new("hrsk2").await;
+        let twice = json!([{"skill": s.welding["id"], "level": 2}, {"skill": s.welding["id"], "level": 3}]);
+        refused(s.t.k.update(&s.t.admin, "Employee", uid(&s.asha), obj(json!({"skills": twice.clone()})), None).await, "twice");
+        refused(s.t.try_ins(&s.t.admin, "Designation", json!({"designation_name": "Welder", "required_skills": twice})).await, "twice");
+    });
+}
+
+#[test]
+fn an_employee_cannot_grade_their_own_skills() {
+    run(async {
+        let s = Skills::new("hrsk3").await;
+        let me = s.t.user("asha@hrsk3.test", &["Employee"]).await;
+        s.t.k.update(&s.t.admin, "Employee", uid(&s.asha), obj(json!({"user": "asha@hrsk3.test"})), None).await.expect("sign-in");
+        let r = s.t.k.update(&me, "Employee", uid(&s.asha), obj(json!({"skills": [{"skill": s.welding["id"], "level": 5}]})), None).await;
+        assert!(r.is_err(), "{r:?}");
+        assert_eq!(s.t.get("Employee", uid(&s.asha)).await["skills"][0]["level"], json!(2));
+    });
+}
+
+#[test]
+fn an_employee_sees_only_their_own_skills_rows() {
+    run(async {
+        let s = Skills::new("hrsk4").await;
+        let me = s.t.user("asha@hrsk4.test", &["Employee"]).await;
+        s.t.k.update(&s.t.admin, "Employee", uid(&s.asha), obj(json!({"user": "asha@hrsk4.test"})), None).await.expect("sign-in");
+        let r = s.t.report(&me, "skills_matrix", &[]).await.expect("own matrix");
+        assert!(matrix_rows(&r).iter().all(|x| x.0 == "Asha Test"), "{r}");
+        assert_eq!(matrix_rows(&r).len(), 2);
+    });
+}
+
+#[test]
+fn a_level_is_one_to_five() {
+    run(async {
+        let s = Skills::new("hrsk5").await;
+        for level in [0, 6] {
+            let r = s.t.k.update(&s.t.admin, "Employee", uid(&s.asha), obj(json!({"skills": [{"skill": s.welding["id"], "level": level}]})), None).await;
+            assert!(r.is_err(), "level {level}: {r:?}");
+        }
+    });
+}
+
+// ───────────── appraisal cycles in stages (hr-5) ─────────────
+
+/// A workspace with an HR manager, Asha (reports to Maya), Maya and Omar (managers with the Employee role), a
+/// 60/40 template and a cycle not yet started.
+struct Review {
+    t: T,
+    hr: Ctx,
+    asha: Ctx,
+    maya: Ctx,
+    omar: Ctx,
+    asha_emp: Doc,
+    tpl: Doc,
+    cycle: Doc,
+}
+
+impl Review {
+    async fn new(slug: &str) -> Review {
+        let t = T::new(slug).await;
+        let hr = t.user(&format!("hr@{slug}.test"), &["HR Manager"]).await;
+        let asha = t.user(&format!("asha@{slug}.test"), &["Employee"]).await;
+        let maya = t.user(&format!("maya@{slug}.test"), &["Employee"]).await;
+        let omar = t.user(&format!("omar@{slug}.test"), &["Employee"]).await;
+        let maya_emp = t.employee("Maya", json!({"user": format!("maya@{slug}.test")})).await;
+        t.employee("Omar", json!({"user": format!("omar@{slug}.test")})).await;
+        let asha_emp = t.employee("Asha", json!({"user": format!("asha@{slug}.test"), "reports_to": maya_emp["id"]})).await;
+        let tpl = t
+            .ins(
+                &hr,
+                "AppraisalTemplate",
+                json!({"template_title": "Core", "goals": [{"kra": "Delivery", "per_weightage": "60"}, {"kra": "Quality", "per_weightage": "40"}]}),
+            )
+            .await;
+        let cycle =
+            t.ins(&hr, "AppraisalCycle", json!({"cycle_name": "H2 2026", "company": t.c(), "start_date": "2026-10-01", "end_date": "2027-03-31"})).await;
+        Review { t, hr, asha, maya, omar, asha_emp, tpl, cycle }
+    }
+
+    async fn start(&self) -> Value {
+        self.t.act(&self.hr, "AppraisalCycle", uid(&self.cycle), "start", json!({"appraisal_template": self.tpl["id"]})).await
+    }
+
+    async fn ashas(&self) -> Doc {
+        let found = self.t.one("Appraisal", json!({"employee": self.asha_emp["id"], "appraisal_cycle": self.cycle["id"]})).await;
+        self.t.get("Appraisal", uid(&found)).await
+    }
+
+    /// Asha's goals with `field` set to the scores given, in order.
+    fn scores(ap: &Doc, field: &str, scores: &[&str]) -> Value {
+        let mut goals = ap["goals"].as_array().unwrap().clone();
+        for (g, v) in goals.iter_mut().zip(scores) {
+            g[field] = json!(v);
+        }
+        json!({"goals": goals})
+    }
+
+    async fn save(&self, who: &Ctx, ap: &Doc, patch: Value) -> ferrum_kernel::Result<Doc> {
+        self.t.k.update(who, "Appraisal", uid(ap), obj(patch), None).await
+    }
+
+    async fn act(&self, who: &Ctx, ap: &Doc, action: &str, params: Value) -> ferrum_kernel::Result<Value> {
+        self.t.k.run_action(who, "Appraisal", uid(ap), action, params).await
+    }
+
+    /// Asha scores herself and sends it on; Maya scores and sends it for sign-off.
+    async fn to_sign_off(&self) -> Doc {
+        let ap = self.ashas().await;
+        self.save(&self.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        self.act(&self.asha, &ap, "submit_self_review", json!({})).await.expect("sent on");
+        let ap = self.ashas().await;
+        self.save(&self.maya, &ap, Review::scores(&ap, "manager_score", &["4", "3"])).await.expect("manager scores");
+        self.act(&self.maya, &ap, "complete_manager_review", json!({})).await.expect("for sign-off");
+        self.ashas().await
+    }
+}
+
+#[test]
+fn starting_a_cycle_makes_an_appraisal_for_everyone_once() {
+    run(async {
+        let r = Review::new("hrap1").await;
+        let out = r.start().await;
+        assert_eq!((out["status"].clone(), out["created"].clone(), out["remaining"].clone()), (json!("In Progress"), json!(3), json!(0)));
+        assert_eq!(r.t.get("AppraisalCycle", uid(&r.cycle)).await["status"], json!("In Progress"));
+        let ap = r.ashas().await;
+        assert_eq!((ap["stage"].clone(), ap["reviewer"].clone(), ap["goals"].as_array().unwrap().len()), (json!("Self Review"), json!("maya@hrap1.test"), 2));
+        assert!(r.t.k.run_action(&r.hr, "AppraisalCycle", uid(&r.cycle), "start", json!({})).await.is_err(), "started once");
+        let again = r.t.act(&r.hr, "AppraisalCycle", uid(&r.cycle), "create_appraisals", json!({})).await;
+        assert_eq!((again["created"].clone(), again["skipped"].clone()), (json!(0), json!(3)));
+        r.t.employee("Newcomer", json!({})).await;
+        assert_eq!(r.t.act(&r.hr, "AppraisalCycle", uid(&r.cycle), "create_appraisals", json!({})).await["created"], json!(1));
+        assert_eq!(sends(&r.t, "hr.appraisal_opened").await, 3, "everyone with a sign-in is told");
+    });
+}
+
+#[test]
+fn an_appraisal_needs_a_started_cycle() {
+    run(async {
+        let r = Review::new("hrap2").await;
+        refused(r.t.try_ins(&r.hr, "Appraisal", json!({"employee": r.asha_emp["id"], "appraisal_cycle": r.cycle["id"]})).await, "start the cycle first");
+    });
+}
+
+#[test]
+fn two_appraisals_for_one_person_in_a_cycle_are_refused_by_the_database() {
+    run(async {
+        let r = Review::new("hrap3").await;
+        let other = r.t.employee("Solo", json!({})).await;
+        r.t.act(&r.hr, "AppraisalCycle", uid(&r.cycle), "start", json!({"department": Value::Null})).await;
+        let ap = r.t.one("Appraisal", json!({"employee": other["id"], "appraisal_cycle": r.cycle["id"]})).await;
+        r.t.k.delete(&r.hr, "Appraisal", uid(&ap), None).await.expect("deleted");
+        let v = json!({"employee": other["id"], "appraisal_cycle": r.cycle["id"]});
+        let (a, b) = tokio::join!(r.t.try_ins(&r.hr, "Appraisal", v.clone()), r.t.try_ins(&r.hr, "Appraisal", v));
+        assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1, "{a:?} {b:?}");
+    });
+}
+
+#[test]
+fn the_employee_scores_only_at_self_review() {
+    run(async {
+        let r = Review::new("hrap4").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        refused(r.act(&r.asha, &ap, "submit_self_review", json!({})).await, "score every goal");
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        assert_eq!(r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on")["stage"], json!("Manager Review"));
+        assert_eq!(sends(&r.t, "hr.appraisal_to_review").await, 1, "Maya is told");
+        let ap = r.ashas().await;
+        refused(r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["3", "3"])).await, "not your turn");
+    });
+}
+
+#[test]
+fn an_employee_cannot_write_their_own_manager_score() {
+    run(async {
+        let r = Review::new("hrap5").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        refused(r.save(&r.asha, &ap, Review::scores(&ap, "manager_score", &["5", "5"])).await, "not your turn");
+        let mut goals = ap["goals"].as_array().unwrap().clone();
+        goals[0]["per_weightage"] = json!("70");
+        goals[1]["per_weightage"] = json!("30");
+        refused(r.save(&r.asha, &ap, json!({"goals": goals.clone()})).await, "not your turn");
+        goals.push(json!({"kra": "Extra", "per_weightage": "0"}));
+        assert!(r.save(&r.asha, &ap, json!({"goals": goals})).await.is_err(), "no goal added");
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on");
+        let ap = r.ashas().await;
+        refused(r.save(&r.asha, &ap, Review::scores(&ap, "manager_score", &["5", "5"])).await, "not your turn");
+    });
+}
+
+#[test]
+fn the_manager_scores_only_their_reports_at_manager_review() {
+    run(async {
+        let r = Review::new("hrap6").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        refused(r.save(&r.maya, &ap, Review::scores(&ap, "manager_score", &["4", "3"])).await, "not your turn");
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on");
+        let ap = r.ashas().await;
+        refused(r.save(&r.maya, &ap, Review::scores(&ap, "self_score", &["1", "1"])).await, "not your turn");
+        let mut patch = Review::scores(&ap, "manager_score", &["4", "3"]);
+        patch["remarks"] = json!("Solid half");
+        r.save(&r.maya, &ap, patch).await.expect("manager scores and remarks");
+        assert_eq!(r.act(&r.maya, &ap, "complete_manager_review", json!({})).await.expect("for sign-off")["stage"], json!("Sign-off"));
+        assert_eq!(sends(&r.t, "hr.appraisal_to_sign_off").await, 1);
+    });
+}
+
+#[test]
+fn another_manager_cannot_reach_the_appraisal() {
+    run(async {
+        let r = Review::new("hrap7").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on");
+        assert!(r.t.k.get(&r.omar, "Appraisal", uid(&ap), false).await.is_err(), "Omar cannot read it");
+        assert!(r.save(&r.omar, &ap, Review::scores(&ap, "manager_score", &["1", "1"])).await.is_err(), "nor score it");
+        assert!(r.act(&r.omar, &ap, "complete_manager_review", json!({})).await.is_err());
+    });
+}
+
+#[test]
+fn sign_off_needs_the_managers_scores() {
+    run(async {
+        let r = Review::new("hrap8").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on");
+        refused(r.t.k.submit(&r.hr, "Appraisal", uid(&ap), None).await, "manager's scores come first");
+        let ap = r.to_sign_off_from_manager().await;
+        let done = r.t.submit(&r.hr, "Appraisal", uid(&ap)).await;
+        assert_eq!(dec(&done["final_score"]), n("3.6"));
+        assert_eq!(r.ashas().await["stage"], json!("Done"));
+        assert_eq!(sends(&r.t, "hr.appraisal_done").await, 1);
+    });
+}
+
+impl Review {
+    /// From Manager Review: Maya scores and sends it for sign-off.
+    async fn to_sign_off_from_manager(&self) -> Doc {
+        let ap = self.ashas().await;
+        self.save(&self.maya, &ap, Review::scores(&ap, "manager_score", &["4", "3"])).await.expect("manager scores");
+        self.act(&self.maya, &ap, "complete_manager_review", json!({})).await.expect("for sign-off");
+        self.ashas().await
+    }
+}
+
+#[test]
+fn sent_back_goes_one_stage_back_with_the_reason() {
+    run(async {
+        let r = Review::new("hrap9").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["5", "4"])).await.expect("self scores");
+        r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on");
+        let ap = r.ashas().await;
+        assert_eq!(r.act(&r.maya, &ap, "send_back", json!({"note": "Add your evidence"})).await.expect("sent back")["stage"], json!("Self Review"));
+        assert_eq!(sends(&r.t, "hr.appraisal_sent_back").await, 1, "Asha is told why");
+        let ap = r.ashas().await;
+        r.save(&r.asha, &ap, Review::scores(&ap, "self_score", &["4", "4"])).await.expect("Asha edits again");
+        r.act(&r.asha, &ap, "submit_self_review", json!({})).await.expect("sent on again");
+        let ap = r.to_sign_off_from_manager().await;
+        refused(r.act(&r.maya, &ap, "send_back", json!({"note": "Oops"})).await, "not yours to send back");
+        assert_eq!(r.act(&r.hr, &ap, "send_back", json!({"note": "Recheck quality"})).await.expect("HR sends back")["stage"], json!("Manager Review"));
+    });
+}
+
+#[test]
+fn a_cycle_closes_only_when_everything_is_signed_off() {
+    run(async {
+        let r = Review::new("hrap10").await;
+        r.start().await;
+        let close = || r.t.k.run_action(&r.hr, "AppraisalCycle", uid(&r.cycle), "close", json!({}));
+        refused(close().await, "3 appraisals are not signed off");
+        let ap = r.to_sign_off().await;
+        r.t.submit(&r.hr, "Appraisal", uid(&ap)).await;
+        for other in r.t.list(&r.t.admin, "Appraisal", json!({"appraisal_cycle": r.cycle["id"], "docstatus": 0})).await {
+            r.t.k.delete(&r.hr, "Appraisal", uid(&other), None).await.expect("drafts deleted");
+        }
+        assert_eq!(close().await.expect("closed")["status"], json!("Completed"));
+        refused(r.t.try_ins(&r.hr, "Appraisal", json!({"employee": r.asha_emp["id"], "appraisal_cycle": r.cycle["id"]})).await, "completed");
+        r.t.k.cancel(&r.hr, "Appraisal", uid(&ap), None).await.expect("a cancel still works");
+    });
+}
+
+#[test]
+fn only_an_hr_manager_starts_and_closes() {
+    run(async {
+        let r = Review::new("hrap11").await;
+        let hu = r.t.user("hu@hrap11.test", &["HR User"]).await;
+        for who in [&hu, &r.asha] {
+            assert!(r.t.k.run_action(who, "AppraisalCycle", uid(&r.cycle), "start", json!({})).await.is_err());
+        }
+        r.start().await;
+        for who in [&hu, &r.asha] {
+            assert!(r.t.k.run_action(who, "AppraisalCycle", uid(&r.cycle), "close", json!({})).await.is_err());
+        }
+    });
+}
+
+#[test]
+fn appraisals_from_before_stages_keep_working() {
+    run(async {
+        let r = Review::new("hrap12").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        // As an older release left it: no stage.
+        let mut tx = r.t.k.db.tenant_tx(r.t.tenant).await.unwrap();
+        sqlx::query("update e_appraisal set stage = null where tenant_id = $1 and id = $2").bind(r.t.tenant).bind(uid(&ap)).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let ap = r.ashas().await;
+        r.save(&r.maya, &ap, Review::scores(&ap, "manager_score", &["4", "3"])).await.expect("a manager scores a draft from before stages");
+        assert_eq!(r.act(&r.maya, &ap, "complete_manager_review", json!({})).await.expect("for sign-off")["stage"], json!("Sign-off"));
+    });
+}
+
+#[test]
+fn an_objective_is_one_goal_of_the_appraisal() {
+    run(async {
+        let r = Review::new("hrsg1").await;
+        r.start().await;
+        let ap = r.ashas().await;
+        let set = |note: &str, key: &str| {
+            ferrum_kernel::capability::Invocation::new(
+                "hr.appraisal.set_goal",
+                json!({"id": ap["id"], "params": {"title": "Ship the mobile app", "reference_entity": "Objective", "reference_id": "obj-1", "note": note}}),
+            )
+            .key(key)
+        };
+        let first = r.t.k.invoke(&r.hr, set("40%", "g1")).await.expect("set");
+        assert_eq!(first.result["created"], json!(true));
+        let again = r.t.k.invoke(&r.hr, set("70%", "g2")).await.expect("updated");
+        assert_eq!((again.result["created"].clone(), again.result["goal"].clone()), (json!(false), first.result["goal"].clone()), "one goal per reference");
+        let goals = r.ashas().await["goals"].as_array().unwrap().clone();
+        assert_eq!(goals.len(), 3, "the template's two and the objective");
+        let g = goals.iter().find(|g| g["reference_id"] == json!("obj-1")).unwrap();
+        assert_eq!((g["kra"].clone(), g["note"].clone(), dec(&g["per_weightage"])), (json!("Ship the mobile app"), json!("70%"), Decimal::ZERO));
+        assert_eq!(r.t.k.invoke(&r.asha, set("90%", "g3")).await.map_err(|e| e.code()).unwrap_err(), "forbidden", "not the employee's own goals");
+    });
+}
+
+// ───────────── rosters and shift swaps (hr-6) ─────────────
+
+/// Day and Night shifts; Operations with Asha, Ravi (both with sign-ins, reporting to Maya, a Leave Approver), Kiran
+/// and Lee; an HR manager and a planner (HR User).
+struct Rota {
+    t: T,
+    hr: Ctx,
+    planner: Ctx,
+    asha: Ctx,
+    ravi: Ctx,
+    maya: Ctx,
+    day: Doc,
+    night: Doc,
+    ops: Doc,
+    asha_emp: Doc,
+    ravi_emp: Doc,
+}
+
+impl Rota {
+    async fn new(slug: &str) -> Rota {
+        let t = T::new(slug).await;
+        let u = |n: &str| format!("{n}@{slug}.test");
+        let hr = t.user(&u("hr"), &["HR Manager"]).await;
+        let planner = t.user(&u("planner"), &["HR User"]).await;
+        let asha = t.user(&u("asha"), &["Employee"]).await;
+        let ravi = t.user(&u("ravi"), &["Employee"]).await;
+        let maya = t.user(&u("maya"), &["Employee", "Leave Approver"]).await;
+        let shift = |n: &str, a: &str, b: &str| t.ins(&t.admin, "ShiftType", json!({"shift_name": n, "start_time": a, "end_time": b}));
+        let (day, night) = (shift("Day", "09:00", "17:00").await, shift("Night", "21:00", "05:00").await);
+        let ops = t.ins(&t.admin, "Department", json!({"department_name": "Operations", "company": t.c()})).await;
+        let maya_emp = t.employee("Maya", json!({"user": u("maya")})).await;
+        let asha_emp = t.employee("Asha", json!({"user": u("asha"), "department": ops["id"], "reports_to": maya_emp["id"]})).await;
+        let ravi_emp = t.employee("Ravi", json!({"user": u("ravi"), "department": ops["id"], "reports_to": maya_emp["id"]})).await;
+        t.employee("Kiran", json!({"department": ops["id"]})).await;
+        t.employee("Lee", json!({"department": ops["id"], "default_shift": day["id"]})).await;
+        Rota { t, hr, planner, asha, ravi, maya, day, night, ops, asha_emp, ravi_emp }
+    }
+
+    fn on(&self, n: i64) -> String {
+        days_from(&self.t, n).to_string()
+    }
+
+    async fn roster(&self, from: i64, to: i64) -> Doc {
+        self.t
+            .ins(
+                &self.planner,
+                "ShiftRoster",
+                json!({"title": "Next week", "company": self.t.c(), "department": self.ops["id"], "from_date": self.on(from), "to_date": self.on(to)}),
+            )
+            .await
+    }
+
+    async fn fill(&self, roster: &Doc, params: Value) -> ferrum_kernel::Result<Value> {
+        self.t.k.run_action(&self.planner, "ShiftRoster", uid(roster), "fill", params).await
+    }
+
+    async fn publish(&self, roster: &Doc) -> ferrum_kernel::Result<Value> {
+        self.t.k.run_action(&self.hr, "ShiftRoster", uid(roster), "publish", json!({})).await
+    }
+
+    /// A submitted assignment of `shift` over days `from..=to` from today.
+    async fn assign(&self, emp: &Doc, shift: &Doc, from: i64, to: i64) -> Doc {
+        self.t
+            .ins_submit(
+                &self.hr,
+                "ShiftAssignment",
+                json!({"employee": emp["id"], "shift_type": shift["id"], "start_date": self.on(from), "end_date": self.on(to)}),
+            )
+            .await
+    }
+
+    async fn shift_of(&self, emp: &Doc, n: i64) -> Option<String> {
+        let mut tx = self.t.k.db.tenant_tx(self.t.tenant).await.unwrap();
+        let s: Option<Uuid> = sqlx::query_scalar(
+            "select shift_type from e_shift_assignment where tenant_id = $1 and employee = $2 and docstatus = 1 and start_date <= $3 \
+             and (end_date is null or end_date >= $3) order by start_date desc limit 1",
+        )
+        .bind(self.t.tenant)
+        .bind(uid(emp))
+        .bind(days_from(&self.t, n))
+        .fetch_optional(&mut *tx)
+        .await
+        .unwrap()
+        .flatten();
+        s.map(|s| if s == uid(&self.day) { "Day".to_string() } else { "Night".to_string() })
+    }
+
+    /// Asha (Day) asks Ravi (Night) to swap on day `n`, both inside longer assignments.
+    async fn ask(&self, n: i64) -> Doc {
+        self.assign(&self.asha_emp, &self.day, n - 3, n + 3).await;
+        self.assign(&self.ravi_emp, &self.night, n - 3, n + 3).await;
+        self.t
+            .ins(&self.asha, "ShiftSwapRequest", json!({"employee": self.asha_emp["id"], "with_employee": self.ravi_emp["id"], "swap_date": self.on(n)}))
+            .await
+    }
+
+    async fn swap_act(&self, who: &Ctx, req: &Doc, action: &str) -> ferrum_kernel::Result<Value> {
+        self.t.k.run_action(who, "ShiftSwapRequest", uid(req), action, json!({})).await
+    }
+
+    async fn approve(&self, who: &Ctx, req: &Doc) -> ferrum_kernel::Result<Doc> {
+        self.t.trans(who, "ShiftSwapRequest", uid(req), "Approve").await
+    }
+}
+
+#[test]
+fn two_overlapping_assignments_submitted_at_once_make_one() {
+    run(async {
+        let r = Rota::new("hrro1").await;
+        for _ in 0..3 {
+            let draft = |shift: &Doc| {
+                r.t.ins(
+                    &r.hr,
+                    "ShiftAssignment",
+                    json!({"employee": r.asha_emp["id"], "shift_type": shift["id"], "start_date": r.on(40), "end_date": r.on(45)}),
+                )
+            };
+            let (a, b) = (draft(&r.day).await, draft(&r.night).await);
+            let (x, y) = tokio::join!(r.t.k.submit(&r.hr, "ShiftAssignment", uid(&a), None), r.t.k.submit(&r.hr, "ShiftAssignment", uid(&b), None));
+            assert_eq!(usize::from(x.is_ok()) + usize::from(y.is_ok()), 1, "{x:?} {y:?}");
+            let loser = if x.is_err() { x.map(|_| ()) } else { y.map(|_| ()) };
+            refused(loser, "overlaps");
+            let won = if r.t.get("ShiftAssignment", uid(&a)).await["docstatus"] == json!(1) { a } else { b };
+            r.t.k.cancel(&r.hr, "ShiftAssignment", uid(&won), None).await.expect("next round");
+        }
+    });
+}
+
+#[test]
+fn fill_gives_everyone_a_draft_and_skips_those_who_have_one() {
+    run(async {
+        let r = Rota::new("hrro2").await;
+        let ro = r.roster(7, 13).await;
+        assert_eq!(r.fill(&ro, json!({"shift_type": r.day["id"]})).await.expect("filled"), json!({"created": 4, "skipped": 0}));
+        assert_eq!(r.fill(&ro, json!({"shift_type": r.day["id"]})).await.expect("again"), json!({"created": 0, "skipped": 4}));
+        let ro2 =
+            r.t.ins(
+                &r.planner,
+                "ShiftRoster",
+                json!({"title": "Later", "company": r.t.c(), "department": r.ops["id"], "from_date": r.on(20), "to_date": r.on(26)}),
+            )
+            .await;
+        assert_eq!(r.fill(&ro2, json!({"shift_type": r.night["id"], "employee": r.asha_emp["id"]})).await.expect("one"), json!({"created": 1, "skipped": 0}));
+        refused(r.fill(&ro2, json!({"shift_type": r.day["id"], "from_date": r.on(19)})).await, "from_date");
+        let maya = r.t.one("Employee", json!({"first_name": "Maya"})).await;
+        refused(r.fill(&ro2, json!({"shift_type": r.day["id"], "employee": maya["id"]})).await, "not one of this roster");
+    });
+}
+
+#[test]
+fn drafts_do_not_count_until_published() {
+    run(async {
+        let r = Rota::new("hrro3").await;
+        let ro = r.roster(7, 9).await;
+        r.fill(&ro, json!({"shift_type": r.night["id"]})).await.expect("filled");
+        let lee = r.t.one("Employee", json!({"first_name": "Lee"})).await;
+        let cell = |rep: &Value| rep["meta"]["cells"][format!("{}:{}", uid(&lee), r.on(8))].clone();
+        let before = r.t.report(&r.hr, "shift_roster", &[("roster", &uid(&ro).to_string())]).await.expect("report");
+        assert_eq!((cell(&before)["docstatus"].clone(), r.shift_of(&lee, 8).await), (json!(0), None), "a draft counts for nothing");
+        r.publish(&ro).await.expect("published");
+        let after = r.t.report(&r.hr, "shift_roster", &[("roster", &uid(&ro).to_string())]).await.expect("report");
+        assert_eq!((cell(&after)["docstatus"].clone(), r.shift_of(&lee, 8).await), (json!(1), Some("Night".to_string())));
+    });
+}
+
+#[test]
+fn publish_submits_the_drafts_and_tells_each_person_once() {
+    run(async {
+        let r = Rota::new("hrro4").await;
+        let ro = r.roster(7, 13).await;
+        r.fill(&ro, json!({"shift_type": r.day["id"]})).await.expect("filled");
+        assert_eq!(r.publish(&ro).await.expect("published"), json!({"published": 4, "remaining": 0}));
+        assert_eq!(r.t.get("ShiftRoster", uid(&ro)).await["status"], json!("Published"));
+        assert_eq!(sends(&r.t, "hr.roster_published").await, 2, "Asha and Ravi have sign-ins");
+        refused(r.publish(&ro).await, "nothing to publish");
+        assert_eq!(sends(&r.t, "hr.roster_published").await, 2);
+        let refused_planner = r.t.k.run_action(&r.asha, "ShiftRoster", uid(&ro), "publish", json!({})).await;
+        assert!(refused_planner.is_err());
+    });
+}
+
+#[test]
+fn a_publish_that_meets_an_overlap_publishes_nothing() {
+    run(async {
+        let r = Rota::new("hrro5").await;
+        let ro = r.roster(7, 13).await;
+        r.fill(&ro, json!({"shift_type": r.day["id"]})).await.expect("filled");
+        // Made elsewhere after the fill, over the same days: it is submitted, the roster's draft is not.
+        r.assign(&r.ravi_emp, &r.night, 9, 9).await;
+        refused(r.publish(&ro).await, "Ravi Test");
+        assert!(r.t.list(&r.t.admin, "ShiftAssignment", json!({"roster": ro["id"], "docstatus": 1})).await.is_empty(), "nothing published");
+    });
+}
+
+#[test]
+fn the_roster_report_shows_people_by_days() {
+    run(async {
+        let r = Rota::new("hrro6").await;
+        let ro = r.roster(7, 13).await;
+        r.fill(&ro, json!({"shift_type": r.day["id"]})).await.expect("filled");
+        let on = uid(&ro).to_string();
+        // Asha on approved leave on the 8th day.
+        let mut tx = r.t.k.db.tenant_tx(r.t.tenant).await.unwrap();
+        sqlx::query("insert into e_leave_application (tenant_id, id, employee, from_date, to_date, status, docstatus, company) values ($1, $2, $3, $4, $4, 'Approved', 1, $5)")
+            .bind(r.t.tenant)
+            .bind(Uuid::now_v7())
+            .bind(uid(&r.asha_emp))
+            .bind(days_from(&r.t, 8))
+            .bind(r.t.company)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let rep = r.t.report(&r.hr, "shift_roster", &[("roster", &on)]).await.expect("report");
+        assert_eq!(rep["meta"]["days"].as_array().unwrap().len(), 7);
+        assert_eq!(rep["rows"].as_array().unwrap().len(), 4);
+        let cell = |e: &Doc, n: i64| rep["meta"]["cells"][format!("{}:{}", uid(e), r.on(n))].clone();
+        // A weekly off (the company's list) is in every week.
+        use chrono::Datelike;
+        let sat = (7..=13).find(|n| days_from(&r.t, *n).weekday() == chrono::Weekday::Sat).unwrap();
+        assert_eq!(cell(&r.asha_emp, sat)["holiday"], json!(true));
+        assert_eq!(cell(&r.asha_emp, 8)["leave"], json!(true));
+        let asha_row = rep["rows"].as_array().unwrap().iter().find(|x| x["employee_id"] == r.asha_emp["id"]).unwrap().clone();
+        assert_eq!(asha_row[format!("d{}", days_from(&r.t, 7).format("%Y%m%d"))], json!("Day (draft)"));
+        let own = r.t.report(&r.asha, "shift_roster", &[("roster", &on)]).await.expect("own row");
+        assert_eq!(own["rows"].as_array().unwrap().len(), 1);
+    });
+}
+
+#[test]
+fn a_swap_changes_both_shifts_together() {
+    run(async {
+        let r = Rota::new("hrro7").await;
+        let req = r.ask(10).await;
+        assert_eq!(sends(&r.t, "hr.shift_swap_asked").await, 1, "Ravi is asked");
+        r.swap_act(&r.ravi, &req, "accept").await.expect("accepted");
+        r.approve(&r.maya, &req).await.expect("approved");
+        assert_eq!((r.shift_of(&r.asha_emp, 10).await, r.shift_of(&r.ravi_emp, 10).await), (Some("Night".into()), Some("Day".into())));
+        for n in [9, 11] {
+            assert_eq!((r.shift_of(&r.asha_emp, n).await, r.shift_of(&r.ravi_emp, n).await), (Some("Day".into()), Some("Night".into())), "day {n}");
+        }
+        assert_eq!(sends(&r.t, "hr.shift_swap_decided").await, 2, "both are told");
+        assert_eq!(r.t.get("ShiftSwapRequest", uid(&req)).await["status"], json!("Approved"));
+    });
+}
+
+#[test]
+fn a_swap_needs_the_colleague_and_the_approver() {
+    run(async {
+        let r = Rota::new("hrro8").await;
+        let req = r.ask(10).await;
+        refused(r.approve(&r.maya, &req).await, "has not accepted");
+        assert!(r.approve(&r.asha, &req).await.is_err(), "not her own");
+        r.swap_act(&r.ravi, &req, "decline").await.expect("declined");
+        refused(r.approve(&r.maya, &req).await, "has not accepted");
+        let rejected = r.t.trans(&r.maya, "ShiftSwapRequest", uid(&req), "Reject").await.expect("rejected");
+        assert_eq!(rejected["status"], json!("Rejected"));
+        assert_eq!((r.shift_of(&r.asha_emp, 10).await, r.shift_of(&r.ravi_emp, 10).await), (Some("Day".into()), Some("Night".into())));
+    });
+}
+
+#[test]
+fn the_colleague_cannot_edit_or_delete_the_request() {
+    run(async {
+        let r = Rota::new("hrro9").await;
+        let req = r.ask(10).await;
+        assert!(r.t.k.update(&r.ravi, "ShiftSwapRequest", uid(&req), obj(json!({"reason": "mine now"})), None).await.is_err());
+        assert!(r.t.k.delete(&r.ravi, "ShiftSwapRequest", uid(&req), None).await.is_err());
+        let kiran = r.t.user("kiran@hrro9.test", &["Employee"]).await;
+        assert!(r.swap_act(&kiran, &req, "accept").await.is_err());
+        r.swap_act(&r.ravi, &req, "accept").await.expect("Ravi accepts");
+    });
+}
+
+#[test]
+fn an_employee_asks_only_for_themselves() {
+    run(async {
+        let r = Rota::new("hrro10").await;
+        r.assign(&r.asha_emp, &r.day, 9, 11).await;
+        r.assign(&r.ravi_emp, &r.night, 9, 11).await;
+        let ask =
+            r.t.try_ins(&r.asha, "ShiftSwapRequest", json!({"employee": r.ravi_emp["id"], "with_employee": r.asha_emp["id"], "swap_date": r.on(10)})).await;
+        assert!(ask.is_err(), "{ask:?}");
+    });
+}
+
+#[test]
+fn a_swap_is_refused_when_the_shifts_changed() {
+    run(async {
+        let r = Rota::new("hrro11").await;
+        let req = r.ask(10).await;
+        r.swap_act(&r.ravi, &req, "accept").await.expect("accepted");
+        for a in r.t.list(&r.t.admin, "ShiftAssignment", json!({"employee": r.ravi_emp["id"], "docstatus": 1})).await {
+            r.t.k.cancel(&r.hr, "ShiftAssignment", uid(&a), None).await.expect("HR changes Ravi's shifts");
+        }
+        r.assign(&r.ravi_emp, &r.day, 10, 10).await;
+        refused(r.approve(&r.maya, &req).await, "shifts changed since");
+        assert_eq!(r.shift_of(&r.asha_emp, 10).await, Some("Day".into()), "nothing changed");
+    });
+}
+
+#[test]
+fn a_swap_is_refused_for_a_day_that_is_marked_or_past() {
+    run(async {
+        let r = Rota::new("hrro12").await;
+        r.assign(&r.asha_emp, &r.day, -5, 5).await;
+        r.assign(&r.ravi_emp, &r.night, -5, 5).await;
+        let v = |n: i64| json!({"employee": r.asha_emp["id"], "with_employee": r.ravi_emp["id"], "swap_date": r.on(n)});
+        refused(r.t.try_ins(&r.asha, "ShiftSwapRequest", v(-1)).await, "has passed");
+        let mut tx = r.t.k.db.tenant_tx(r.t.tenant).await.unwrap();
+        sqlx::query(
+            "insert into e_attendance (tenant_id, id, employee, attendance_date, status, docstatus, company) values ($1, $2, $3, $4, 'Present', 1, $5)",
+        )
+        .bind(r.t.tenant)
+        .bind(Uuid::now_v7())
+        .bind(uid(&r.ravi_emp))
+        .bind(days_from(&r.t, 0))
+        .bind(r.t.company)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        refused(r.t.try_ins(&r.asha, "ShiftSwapRequest", v(0)).await, "already marked");
+    });
+}
+
+#[test]
+fn cancelling_an_approved_swap_puts_both_shifts_back() {
+    run(async {
+        let r = Rota::new("hrro13").await;
+        let req = r.ask(10).await;
+        r.swap_act(&r.ravi, &req, "accept").await.expect("accepted");
+        r.approve(&r.maya, &req).await.expect("approved");
+        r.t.trans(&r.maya, "ShiftSwapRequest", uid(&req), "Cancel").await.expect("cancelled");
+        assert_eq!((r.shift_of(&r.asha_emp, 10).await, r.shift_of(&r.ravi_emp, 10).await), (Some("Day".into()), Some("Night".into())));
+        assert_eq!(r.t.get("ShiftSwapRequest", uid(&req)).await["status"], json!("Cancelled"));
+    });
+}
+
+#[test]
+fn two_swaps_for_the_same_person_and_day() {
+    run(async {
+        let r = Rota::new("hrro14").await;
+        r.ask(10).await;
+        let kiran = r.t.one("Employee", json!({"first_name": "Kiran"})).await;
+        r.assign(&kiran, &r.night, 10, 10).await;
+        refused(
+            r.t.try_ins(&r.hr, "ShiftSwapRequest", json!({"employee": kiran["id"], "with_employee": r.asha_emp["id"], "swap_date": r.on(10)})).await,
+            "already has a swap",
+        );
+    });
+}
+
+// ───────────── overtime and time off in lieu (hr-9, HR-04) ─────────────
+
+/// An 8-hour Day shift; Asha (reports to Maya, a Leave Approver) on it; a time-off type and a working-day rule.
+struct Ot {
+    t: T,
+    asha: Ctx,
+    maya: Ctx,
+    asha_emp: Doc,
+    day: Doc,
+    rule: Doc,
+    toil: Doc,
+}
+
+/// The latest weekday before today (the suite's company list makes Saturdays and Sundays weekly offs).
+fn last_weekday(t: &T, back: i64) -> chrono::NaiveDate {
+    use chrono::Datelike;
+    let mut d = days_from(t, -back);
+    while matches!(d.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun) {
+        d -= chrono::Duration::days(1);
+    }
+    d
+}
+
+impl Ot {
+    async fn new(slug: &str) -> Ot {
+        let t = T::new(slug).await;
+        let u = |n: &str| format!("{n}@{slug}.test");
+        let asha = t.user(&u("asha"), &["Employee"]).await;
+        let maya = t.user(&u("maya"), &["Employee", "Leave Approver"]).await;
+        let day = t.ins(&t.admin, "ShiftType", json!({"shift_name": "Day", "start_time": "09:00", "end_time": "17:00"})).await;
+        let maya_emp = t.employee("Maya", json!({"user": u("maya")})).await;
+        let asha_emp = t.employee("Asha", json!({"user": u("asha"), "reports_to": maya_emp["id"], "default_shift": day["id"]})).await;
+        let toil = t.ins(&t.admin, "LeaveType", json!({"leave_type_name": "Time Off in Lieu"})).await;
+        let rule = t
+            .ins(
+                &t.admin,
+                "OvertimeRule",
+                json!({"rule_name": "Weekday overtime", "company": t.c(), "day_kind": "Working Day", "leave_type": toil["id"], "hours_per_day": "8"}),
+            )
+            .await;
+        Ot { t, asha, maya, asha_emp, day, rule, toil }
+    }
+
+    /// Submitted attendance of `hours` on `on`.
+    async fn worked(&self, on: chrono::NaiveDate, hours: &str) {
+        self.t
+            .ins_submit(&self.t.admin, "Attendance", json!({"employee": self.asha_emp["id"], "attendance_date": on.to_string(), "status": "Present", "shift": self.day["id"], "working_hours": hours}))
+            .await;
+    }
+
+    async fn ask(&self, on: chrono::NaiveDate, hours: &str) -> ferrum_kernel::Result<Doc> {
+        self.t.try_ins(&self.asha, "OvertimeRequest", json!({"employee": self.asha_emp["id"], "work_date": on.to_string(), "hours": hours})).await
+    }
+
+    async fn approve(&self, req: &Doc) -> Doc {
+        self.t.trans(&self.maya, "OvertimeRequest", uid(req), "Approve").await.unwrap_or_else(|e| panic!("approve: {}", describe(&e)))
+    }
+
+    async fn balance(&self) -> Decimal {
+        let mut tx = self.t.k.db.tenant_tx(self.t.tenant).await.unwrap();
+        sqlx::query_scalar("select coalesce(sum(leaves), 0) from e_leave_ledger_entry where tenant_id = $1 and employee = $2 and leave_type = $3")
+            .bind(self.t.tenant)
+            .bind(uid(&self.asha_emp))
+            .bind(uid(&self.toil))
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap()
+    }
+}
+
+#[test]
+fn overtime_on_a_working_day_becomes_time_off() {
+    run(async {
+        let o = Ot::new("hrot1").await;
+        let on = last_weekday(&o.t, 1);
+        o.worked(on, "10").await;
+        let req = o.ask(on, "2").await.expect("asked");
+        assert_eq!(req["rule"], o.rule["id"]);
+        assert_eq!(sends(&o.t, "hr.overtime_to_approve").await, 1, "Maya is asked");
+        o.approve(&req).await;
+        let done = o.t.get("OvertimeRequest", uid(&req)).await;
+        assert_eq!((done["status"].clone(), dec(&done["days_credited"])), (json!("Approved"), n("0.25")));
+        assert_eq!(o.balance().await, n("0.25"));
+        assert_eq!(o.t.get("LeaveAllocation", vid(&json!({"id": done["leave_allocation"]}))).await["docstatus"], json!(1));
+        assert_eq!(sends(&o.t, "hr.overtime_decided").await, 1);
+    });
+}
+
+#[test]
+fn overtime_beyond_what_was_recorded_is_refused() {
+    run(async {
+        let o = Ot::new("hrot2").await;
+        let on = last_weekday(&o.t, 1);
+        refused(o.ask(on, "1").await, "no attendance");
+        o.worked(on, "10").await;
+        refused(o.ask(on, "3").await, "2 hours of overtime are recorded");
+        let ahead = days_from(&o.t, 2);
+        refused(o.ask(ahead, "1").await, "after it is worked");
+    });
+}
+
+#[test]
+fn overtime_on_a_holiday_counts_the_check_in_span() {
+    run(async {
+        use chrono::Datelike;
+        let o = Ot::new("hrot3").await;
+        o.t.ins(
+            &o.t.admin,
+            "OvertimeRule",
+            json!({"rule_name": "Day off", "company": o.t.c(), "day_kind": "Holiday or Weekly Off", "leave_type": o.toil["id"], "multiplier": "2"}),
+        )
+        .await;
+        let mut sat = days_from(&o.t, -1);
+        while sat.weekday() != chrono::Weekday::Sat {
+            sat -= chrono::Duration::days(1);
+        }
+        for (time, kind) in [("10:00:00", "IN"), ("14:30:00", "OUT")] {
+            o.t.ins(&o.t.admin, "EmployeeCheckin", json!({"employee": o.asha_emp["id"], "log_type": kind, "log_time": format!("{sat}T{time}")})).await;
+        }
+        refused(o.ask(sat, "5").await, "4.5 hours");
+        let req = o.ask(sat, "4").await.expect("asked");
+        o.approve(&req).await;
+        assert_eq!(o.balance().await, n("1"), "4 hours at twice, 8 hours a day");
+    });
+}
+
+#[test]
+fn a_second_credit_goes_onto_the_open_allocation() {
+    run(async {
+        let o = Ot::new("hrot4").await;
+        let (d1, d2) = (last_weekday(&o.t, 1), last_weekday(&o.t, 3));
+        let (d1, d2) = (d1.max(d2), d1.min(d2));
+        o.worked(d2, "10").await;
+        o.worked(d1, "12").await;
+        let first = o.ask(d2, "2").await.expect("first");
+        o.approve(&first).await;
+        let second = o.ask(d1, "4").await.expect("second");
+        o.approve(&second).await;
+        let (a, b) = (o.t.get("OvertimeRequest", uid(&first)).await, o.t.get("OvertimeRequest", uid(&second)).await);
+        assert_eq!(a["leave_allocation"], b["leave_allocation"], "one allocation");
+        assert_eq!(o.balance().await, n("0.75"));
+    });
+}
+
+#[test]
+fn the_monthly_cap_is_kept() {
+    run(async {
+        let o = Ot::new("hrot5").await;
+        o.t.k.update(&o.t.admin, "OvertimeRule", uid(&o.rule), obj(json!({"max_hours_per_month": "3"})), None).await.expect("cap");
+        use chrono::Datelike;
+        // Two weekdays of one month before today.
+        let mut days = Vec::new();
+        let mut d = days_from(&o.t, -1);
+        while days.len() < 2 {
+            if !matches!(d.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun) && (days.is_empty() || d.month() == days_from(&o.t, -1).month()) {
+                days.push(d);
+            }
+            d -= chrono::Duration::days(1);
+        }
+        if days[0].month() != days[1].month() {
+            return; // ponytail: the first two days of a month have no two earlier weekdays in it; the check needs them.
+        }
+        for on in &days {
+            o.worked(*on, "11").await;
+        }
+        o.ask(days[0], "2").await.expect("2 of 3");
+        refused(o.ask(days[1], "2").await, "at most 3 hours a month");
+        o.ask(days[1], "1").await.expect("the third hour");
+    });
+}
+
+#[test]
+fn an_employee_asks_only_for_themselves_and_does_not_approve_it() {
+    run(async {
+        let o = Ot::new("hrot6").await;
+        let on = last_weekday(&o.t, 1);
+        let maya_emp = o.t.one("Employee", json!({"first_name": "Maya"})).await;
+        o.t.ins_submit(
+            &o.t.admin,
+            "Attendance",
+            json!({"employee": maya_emp["id"], "attendance_date": on.to_string(), "status": "Present", "shift": o.day["id"], "working_hours": "10"}),
+        )
+        .await;
+        assert!(o.t.try_ins(&o.asha, "OvertimeRequest", json!({"employee": maya_emp["id"], "work_date": on.to_string(), "hours": "1"})).await.is_err());
+        o.worked(on, "10").await;
+        let req = o.ask(on, "1").await.expect("asked");
+        assert!(o.t.trans(&o.asha, "OvertimeRequest", uid(&req), "Approve").await.is_err(), "not her own");
+    });
+}
+
+#[test]
+fn cancelling_an_approved_request_takes_the_days_back() {
+    run(async {
+        let o = Ot::new("hrot7").await;
+        let on = last_weekday(&o.t, 1);
+        o.worked(on, "16").await;
+        let req = o.ask(on, "8").await.expect("asked");
+        o.approve(&req).await;
+        assert_eq!(o.balance().await, n("1"));
+        o.t.trans(&o.maya, "OvertimeRequest", uid(&req), "Cancel").await.expect("cancelled");
+        assert_eq!(o.balance().await, Decimal::ZERO);
+        assert_eq!(o.t.get("OvertimeRequest", uid(&req)).await["status"], json!("Cancelled"));
+    });
+}
+
+#[test]
+fn one_request_per_person_and_day() {
+    run(async {
+        let o = Ot::new("hrot8").await;
+        let on = last_weekday(&o.t, 1);
+        o.worked(on, "12").await;
+        o.ask(on, "1").await.expect("first");
+        assert!(o.ask(on, "1").await.is_err(), "a second for the day");
+    });
+}
+
+async fn opening(t: &T, closes_on: chrono::NaiveDate) -> Doc {
+    let eng = t.ins(&t.admin, "Designation", json!({"designation_name": format!("Engineer {closes_on}")})).await;
+    t.ins(&t.admin, "JobOpening", json!({"job_title": "Backend Engineer", "company": t.c(), "designation": eng["id"], "closes_on": closes_on.to_string()}))
+        .await
+}
+
+#[test]
+fn the_upkeep_closes_an_opening_on_the_record_path() {
+    run(async {
+        let t = T::new("hrrt7").await;
+        let o = opening(&t, t.admin.today() - chrono::Days::new(1)).await;
+        let before = o["version"].as_i64().unwrap();
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        let after = t.get("JobOpening", uid(&o)).await;
+        assert_eq!((after["status"].clone(), after["version"].as_i64()), (json!("Closed"), Some(before + 1)));
+        ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+        assert_eq!(t.get("JobOpening", uid(&o)).await["version"].as_i64(), Some(before + 1), "closed once");
+    });
+}
+
+#[test]
+fn an_opening_closes_on_the_workspaces_day() {
+    run(async {
+        let mut t = T::new("hrrt8").await;
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        let db_day: chrono::NaiveDate = sqlx::query_scalar("select current_date").fetch_one(&mut *tx).await.unwrap();
+        drop(tx);
+        // A zone whose day is not the database's: behind it, or ahead of it.
+        let mut differs = None;
+        for zone in ["Pacific/Pago_Pago", "Pacific/Kiritimati"] {
+            t.k.update_tenant_settings(&t.admin, &obj(json!({"timezone": zone}))).await.expect("the workspace's zone");
+            t.admin = t.k.load_ctx(t.tenant, t.admin.user, None, "it".into()).await.expect("admin");
+            if t.admin.today() != db_day {
+                differs = Some(t.admin.today());
+                break;
+            }
+        }
+        let today = differs.expect("one of the two zones' day is not the database's");
+        if today < db_day {
+            let o = opening(&t, today).await;
+            ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+            assert_eq!(t.get("JobOpening", uid(&o)).await["status"], json!("Open"), "it closes after its day, the workspace's");
+        } else {
+            let o = opening(&t, today - chrono::Days::new(1)).await;
+            ferrum_app_hr::upkeep(&t.k, t.tenant).await.unwrap();
+            assert_eq!(t.get("JobOpening", uid(&o)).await["status"], json!("Closed"), "its day has passed in the workspace");
+        }
+    });
+}
+
+#[test]
+fn an_employee_is_found_by_sign_in_and_nothing_more() {
+    run(async {
+        let t = T::new("hrrt9").await;
+        let hr = t.user("hr@hrrt9.test", &["HR Manager"]).await;
+        let me = t.user("asha@hrrt9.test", &["Employee"]).await;
+        let asha = t.employee("Asha", json!({"user": "asha@hrrt9.test", "bank_account_no": "123456789012"})).await;
+        let find = |email: &str| ferrum_kernel::capability::Invocation::new("hr.company.find_employee", json!({"id": t.c(), "params": {"email": email}}));
+        let found = t.k.invoke(&hr, find("Asha@HRRT9.test")).await.expect("found");
+        assert_eq!(found.result, json!({"employee": asha["id"]}), "the id and nothing else");
+        assert_eq!(t.k.invoke(&hr, find("nobody@hrrt9.test")).await.expect("asked").result, json!({"employee": null}));
+        assert_eq!(t.k.invoke(&me, find("asha@hrrt9.test")).await.map_err(|e| e.code()).unwrap_err(), "forbidden");
+        let c = t.k.catalog(&t.admin).into_iter().find(|c| c.id == "hr.company.find_employee").expect("offered");
+        assert_eq!(serde_json::to_value(c.effect).unwrap(), json!("query"));
     });
 }
 
@@ -1892,26 +3287,28 @@ async fn talent_scenario() {
             json!({"template_title": "Engineering", "goals": [{"kra": "Delivery", "per_weightage": "60"}, {"kra": "Quality", "per_weightage": "40"}]}),
         )
         .await;
-    let cycle = t
-        .ins(
-            &hr,
-            "AppraisalCycle",
-            json!({"cycle_name": "H2 2026", "company": t.c(), "start_date": "2026-10-01", "end_date": "2027-03-31", "status": "In Progress"}),
-        )
-        .await;
-    let ap = t.ins(&hr, "Appraisal", json!({"employee": emp["id"], "appraisal_cycle": cycle["id"], "appraisal_template": tpl["id"]})).await;
-    assert_eq!(ap["goals"].as_array().unwrap().len(), 2, "goals copied from the template");
+    let cycle = t.ins(&hr, "AppraisalCycle", json!({"cycle_name": "H2 2026", "company": t.c(), "start_date": "2026-10-01", "end_date": "2027-03-31"})).await;
+    let started = t.act(&hr, "AppraisalCycle", uid(&cycle), "start", json!({"appraisal_template": tpl["id"]})).await;
+    assert_eq!(started["status"], json!("In Progress"));
+    let ap = t.one("Appraisal", json!({"employee": emp["id"], "appraisal_cycle": cycle["id"]})).await;
+    let ap = t.get("Appraisal", uid(&ap)).await;
+    assert_eq!((ap["goals"].as_array().unwrap().len(), ap["stage"].clone()), (2, json!("Self Review")), "goals copied from the template");
+    let mut goals = ap["goals"].as_array().unwrap().clone();
+    goals[0]["manager_score"] = json!("5");
+    refused(t.k.update(&me, "Appraisal", uid(&ap), obj(json!({"goals": goals})), None).await, "not your turn");
     let mut goals = ap["goals"].as_array().unwrap().clone();
     goals[0]["self_score"] = json!("5");
-    goals[0]["manager_score"] = json!("5");
     goals[1]["self_score"] = json!("4");
     let ap = t.k.update(&me, "Appraisal", uid(&ap), obj(json!({"goals": goals})), None).await.expect("self appraisal");
     assert_eq!((dec(&ap["self_score"]), ap["goals"][0]["manager_score"].clone()), (n("4.6"), Value::Null), "employees cannot score for the manager");
-    refused(t.k.submit(&hr, "Appraisal", uid(&ap), None).await, "score every goal");
+    refused(t.k.submit(&hr, "Appraisal", uid(&ap), None).await, "manager's scores come first");
+    t.act(&me, "Appraisal", uid(&ap), "submit_self_review", json!({})).await;
+    let ap = t.get("Appraisal", uid(&ap)).await;
     let mut goals = ap["goals"].as_array().unwrap().clone();
     goals[0]["manager_score"] = json!("4");
     goals[1]["manager_score"] = json!("3");
     t.k.update(&hr, "Appraisal", uid(&ap), obj(json!({"goals": goals})), None).await.expect("manager scores");
+    t.act(&hr, "Appraisal", uid(&ap), "complete_manager_review", json!({})).await;
     let ap = t.submit(&hr, "Appraisal", uid(&ap)).await;
     assert_eq!(dec(&ap["final_score"]), n("3.6"));
     refused(

@@ -1,5 +1,5 @@
 package: hr
-version: 0.6.2
+version: 0.12.0
 label: Human Resources
 description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
 depends: [core]
@@ -10,6 +10,22 @@ overlays:
     ops:
       - {op: add_field, field: {name: hr_default_holiday_list, type: link, to: HolidayList, label: Default Holiday List}}
       - {op: add_field, field: {name: hr_notice_period_days, type: int, min: "0", label: Notice Period (Days), description: "Notice due from employees whose record sets none"}}
+      # For other apps (Learn) that have a sign-in and need the employee's id, and nothing else of the record
+      # (src/people.rs, `EmployeeLookup`). An action needs a record: the company is the one whose employees are searched.
+      - op: add_action
+        action:
+          name: find_employee
+          label: Find an Employee by Sign-in
+          # Also every employee's record: HR Manager and HR User, or an app's declared use (src/people.rs).
+          permission: read
+          read_only: true
+          hidden: true
+          params:
+            - {name: email, label: Sign-in Email, required: true, description: "The sign-in email of the person; letter case does not matter"}
+          contract:
+            effect: query
+            returns: {type: object, properties: {employee: {type: [string, "null"], format: uuid}}}
+            completion: "The id of this company's employee who signs in with this email, or null when there is none; no other field of the employee"
 
 modules:
   - name: hr
@@ -23,7 +39,7 @@ modules:
     label: Attendance & Leave
     icon: calendar
     order: 71
-    items: [Attendance, AttendanceRequest, EmployeeCheckin, ShiftType, ShiftAssignment, HolidayList, LeaveApplication, LeaveAllocation, LeaveEncashment,
+    items: [Attendance, AttendanceRequest, EmployeeCheckin, ShiftType, ShiftAssignment, ShiftRoster, ShiftSwapRequest, OvertimeRequest, OvertimeRule, report:shift_roster, HolidayList, LeaveApplication, LeaveAllocation, LeaveEncashment,
             LeaveType, LeavePolicy, LeaveLedgerEntry, report:monthly_attendance_sheet, report:leave_balance]
   - name: recruitment
     label: Recruitment
@@ -34,7 +50,7 @@ modules:
     label: Performance
     icon: target
     order: 74
-    items: [Appraisal, AppraisalCycle, AppraisalTemplate, TrainingProgram, TrainingEvent, TrainingRecord]
+    items: [Appraisal, AppraisalCycle, AppraisalTemplate, TrainingProgram, TrainingEvent, TrainingRecord, Skill, report:training_compliance, report:skills_matrix]
 
 workflows:
   - name: Leave Approval
@@ -52,6 +68,32 @@ workflows:
       - {action: Cancel, from: Rejected, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
   - name: Attendance Request Approval
     entity: AttendanceRequest
+    initial_state: Open
+    states:
+      - {name: Open, docstatus: 0}
+      - {name: Approved, docstatus: 1}
+      - {name: Rejected, docstatus: 1}
+      - {name: Cancelled, docstatus: 2}
+    transitions:
+      - {action: Approve, from: Open, to: Approved, roles: [Leave Approver, HR Manager]}
+      - {action: Reject, from: Open, to: Rejected, roles: [Leave Approver, HR Manager]}
+      - {action: Cancel, from: Approved, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
+      - {action: Cancel, from: Rejected, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
+  - name: Overtime Approval
+    entity: OvertimeRequest
+    initial_state: Open
+    states:
+      - {name: Open, docstatus: 0}
+      - {name: Approved, docstatus: 1}
+      - {name: Rejected, docstatus: 1}
+      - {name: Cancelled, docstatus: 2}
+    transitions:
+      - {action: Approve, from: Open, to: Approved, roles: [Leave Approver, HR Manager]}
+      - {action: Reject, from: Open, to: Rejected, roles: [Leave Approver, HR Manager]}
+      - {action: Cancel, from: Approved, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
+      - {action: Cancel, from: Rejected, to: Cancelled, roles: [Leave Approver, HR Manager, HR User]}
+  - name: Shift Swap Approval
+    entity: ShiftSwapRequest
     initial_state: Open
     states:
       - {name: Open, docstatus: 0}
@@ -107,6 +149,9 @@ personal_data:
   - {entity: EmployeePromotion, match: employee_user, retain: "Employment records"}
   - {entity: EmployeeTransfer, match: employee_user, retain: "Employment records"}
   - {entity: Appraisal, match: employee_user, retain: "Employment records"}
+  - {entity: TrainingRecord, match: employee_user, retain: "Employment records"}
+  - {entity: ShiftSwapRequest, match: employee_user, retain: "Employment records"}
+  - {entity: OvertimeRequest, match: employee_user, retain: "Employment records"}
   - {entity: EmployeeDocument, match: employee_user, retain: "Employment records"}
   - {entity: EmployeeLetter, match: recipient_email, name: recipient_name, erase: [recipient_name, recipient_email, sent_to]}
 roles:
@@ -117,6 +162,7 @@ roles:
       - {entity: TrainingProgram, read: true, write: true, create: true, delete: true, export: true}
       - {entity: TrainingEvent, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: TrainingRecord, read: true, export: true}
+      - {entity: Skill, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Employee, read: true, write: true, create: true, delete: true, export: true, import: true, read_groups: [bank, identity, personal], write_groups: [bank, identity, personal]}
       - {entity: EmployeeDocumentType, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EmployeeLetter, read: true, export: true}
@@ -134,6 +180,10 @@ roles:
       - {entity: HolidayList, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: ShiftType, read: true, write: true, create: true, delete: true, export: true}
       - {entity: ShiftAssignment, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
+      - {entity: ShiftRoster, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: ShiftSwapRequest, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: OvertimeRule, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: OvertimeRequest, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: EmployeeCheckin, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Attendance, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
       - {entity: AttendanceRequest, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
@@ -160,6 +210,7 @@ roles:
       - {entity: Employee, read: true, write: true, create: true, export: true, read_groups: [identity, personal], write_groups: [identity, personal]}
       - {entity: EmployeeDocumentType, read: true}
       - {entity: EmployeeLetter, read: true}
+      - {entity: Skill, read: true}
       # Documents of the categories whose employee details they see: general and identity, not bank.
       - {entity: EmployeeDocument, read: true, write: true, create: true, delete: true, where: {category: [General, Identity]}}
       - {entity: Department, read: true, write: true, create: true}
@@ -175,6 +226,10 @@ roles:
       - {entity: HolidayList, read: true, write: true, create: true}
       - {entity: ShiftType, read: true}
       - {entity: ShiftAssignment, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
+      - {entity: ShiftRoster, read: true, write: true, create: true}
+      - {entity: ShiftSwapRequest, read: true, write: true, create: true, delete: true, cancel: true}
+      - {entity: OvertimeRule, read: true}
+      - {entity: OvertimeRequest, read: true, write: true, create: true, delete: true, cancel: true}
       - {entity: EmployeeCheckin, read: true, write: true, create: true, delete: true, import: true}
       - {entity: Attendance, read: true, write: true, create: true, delete: true, submit: true, cancel: true, import: true}
       - {entity: AttendanceRequest, read: true, write: true, create: true, delete: true, cancel: true}
@@ -212,15 +267,22 @@ roles:
       - {entity: Attendance, read: true, if_owner: true}
       - {entity: AttendanceRequest, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: ShiftAssignment, read: true, if_owner: true}
+      - {entity: ShiftSwapRequest, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: OvertimeRequest, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: ShiftRoster, read: true}
       - {entity: LeaveAllocation, read: true, if_owner: true}
       - {entity: LeaveLedgerEntry, read: true, if_owner: true}
       - {entity: Appraisal, read: true, write: true, if_owner: true, read_groups: [review]}
-      - {entity: AppraisalGoal, read_groups: [review]}
+      # As a manager, the appraisals of those reporting to them; what each may change at which stage is the
+      # appraisal's own check (src/talent.rs, `turn`), never this grant.
+      - {entity: Appraisal, read: true, write: true, via: employee.reports_to.user, read_groups: [review], write_groups: [review]}
+      - {entity: AppraisalGoal, read_groups: [review], write_groups: [review]}
       - {entity: EmployeePromotion, read: true, if_owner: true, read_groups: [pay]}
       - {entity: EmployeeTransfer, read: true, if_owner: true}
       - {entity: EmployeeSeparation, read: true, if_owner: true}
       - {entity: TrainingRecord, read: true, if_owner: true}
       - {entity: TrainingProgram, read: true}
+      - {entity: Skill, read: true}
       - {entity: LeaveType, read: true}
       - {entity: HolidayList, read: true}
       - {entity: ShiftType, read: true}
@@ -234,6 +296,8 @@ roles:
     permissions:
       - {entity: LeaveApplication, read: true, write: true, submit: true, cancel: true}
       - {entity: AttendanceRequest, read: true, write: true, submit: true, cancel: true}
+      - {entity: ShiftSwapRequest, read: true, write: true, submit: true, cancel: true}
+      - {entity: OvertimeRequest, read: true, write: true, submit: true, cancel: true}
       - {entity: LeaveAllocation, read: true}
       - {entity: LeaveLedgerEntry, read: true}
       - {entity: LeaveType, read: true}
@@ -266,11 +330,17 @@ seed:
 backfills:
   - {name: serving_notice, entity: Employee, needs: "t.status = 'Left' and t.relieving_date >= current_date and exists (select 1 from e_employee_separation s where s.tenant_id = t.tenant_id and s.employee = t.id and s.docstatus = 1 and s.relieving_date = t.relieving_date)",
      set: "status = 'Active'"}
+  # 0.21.0: appraisals made before stages existed. Signed-off ones are Done; drafts wait for the manager's scores,
+  # which is where HR left them. A cycle that already holds appraisals is In Progress.
+  - {name: appraisal_stage, entity: Appraisal, needs: "t.stage is null and t.docstatus < 2", set: "stage = case when t.docstatus = 1 then 'Done' else 'Manager Review' end"}
+  - {name: appraisal_cycle_started, entity: AppraisalCycle, needs: "t.status = 'Not Started' and exists (select 1 from e_appraisal a where a.tenant_id = t.tenant_id and a.appraisal_cycle = t.id and a.docstatus < 2)", set: "status = 'In Progress'"}
 handover:
   - {entity: Employee, field: leave_approver}
   - {entity: Employee, field: expense_approver}
   - {entity: LeaveApplication, field: leave_approver, where: {status: Open}}
   - {entity: AttendanceRequest, field: approver, where: {status: Open}}
+  - {entity: ShiftSwapRequest, field: approver, where: {status: Open}}
+  - {entity: OvertimeRequest, field: approver, where: {status: Open}}
 
 # What the app sends; a workspace edits the wording under Settings.
 messages:
@@ -297,6 +367,141 @@ messages:
         inapp:
           title: "{{ values.document_type }} of {{ doc.employee_name }} expires on {{ doc.expiry_date }}"
           text: "Renew it and add the new one to the employee's documents."
+  - key: hr.training_expiring
+    label: Training about to lapse
+    entity: TrainingRecord
+    languages:
+      en:
+        email:
+          subject: "{{ doc.program_name }} lapses on {{ doc.valid_until }}"
+          body: "<p>The training {{ doc.program_name }} completed on {{ doc.completed_on }} counts until {{ doc.valid_until }}.</p><p>Please take it again before then.</p>"
+        inapp:
+          title: "{{ doc.program_name }} lapses on {{ doc.valid_until }}"
+          text: "Take it again before then."
+  - key: hr.appraisal_opened
+    label: Appraisal opened
+    entity: Appraisal
+    languages:
+      en:
+        email:
+          subject: "Your appraisal is open"
+          body: "<p>Your appraisal is open: score your goals and send them to your manager.</p>"
+        inapp:
+          title: "Your appraisal is open"
+          text: "Score your goals and send them to your manager."
+  - key: hr.appraisal_to_review
+    label: Appraisal waiting for the manager
+    entity: Appraisal
+    languages:
+      en:
+        email:
+          subject: "{{ doc.employee_name }}'s appraisal waits for your scores"
+          body: "<p>{{ doc.employee_name }} has scored their goals. Their appraisal waits for your scores.</p>"
+        inapp:
+          title: "{{ doc.employee_name }}'s appraisal waits for your scores"
+          text: "Score the goals and send it for sign-off."
+  - key: hr.appraisal_to_sign_off
+    label: Appraisal waiting for sign-off
+    entity: Appraisal
+    languages:
+      en:
+        email:
+          subject: "{{ doc.employee_name }}'s appraisal waits for sign-off"
+          body: "<p>{{ doc.employee_name }}'s appraisal waits for sign-off.</p>"
+        inapp:
+          title: "{{ doc.employee_name }}'s appraisal waits for sign-off"
+          text: "Sign it off, or send it back."
+  - key: hr.appraisal_sent_back
+    label: Appraisal sent back
+    entity: Appraisal
+    values: [note]
+    languages:
+      en:
+        email:
+          subject: "{{ doc.employee_name }}'s appraisal was sent back"
+          body: "<p>It was sent back: {{ values.note }}</p>"
+        inapp:
+          title: "{{ doc.employee_name }}'s appraisal was sent back"
+          text: "It was sent back: {{ values.note }}"
+  - key: hr.appraisal_done
+    label: Appraisal signed off
+    entity: Appraisal
+    languages:
+      en:
+        email:
+          subject: "Your appraisal is signed off"
+          body: "<p>Your appraisal is signed off.</p>"
+        inapp:
+          title: "Your appraisal is signed off"
+          text: "Your appraisal is signed off."
+  - key: hr.roster_published
+    label: Roster published
+    entity: ShiftRoster
+    languages:
+      en:
+        email:
+          subject: "The roster {{ doc.title }} is published"
+          body: "<p>The roster {{ doc.title }} for {{ doc.from_date }} to {{ doc.to_date }} is published: see your shifts.</p>"
+        inapp:
+          title: "The roster {{ doc.title }} is published"
+          text: "See your shifts from {{ doc.from_date }} to {{ doc.to_date }}."
+  - key: hr.shift_swap_asked
+    label: Shift swap asked
+    entity: ShiftSwapRequest
+    languages:
+      en:
+        email:
+          subject: "{{ doc.employee_name }} asks to swap shifts with you on {{ doc.swap_date }}"
+          body: "<p>{{ doc.employee_name }} asks to swap shifts with you on {{ doc.swap_date }}. Accept or decline it.</p>"
+        inapp:
+          title: "{{ doc.employee_name }} asks to swap shifts with you on {{ doc.swap_date }}"
+          text: "Accept or decline it."
+  - key: hr.shift_swap_to_approve
+    label: Shift swap waiting for approval
+    entity: ShiftSwapRequest
+    languages:
+      en:
+        email:
+          subject: "A shift swap waits for your approval"
+          body: "<p>A shift swap between {{ doc.employee_name }} and {{ doc.with_employee_name }} on {{ doc.swap_date }} waits for your approval.</p>"
+        inapp:
+          title: "A shift swap waits for your approval"
+          text: "{{ doc.employee_name }} and {{ doc.with_employee_name }} on {{ doc.swap_date }}."
+  - key: hr.shift_swap_decided
+    label: Shift swap decided
+    entity: ShiftSwapRequest
+    values: [outcome]
+    languages:
+      en:
+        email:
+          subject: "Shift swap on {{ doc.swap_date }}"
+          body: "<p>{% if values.outcome == 'approved' %}The shift swap between {{ doc.employee_name }} and {{ doc.with_employee_name }} on {{ doc.swap_date }} is approved: your shifts are changed.{% elif values.outcome == 'rejected' %}The shift swap between {{ doc.employee_name }} and {{ doc.with_employee_name }} on {{ doc.swap_date }} was rejected; your shifts stay.{% else %}{{ doc.with_employee_name }} declined to swap shifts on {{ doc.swap_date }}.{% endif %}</p>"
+        inapp:
+          title: "Shift swap on {{ doc.swap_date }}"
+          text: "{% if values.outcome == 'approved' %}Approved: your shifts are changed.{% elif values.outcome == 'rejected' %}Rejected: your shifts stay.{% else %}Declined.{% endif %}"
+  - key: hr.overtime_to_approve
+    label: Overtime waiting for approval
+    entity: OvertimeRequest
+    languages:
+      en:
+        email:
+          subject: "{{ doc.employee_name }}'s overtime on {{ doc.work_date }} waits for your approval"
+          body: "<p>{{ doc.employee_name }} asks for {{ doc.hours }} hours of overtime worked on {{ doc.work_date }}.</p>"
+        inapp:
+          title: "{{ doc.employee_name }}'s overtime on {{ doc.work_date }} waits for your approval"
+          text: "Approve or reject it."
+  - key: hr.overtime_decided
+    label: Overtime decided
+    entity: OvertimeRequest
+    values: [outcome, days]
+    languages:
+      en:
+        email:
+          subject: "Your overtime on {{ doc.work_date }}"
+          body: "<p>{% if values.outcome == 'approved' %}Your {{ doc.hours }} hours of overtime on {{ doc.work_date }} are approved: {{ values.days }} days of time off are credited.{% else %}Your overtime on {{ doc.work_date }} was rejected.{% endif %}</p>"
+        inapp:
+          title: "Your overtime on {{ doc.work_date }}"
+          text: "{% if values.outcome == 'approved' %}Approved: {{ values.days }} days of time off.{% else %}Rejected.{% endif %}"
   - key: hr.letter_issued
     label: Letter or certificate sent
     values: [serial]

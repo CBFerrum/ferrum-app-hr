@@ -117,6 +117,39 @@ impl ReportSource for HrReports {
                 ],
             ),
             entry(
+                "training_compliance",
+                "Training Compliance",
+                "performance",
+                "TrainingRecord",
+                vec![
+                    company(),
+                    link("program", "Training Program", "TrainingProgram"),
+                    link("department", "Department", "Department"),
+                    select("status", "Status", &["Missing", "Expired", "Expiring", "Valid"]),
+                    json!({"name": "days", "label": "Days Ahead", "type": "int", "description": "Days ahead that count as expiring; each program's warning days when empty"}),
+                ],
+            ),
+            entry(
+                "skills_matrix",
+                "Skills Matrix",
+                "performance",
+                "Employee",
+                vec![
+                    company(),
+                    link("department", "Department", "Department"),
+                    link("designation", "Designation", "Designation"),
+                    link("skill", "Skill", "Skill"),
+                    select("show", "Show", &["All", "Gaps only"]),
+                ],
+            ),
+            entry(
+                "shift_roster",
+                "Shift Roster",
+                "attendance",
+                "ShiftAssignment",
+                vec![json!({"name": "roster", "label": "Roster", "type": "link", "to": "ShiftRoster", "required": true})],
+            ),
+            entry(
                 "monthly_attendance_sheet",
                 "Monthly Attendance Sheet",
                 "attendance",
@@ -188,12 +221,19 @@ impl ReportSource for HrReports {
     async fn run(&self, k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, String>) -> Result<Value> {
         let p = Params { raw };
         let mut tx = read_tx(k, ctx).await?;
+        if name == "shift_roster" {
+            let out = shift_roster(&mut tx, ctx, &p).await?;
+            tx.rollback().await?;
+            return Ok(out);
+        }
         let co = resolve_company(&mut tx, ctx, &p).await?;
         let mut out = match name {
             "employee_directory" => directory(&mut tx, ctx, co.id, &p).await?,
             "headcount" => headcount(&mut tx, ctx, co.id, &p, &co).await?,
             "employee_events" => events(&mut tx, ctx, co.id, &p).await?,
             "expiring_documents" => expiring_documents(&mut tx, ctx, co.id, &p).await?,
+            "training_compliance" => training_compliance(&mut tx, ctx, co.id, &p).await?,
+            "skills_matrix" => skills_matrix(&mut tx, ctx, co.id, &p).await?,
             "monthly_attendance_sheet" => attendance_sheet(&mut tx, ctx, co.id, &p).await?,
             "leave_balance" => leave_balance(&mut tx, ctx, co.id, &p).await?,
             "expense_claim_summary" => {
@@ -388,6 +428,225 @@ async fn expiring_documents(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_
         "rows": rows,
         "totals": {"count": count},
         "meta": {"truncated": truncated, "as_of": today},
+    }))
+}
+
+/// Mandatory programs against the people they are required for: the latest record of each says Missing, Expired,
+/// Expiring (within `days`, or the program's warning days, or 30) or Valid.
+async fn training_compliance(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result<Value> {
+    let today = ctx.today();
+    let days: Option<i32> = p.str("days").map(|d| d.parse().map_err(|_| Error::field("days", "must be a whole number"))).transpose()?;
+    let status = p.str("status").map(str::to_string);
+    #[allow(clippy::type_complexity)]
+    let data: Vec<(Option<String>, Option<String>, Option<String>, Option<String>, String, Option<NaiveDate>, Option<NaiveDate>)> = sqlx::query_as(
+        "with people as (select e.* from e_employee e where e.tenant_id = $1 and e.company = $2 and e.status = 'Active' and e.date_of_joining <= $3 \
+           and ($4::uuid is null or e.department = $4) and ($5::text is null or lower(e.\"user\") = $5)), \
+         programs as (select p.* from e_training_program p where p.tenant_id = $1 and p.company = $2 and p.mandatory and ($6::uuid is null or p.id = $6)), \
+         pairs as (select e.id employee, p.id program, p.program_name, coalesce($7, p.warn_days_before::int, 30) window_days from people e join programs p \
+           on not exists (select 1 from e_training_program__required_for r where r.tenant_id = $1 and r.parent_id = p.id) \
+           or exists (select 1 from e_training_program__required_for r where r.tenant_id = $1 and r.parent_id = p.id \
+             and (r.department is null or r.department = e.department) and (r.designation is null or r.designation = e.designation) \
+             and (r.branch is null or r.branch = e.branch) and (r.employment_type is null or r.employment_type = e.employment_type))), \
+         latest as (select x.*, l.completed_on, l.valid_until, l.id record from pairs x left join lateral (select r.id, r.completed_on, r.valid_until \
+           from e_training_record r where r.tenant_id = $1 and r.employee = x.employee and r.program = x.program \
+           order by r.completed_on desc nulls last, r.created_at desc limit 1) l on true) \
+         select e.number, e.employee_name, d.department_name, x.program_name, \
+           case when x.record is null then 'Missing' when x.valid_until < $3 then 'Expired' \
+             when x.valid_until <= $3 + x.window_days then 'Expiring' else 'Valid' end st, x.completed_on, x.valid_until \
+         from latest x join e_employee e on e.tenant_id = $1 and e.id = x.employee \
+         left join e_department d on d.tenant_id = $1 and d.id = e.department \
+         where $8::text is null or (case when x.record is null then 'Missing' when x.valid_until < $3 then 'Expired' \
+             when x.valid_until <= $3 + x.window_days then 'Expiring' else 'Valid' end) = $8 \
+         order by x.program_name, e.employee_name, e.number limit 10001",
+    )
+    .bind(ctx.tenant)
+    .bind(company)
+    .bind(today)
+    .bind(p.uuid("department")?)
+    .bind(own_only(ctx, "TrainingRecord"))
+    .bind(p.uuid("program")?)
+    .bind(days)
+    .bind(status)
+    .fetch_all(&mut **tx)
+    .await?;
+    let truncated = data.len() > MAX_ROWS;
+    let mut counts: BTreeMap<&str, i64> = [("missing", 0), ("expired", 0), ("expiring", 0), ("valid", 0)].into_iter().collect();
+    let rows: Vec<Value> = data
+        .into_iter()
+        .take(MAX_ROWS)
+        .map(|(no, name, dept, program, st, done, until)| {
+            let key = match st.as_str() {
+                "Missing" => "missing",
+                "Expired" => "expired",
+                "Expiring" => "expiring",
+                _ => "valid",
+            };
+            *counts.entry(key).or_default() += 1;
+            json!({"employee": no, "employee_name": name, "department": dept, "program_name": program, "status": st, "completed_on": done, "valid_until": until})
+        })
+        .collect();
+    let count = rows.len();
+    let mut meta = json!({"truncated": truncated, "as_of": today});
+    for (k, v) in counts {
+        meta[k] = json!(v);
+    }
+    Ok(json!({
+        "columns": [col("employee", "Employee", "data"), col("employee_name", "Name", "data"), col("department", "Department", "data"),
+            col("program_name", "Training", "data"), col("status", "Status", "data"), col("completed_on", "Completed On", "date"),
+            col("valid_until", "Valid Until", "date")],
+        "rows": rows,
+        "totals": {"count": count},
+        "meta": meta,
+    }))
+}
+
+/// Per active employee and skill their designation needs or they hold: the level needed, the level held and the gap
+/// (a skill needed and not held counts as held at 0).
+async fn skills_matrix(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result<Value> {
+    let gaps_only = p.str("show") == Some("Gaps only");
+    #[allow(clippy::type_complexity)]
+    let data: Vec<(Option<String>, Option<String>, Option<String>, String, Option<i32>, Option<i32>, Option<NaiveDate>)> = sqlx::query_as(
+        "with people as (select e.id, e.number, e.employee_name, e.designation from e_employee e where e.tenant_id = $1 and e.company = $2 \
+           and e.status = 'Active' and ($3::uuid is null or e.department = $3) and ($4::uuid is null or e.designation = $4) \
+           and ($5::text is null or lower(e.\"user\") = $5)), \
+         needed as (select x.id employee, r.skill, max(r.level)::int lvl from people x join e_designation__required_skills r \
+           on r.tenant_id = $1 and r.parent_id = x.designation group by 1, 2), \
+         held as (select h.parent_id employee, h.skill, max(h.level)::int lvl, max(h.assessed_on) assessed from e_employee__skills h \
+           where h.tenant_id = $1 and h.parent_id in (select id from people) group by 1, 2) \
+         select x.number, x.employee_name, g.designation_name, k.skill_name, n.lvl, h.lvl, h.assessed \
+         from needed n full join held h on h.employee = n.employee and h.skill = n.skill \
+         join people x on x.id = coalesce(n.employee, h.employee) join e_skill k on k.tenant_id = $1 and k.id = coalesce(n.skill, h.skill) \
+         left join e_designation g on g.tenant_id = $1 and g.id = x.designation \
+         where ($6::uuid is null or k.id = $6) and (not $7 or coalesce(n.lvl, 0) > coalesce(h.lvl, 0)) \
+         order by x.employee_name, x.number, k.skill_name limit 10001",
+    )
+    .bind(ctx.tenant)
+    .bind(company)
+    .bind(p.uuid("department")?)
+    .bind(p.uuid("designation")?)
+    .bind(own_only(ctx, "Employee"))
+    .bind(p.uuid("skill")?)
+    .bind(gaps_only)
+    .fetch_all(&mut **tx)
+    .await?;
+    let truncated = data.len() > MAX_ROWS;
+    let (mut people, mut gaps) = (std::collections::HashSet::new(), 0);
+    let rows: Vec<Value> = data
+        .into_iter()
+        .take(MAX_ROWS)
+        .map(|(no, name, designation, skill, needed, held, assessed)| {
+            let gap = needed.map_or(0, |n| (n - held.unwrap_or(0)).max(0));
+            gaps += usize::from(gap > 0);
+            people.insert(no.clone());
+            json!({"employee": no, "employee_name": name, "designation": designation, "skill": skill, "required_level": needed, "held_level": held,
+                   "gap": gap, "assessed_on": assessed})
+        })
+        .collect();
+    let count = rows.len();
+    Ok(json!({
+        "columns": [col("employee", "Employee", "data"), col("employee_name", "Name", "data"), col("designation", "Designation", "data"),
+            col("skill", "Skill", "data"), col("required_level", "Level Needed", "int"), col("held_level", "Level Held", "int"),
+            col("gap", "Gap", "int"), col("assessed_on", "Assessed On", "date")],
+        "rows": rows,
+        "totals": {"count": count},
+        "meta": {"truncated": truncated, "people": people.len(), "gaps": gaps},
+    }))
+}
+
+/// A roster's people by its days: each cell the shift that day (an assignment covering it, a submitted one before a
+/// draft, else the default shift), with holidays and approved leave, for the roster grid and for agents.
+async fn shift_roster(tx: &mut Tx, ctx: &Ctx, p: &Params<'_>) -> Result<Value> {
+    let rid = p.uuid("roster")?.ok_or_else(|| Error::field("roster", "is required"))?;
+    let roster: Option<(String, String, Uuid, Option<Uuid>, Option<Uuid>, NaiveDate, NaiveDate)> =
+        sqlx::query_as("select title, status, company, department, branch, from_date, to_date from e_shift_roster where tenant_id = $1 and id = $2")
+            .bind(ctx.tenant)
+            .bind(rid)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let (title, status, company, department, branch, from, to) = roster.ok_or_else(|| Error::NotFound("Shift Roster".into()))?;
+    let mut qb = QueryBuilder::new(
+        "select e.id, e.number, e.employee_name, d.department_name, e.default_shift from e_employee e \
+         left join e_department d on d.tenant_id = e.tenant_id and d.id = e.department where e.status = 'Active' and e.tenant_id = ",
+    );
+    qb.push_bind(ctx.tenant).push(" and e.company = ").push_bind(company);
+    push_eq(&mut qb, "e.department", department);
+    push_eq(&mut qb, "e.branch", branch);
+    qb.push(" and e.date_of_joining <= ").push_bind(to).push(" and (e.relieving_date is null or e.relieving_date >= ").push_bind(from).push(")");
+    push_own(&mut qb, &own_only(ctx, "ShiftAssignment"));
+    qb.push(" order by e.employee_name, e.number limit ").push_bind(MAX_ROWS as i64);
+    let people: Vec<(Uuid, Option<String>, Option<String>, Option<String>, Option<Uuid>)> = qb.build_query_as().fetch_all(&mut **tx).await?;
+    let ids: Vec<Uuid> = people.iter().map(|p| p.0).collect();
+    let assignments: Vec<(Uuid, Uuid, Uuid, i16, NaiveDate, Option<NaiveDate>)> = sqlx::query_as(
+        "select id, employee, shift_type, docstatus, start_date, end_date from e_shift_assignment where tenant_id = $1 and employee = any($2) \
+         and docstatus < 2 and start_date <= $4 and (end_date is null or end_date >= $3) order by docstatus desc, start_date desc",
+    )
+    .bind(ctx.tenant)
+    .bind(&ids)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&mut **tx)
+    .await?;
+    let leave: Vec<(Uuid, NaiveDate, NaiveDate)> = sqlx::query_as(
+        "select employee, from_date, to_date from e_leave_application where tenant_id = $1 and employee = any($2) and status = 'Approved' \
+         and docstatus = 1 and from_date <= $4 and to_date >= $3",
+    )
+    .bind(ctx.tenant)
+    .bind(&ids)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&mut **tx)
+    .await?;
+    let types: Vec<(Uuid, String, String, String)> =
+        sqlx::query_as("select id, shift_name, start_time, end_time from e_shift_type where tenant_id = $1 order by shift_name")
+            .bind(ctx.tenant)
+            .fetch_all(&mut **tx)
+            .await?;
+    let name_of: HashMap<Uuid, &str> = types.iter().map(|t| (t.0, t.1.as_str())).collect();
+    let drafts: i64 = sqlx::query_scalar("select count(*) from e_shift_assignment where tenant_id = $1 and roster = $2 and docstatus = 0")
+        .bind(ctx.tenant)
+        .bind(rid)
+        .fetch_one(&mut **tx)
+        .await?;
+    let days: Vec<NaiveDate> = crate::calendar::days(from, to).collect();
+    let mut cells = Map::new();
+    let mut rows = Vec::new();
+    for (emp, no, name, dept, default) in &people {
+        let holidays = crate::calendar::employee_holidays(tx, ctx.tenant, *emp, from, to).await?;
+        let mut r = Map::new();
+        r.insert("employee".into(), json!(no));
+        r.insert("employee_id".into(), json!(emp));
+        r.insert("employee_name".into(), json!(name));
+        r.insert("department".into(), json!(dept));
+        for day in &days {
+            let cover = assignments.iter().find(|a| a.1 == *emp && a.4 <= *day && a.5.is_none_or(|e| e >= *day));
+            let (shift, from_default) = match cover {
+                Some(a) => (Some(a.2), false),
+                None => (*default, default.is_some()),
+            };
+            let label =
+                shift.and_then(|s| name_of.get(&s).copied()).map(|n| if cover.is_some_and(|a| a.3 == 0) { format!("{n} (draft)") } else { n.to_string() });
+            r.insert(format!("d{}", day.format("%Y%m%d")), json!(label.unwrap_or_default()));
+            cells.insert(
+                format!("{emp}:{day}"),
+                json!({"shift_type": shift, "assignment": cover.map(|a| a.0), "docstatus": cover.map(|a| a.3), "start_date": cover.map(|a| a.4),
+                       "end_date": cover.and_then(|a| a.5), "from_default": from_default, "holiday": holidays.contains(day),
+                       "leave": leave.iter().any(|l| l.0 == *emp && l.1 <= *day && l.2 >= *day)}),
+            );
+        }
+        rows.push(Value::Object(r));
+    }
+    let mut columns = vec![col("employee", "Employee", "data"), col("employee_name", "Name", "data"), col("department", "Department", "data")];
+    columns.extend(days.iter().map(|d| col(&format!("d{}", d.format("%Y%m%d")), &d.format("%a %d").to_string(), "data")));
+    Ok(json!({
+        "columns": columns,
+        "rows": rows,
+        "totals": {"count": people.len()},
+        "meta": {
+            "days": days,
+            "shift_types": types.iter().map(|t| json!({"id": t.0, "name": t.1, "start_time": t.2, "end_time": t.3})).collect::<Vec<_>>(),
+            "cells": cells,
+            "roster": {"id": rid, "title": title, "status": status, "from_date": from, "to_date": to, "drafts": drafts},
+        },
     }))
 }
 

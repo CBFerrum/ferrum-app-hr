@@ -1,5 +1,145 @@
 # Changelog
 
+## 0.24.0
+
+Package `hr` 0.12.0. New entities Overtime Rule and Overtime Request, the Overtime Approval workflow and two message
+templates, made when the package's version moves. No interface change beyond the records frame.
+
+**Overtime and time off in lieu (HR-04, first part).** Overtime rules are records: per company, for a shift or any,
+on working days (hours worked beyond the shift's length after a grace) or on holidays and weekly offs (the span
+between the first and last check-in), a leave type the hours become, hours per leave day, a multiplier, how long a
+new credit lasts and a monthly cap. An employee asks for overtime on a day they worked; it is refused beyond what
+attendance or check-ins recorded, for a day to come, or past the cap, and one request per day. The approver (or an HR
+manager) approves through the Overtime Approval workflow (`hr.overtime_to_approve`, `hr.overtime_decided`); the
+hours become leave days on the employee's allocation of that type covering the day, or a new allocation from the
+day. Cancelling an approved request takes the days back, refused once they were taken. Pay for overtime through
+payroll is planned separately (`gapclose/packets/hr-9/BRIEF.md`, section 13).
+
+## 0.23.0
+
+No package or database change; the interface is rebuilt.
+
+**The roster grid.** People has a Roster tab (for those who may read rosters): `/people/roster` lists the rosters
+with their state, and `/people/roster/{id}` shows a roster's people by its days, each cell the shift that day with
+drafts, holidays, approved leave and default shifts told apart in words. A planner sets an empty day, changes or
+removes a one-day draft, cancels a one-day shift (a longer one opens its record), fills a shift for everyone or one
+person, and publishes (called again until nothing remains, with the progress shown; a refusal stops it and says how
+many were published before). Everything goes through operations an agent can use: the Shift Roster report, the
+shift assignment's record operations and the roster's Fill and Publish. Someone who may only read sees the grid
+without buttons; an employee sees their own row. The grid is one tab stop: arrows, Home and End move, Enter opens.
+The route table moved to `ui/src/routes.tsx` so that a test opens it.
+
+## 0.22.0
+
+Package `hr` 0.11.0. New entities Shift Roster and Shift Swap Request, two fields on Shift Assignment (Roster, Swap
+Request), the Shift Swap Approval workflow and four message templates, made when the package's version moves.
+Existing assignments keep working (attendance never reads the new fields). No interface change; the grid is next.
+
+**Rosters and shift swaps, the server side.**
+- A **Shift Roster** covers up to 62 days of a company, department or branch. **Fill with a Shift** gives each of its
+  people without a shift in those days a draft assignment (at most 1,000 people a call); **Publish** submits the drafts
+  of whole people, about 500 assignments a call (`remaining` says when to call again), tells each person once
+  (`hr.roster_published`), and marks the roster Published when none is left. A publish that meets an overlap is
+  refused with the person's name and publishes nothing. Once shifts are planned in it, a roster's company, department,
+  branch and days cannot change.
+- The **Shift Roster** report gives the people by days with each cell's shift, draft or submitted, default shift,
+  holiday and approved leave, for the grid and for agents; an employee sees their own row.
+- A **Shift Swap Request** exchanges two colleagues' shifts on one day: the colleague accepts or declines
+  (`hr.shift_swap_asked`, `hr.shift_swap_to_approve`, `hr.shift_swap_decided`), the approver approves, and both
+  shifts change in the approval's transaction, or neither does (refused when either shift changed since it was asked,
+  the day has passed or is marked). Cancelling an approved swap puts both back. Only the employee asks for
+  themselves; the colleague cannot edit or delete it.
+- **Fixed:** two overlapping shift assignments of one employee submitted at the same moment both passed. Every save
+  and submit of an assignment now locks its employee first.
+
+## 0.21.1
+
+Package `hr` 0.10.1. Three read-only fields on an appraisal's goals (From, From Record, Standing There), made when the
+package's version moves. No interface change.
+
+**A goal from another app.** `hr.appraisal.set_goal` (a hidden action on Appraisal, for Objectives' Add to Review,
+processes and agents; its version is the `hr` package's, first 0.10.1) puts a record of another app into a draft
+appraisal as a goal: one goal per reference (`reference_entity`, `reference_id`), so a second call updates its words
+and note, and its weightage when given (a new goal starts at 0; the weightages must still total 100). HR, or an app's
+declared use; an employee cannot add goals to their own appraisal this way, and a completed cycle takes none.
+
+## 0.21.0
+
+Package `hr` 0.10.0. New fields on Appraisal (Stage, Manager, the two sent-on times) and a unique index of one live
+appraisal per employee and cycle, made when the package's version moves. Two backfills run once on upgrade:
+appraisals made before stages are **Done** when submitted and **Manager Review** when draft (where HR left them,
+waiting for scores), and a cycle still Not Started that already holds appraisals becomes **In Progress**. No interface
+change beyond the records frame's new buttons.
+
+**An appraisal cycle that starts, runs in stages and closes.** The cycle's status is now set only by its actions:
+**Start the Cycle** (HR Manager) makes an appraisal for every active employee the cycle covers, or one department,
+from a template, at most 500 a call (`remaining` says when to run **Create Appraisals** for the rest, which also
+adds people who join later); **Close the Cycle** is refused while an appraisal in it is not signed off. A new
+appraisal needs a started cycle, and a completed cycle takes no more changes (a cancel still works).
+
+- Each appraisal moves Self Review → Manager Review → Sign-off → Done. **Send to My Manager** (the employee; every goal
+  needs a self score), **Send for Sign-off** (the manager or HR; every goal needs a manager score), **Send Back** one
+  stage with a reason; HR's submit is refused before Sign-off. A save never moves the stage.
+- Who may change what is checked on every save: the employee only their self scores and comments at Self Review, the
+  manager (the Manager field: the sign-in of the employee the person reports to, unless HR names someone) only manager
+  scores, comments and remarks at Manager Review, HR anything. Managers reach the appraisals of those who report to them.
+- Five message templates tell each person when it is their turn: `hr.appraisal_opened`, `hr.appraisal_to_review`,
+  `hr.appraisal_to_sign_off`, `hr.appraisal_sent_back` (with the reason), `hr.appraisal_done`.
+
+## 0.20.0
+
+Package `hr` 0.9.0. New entity Skill and two tables (Skills on Employee, Skills Needed on Designation), made when the
+package's version moves; both tables start empty. No interface change beyond the records frame's new form sections.
+
+**Skills, and the matrix of what a job needs against what people hold.** HR keeps a list of skills, records each
+employee's level (1 to 5, with when it was assessed and a note) and says which skills and levels a designation needs;
+a skill is on a list once. The **Skills Matrix** report (Performance) shows, per active employee and each skill their
+designation needs or they hold, the level needed, the level held and the gap; Gaps only keeps the shortfalls, and
+`meta` counts the people and the gaps. An employee sees their own rows; levels change only with write on Employee
+(HR Manager, HR User). With 0.18.0 and 0.19.0 this completes learning and training records.
+
+## 0.19.0
+
+Package `hr` 0.8.0. New fields on Training Program (Required For, Warn Days Before It Lapses) and Training Record
+(Lapse Warning Sent On), made when the package's version moves; existing programs read as required for everyone and
+warned 30 days ahead, existing records as not warned. No interface change.
+
+**Mandatory training means something.** A mandatory program says who must hold it: each Required For line names a
+department, designation, branch or employment type (a person fits when everything a line fills matches, and any
+line does); no lines means every active employee of the program's company. A line naming nobody, or a department of
+another company, is refused.
+
+- **Training Compliance** (Performance): for each mandatory program and each person it is required for, the latest
+  record says Missing, Expired, Expiring (within Days Ahead, else the program's warning days, else 30) or Valid,
+  with counts. HR, a process or an agent runs it; an employee sees their own rows.
+- **A warning before a training lapses.** The upkeep tells the holder once, the program's warning days before the
+  record's last valid day, through the message template `hr.training_expiring`, and the HR managers too when the
+  program is mandatory. A record already lapsed when this release arrives, or taken again since, is not announced.
+  The mark and the message commit together, and two runs at once send one warning.
+
+## 0.18.0
+
+Package `hr` 0.7.0. A new field and unique index on Training Record (made when the package's version moves; records that
+exist keep an empty source and stay as they are). No interface change.
+
+**A completed training is recorded through the gate.** The operation `hr.employee.record_training` (a hidden action
+on Employee, for other apps, processes and agents; its version is the `hr` package's, first 0.7.0) records "this
+employee completed this training on this day, valid until then": the program of that name is used, or made in the
+employee's company, and validity comes from the program unless given. An employee has one record per source (the
+caller's own reference, such as `lms:<enrolment id>`), held by a unique index beyond the receipt's life: a call with
+the same source answers the first record (`created: false`). Rights: write on Employee (HR Manager, HR User), or an
+app's declared use. Learn records its completed courses through it once Learn's change lands.
+
+**An employee's id from a sign-in, and nothing more.** `hr.company.find_employee` (hidden, read-only, HR Manager and
+HR User, or a declared use) answers the id of a company's employee who signs in with an email, or null, so that an app
+such as Learn need not read whole employee records to find one.
+
+- A cancelled training session deletes the records it made through the record path (audited, with their deleted
+  events), and the session's records carry `session:<id>` as their source.
+- The upkeep closes job openings past their closing date through the record path, on the workspace's day (it used the
+  database's day and wrote the table directly, so the version and audit trail missed it).
+- Training records are in a person's export and erasure, kept as employment records.
+
 ## 0.17.1
 
 Packages `hr` 0.6.2, `payroll` 0.8.2, `hr_erp` 0.5.1, `payroll_erp` 0.6.1. No behaviour or database change. Parameters the handlers already read are now declared, so the gate takes them: Post It and Posting Date on the expense claim, advance and advance-return payment entries and Post It on the full and final one; Amount, Paid From, Posting Date and Post It on the payroll bank entry; Active on Activate / Deactivate of a salary structure.

@@ -26,6 +26,8 @@ pub(crate) const OWNED: &[&str] = &[
     "EmployeePromotion",
     "EmployeeTransfer",
     "EmployeeSeparation",
+    "ShiftSwapRequest",
+    "OvertimeRequest",
     "SalarySlip",
     "LeaveEncashment",
     "EmployeeTaxExemptionDeclaration",
@@ -40,7 +42,8 @@ pub(crate) fn register(h: &mut HookRegistry) {
     h.scoped(&[crate::HR_ERP.to_string(), crate::PAYROLL_ERP.to_string()], |h| {
         h.register("Company", Arc::new(CompanyHook));
     });
-    h.register("Department", Arc::new(DepartmentHook))
+    h.register("Company", Arc::new(EmployeeLookup))
+        .register("Department", Arc::new(DepartmentHook))
         .register("Employee", Arc::new(EmployeeHook))
         .register("EmployeeOnboarding", Arc::new(ChecklistHook))
         .register("EmployeeSeparation", Arc::new(ChecklistHook))
@@ -68,6 +71,10 @@ impl DocHook for SelfService {
         }
         let emp = lookup(hc, "Employee", id(doc, "employee")).await?;
         if emp.as_ref().and_then(|e| s(e, "user")).is_some_and(|u| u.eq_ignore_ascii_case(&hc.ctx.email)) {
+            return Ok(());
+        }
+        // A manager scoring an appraisal of someone reporting to them (what they may change is the appraisal's check).
+        if entity == "Appraisal" && s(doc, "reviewer").is_some_and(|u| u.eq_ignore_ascii_case(&hc.ctx.email)) {
             return Ok(());
         }
         Err(Error::Forbidden(format!("you can only create or change your own {}", hc.entity.def.label.to_lowercase())))
@@ -220,6 +227,13 @@ impl DocHook for EmployeeHook {
         same_company(hc, doc, "payroll_cost_center", "CostCenter").await
     }
 
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        match name {
+            "record_training" => crate::talent::record_training(hc, doc, params).await.map(Some),
+            _ => Ok(None),
+        }
+    }
+
     /// A new sign-in moves every record about the employee to it.
     async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
         let Some(old) = old else { return Ok(()) };
@@ -236,6 +250,27 @@ impl DocHook for EmployeeHook {
             sqlx::query(sqlx::AssertSqlSafe(sql)).bind(hc.ctx.tenant).bind(emp).bind(s(doc, "user")).execute(&mut **hc.tx).await?;
         }
         Ok(())
+    }
+}
+
+/// `hr.company.find_employee`: the id of the company's employee with a sign-in, for an app that must not be handed the
+/// rest of the record (Learn, which has only the learner's sign-in).
+struct EmployeeLookup;
+
+#[async_trait]
+impl DocHook for EmployeeLookup {
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if name != "find_employee" {
+            return Ok(None);
+        }
+        if !crate::full_access(hc.ctx, "Employee", &[Action::Read]) {
+            return Err(Error::Forbidden("finding an employee by sign-in needs read on every employee".into()));
+        }
+        let email = params.get("email").and_then(Value::as_str).map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
+        let email = email.ok_or_else(|| Error::field("email", "is required"))?;
+        let company = id(doc, "id").ok_or_else(|| Error::internal("company without id"))?;
+        let found = find(hc.kernel, hc.ctx, hc.tx, "Employee", vec![Filter::eq("company", company.to_string()), Filter::eq("user", email)], None, 1).await?;
+        Ok(Some(json!({"employee": found.first().and_then(|e| e.get("id")).cloned()})))
     }
 }
 

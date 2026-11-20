@@ -15,9 +15,11 @@ mod calendar;
 mod documents;
 mod expense;
 mod leave;
+mod overtime;
 mod payroll;
 mod people;
 mod reports;
+mod roster;
 mod settlement;
 mod site;
 mod talent;
@@ -44,6 +46,8 @@ pub fn register(h: &mut HookRegistry) {
     leave::register(h);
     expense::register(h);
     talent::register(h);
+    roster::register(h);
+    overtime::register(h);
     h.register("EmployeeDocument", Arc::new(documents::DocumentHook));
     payroll::register(h);
     h.add_site("hr", Arc::new(site::HrSite));
@@ -81,6 +85,7 @@ pub async fn upkeep(k: &Kernel, tenant: Uuid) -> Result<()> {
         ("leave expiry", leave::expire_allocations(k, &ctx).await),
         ("leave accrual", leave::accrue_leaves(k, &ctx).await),
         ("job openings", talent::close_openings(k, &ctx).await),
+        ("training expiry", talent::warn_training_expiring(k, &ctx).await),
         ("leavers", people::offboard_leavers(k, &ctx).await),
         ("document expiry", documents::warn_expiring(k, &ctx).await),
         ("overdue tasks", people::remind_overdue_tasks(k, &ctx).await),

@@ -244,10 +244,44 @@
     - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
     - {name: start_date, type: date, required: true, in_list: true}
     - {name: end_date, type: date, required: true, in_list: true}
-    - {name: status, type: select, options: [Not Started, In Progress, Completed], default: Not Started, required: true, in_list: true, in_filter: true}
+    - {name: status, type: select, options: [Not Started, In Progress, Completed], default: Not Started, required: true, read_only: true, no_copy: true, in_list: true, in_filter: true,
+       description: "Set by Start the Cycle and Close the Cycle"}
     - {name: description, type: text}
   rules:
     - {name: ordered_dates, check: "doc.start_date == null || doc.end_date == null || doc.end_date >= doc.start_date", message: "End date must not be before start date"}
+  actions:
+    - name: start
+      label: Start the Cycle
+      permission: write
+      condition: "doc.status == 'Not Started'"
+      confirm: "Start this cycle and make an appraisal for every active employee it covers?"
+      params:
+        - {name: appraisal_template, type: link, to: AppraisalTemplate, label: Template, description: "Its goals are copied into each appraisal made; appraisals start without goals when empty"}
+        - {name: department, type: link, to: Department, label: Department, description: "Only its employees; everyone in the cycle's company when empty"}
+      contract:
+        effect: transactional_action
+        returns: {type: object, properties: {status: {type: string}, created: {type: integer}, skipped: {type: integer}, remaining: {type: integer}}}
+        completion: "The cycle is In Progress and each active employee it covers has one appraisal in it at Self Review, up to 500 a call; remaining says how many are still to be made with Create Appraisals"
+    - name: create_appraisals
+      label: Create Appraisals
+      permission: write
+      condition: "doc.status == 'In Progress'"
+      params:
+        - {name: appraisal_template, type: link, to: AppraisalTemplate, label: Template, description: "Its goals are copied into each appraisal made; appraisals start without goals when empty"}
+        - {name: department, type: link, to: Department, label: Department, description: "Only its employees; everyone in the cycle's company when empty"}
+      contract:
+        effect: transactional_action
+        returns: {type: object, properties: {created: {type: integer}, skipped: {type: integer}, remaining: {type: integer}}}
+        completion: "Each active employee the cycle covers who had no appraisal in it has one at Self Review, up to 500 a call"
+    - name: close
+      label: Close the Cycle
+      permission: write
+      condition: "doc.status == 'In Progress'"
+      confirm: "Close this cycle? Appraisals in it can no longer be changed."
+      contract:
+        effect: transactional_action
+        returns: {type: object, properties: {status: {type: string}}}
+        completion: "The cycle is Completed; it is refused while an appraisal in it is not signed off"
   list: {sort: start_date desc}
 
 - name: AppraisalTemplateGoal
@@ -280,6 +314,9 @@
     - {name: manager_score, type: decimal, min: "0", max: "5", in_list: true, perm_group: review, description: 0 to 5}
     - {name: manager_comments, type: text, perm_group: review}
     - {name: score_earned, type: decimal, read_only: true, in_list: true, description: Manager score × weightage}
+    - {name: reference_entity, type: data, read_only: true, label: From, description: "The kind of record in another app this goal stands for (Objective)"}
+    - {name: reference_id, type: data, read_only: true, label: From Record}
+    - {name: note, type: text, read_only: true, label: Standing There, description: "What that record says about it, as its app last gave it"}
 
 - name: Appraisal
   label: Appraisal
@@ -292,7 +329,7 @@
   title_field: employee_name
   owner_fields: [employee_user]
   numbering: {template: "HR-APR-{YYYY}-{seq:5}"}
-  description: The employee scores their goals; HR or the manager scores them too and submits. Weightages must total 100.
+  description: "The employee scores their goals and sends them on; the manager scores them and sends them for sign-off; HR submits. Weightages must total 100."
   fields:
     - {name: employee, type: link, to: Employee, required: true, in_filter: true}
     - {name: employee_name, type: data, fetch_from: employee.employee_name, read_only: true, in_list: true}
@@ -300,11 +337,66 @@
     - {name: company, type: link, to: Company, required: true, read_only: true, in_filter: true}
     - {name: appraisal_cycle, type: link, to: AppraisalCycle, required: true, in_list: true, in_filter: true}
     - {name: appraisal_template, type: link, to: AppraisalTemplate, description: Goals are copied from it when none are entered}
+    - {name: stage, type: select, options: [Self Review, Manager Review, Sign-off, Done], default: Self Review, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: reviewer, type: email, label: Manager, in_filter: true, description: "Who scores after the employee: the sign-in of the employee they report to, unless HR names someone else"}
+    - {name: self_submitted_on, type: datetime, read_only: true, no_copy: true}
+    - {name: manager_submitted_on, type: datetime, read_only: true, no_copy: true}
     - {name: goals, type: table, of: AppraisalGoal}
     - {name: self_score, type: decimal, read_only: true, label: Weighted Self Score}
     - {name: final_score, type: decimal, read_only: true, in_list: true, label: Final Score (0-5)}
     - {name: remarks, type: text, perm_group: review}
-  list: {columns: [number, employee_name, appraisal_cycle, final_score], sort: created_at desc}
+  # A live appraisal per employee and cycle (an index over documents not cancelled). Safe on existing rows: the
+  # appraisal's own check has refused a second live one per employee and cycle since the entity existed.
+  unique: [[employee, appraisal_cycle]]
+  actions:
+    - name: submit_self_review
+      label: Send to My Manager
+      docstatus: [0]
+      permission: write
+      condition: "doc.stage == 'Self Review'"
+      contract: {effect: transactional_action, returns: {type: object, properties: {stage: {type: string}, message: {type: string}}}, completion: "Every goal has a self score and the appraisal is at Manager Review; the manager is told (the HR managers when nobody reviews it)"}
+    - name: complete_manager_review
+      label: Send for Sign-off
+      docstatus: [0]
+      permission: write
+      # An appraisal made before stages has none and waits for the manager, as the upgrade's backfill records.
+      condition: "doc.stage == null || doc.stage == 'Manager Review'"
+      contract: {effect: transactional_action, returns: {type: object, properties: {stage: {type: string}}}, completion: "Every goal has a manager score and the appraisal is at Sign-off; the HR managers are told"}
+    # For other apps (Objectives' Add to Review), processes and agents, through the platform's gate: not a button
+    # (src/talent.rs, `set_goal`). HR, or an app's declared use.
+    - name: set_goal
+      label: Set a Goal from Another Record
+      docstatus: [0]
+      permission: write
+      hidden: true
+      params:
+        - {name: title, label: Title, required: true, description: "The goal's words (its KRA), at most 140 characters"}
+        - {name: reference_entity, label: Reference Entity, required: true, description: "The kind of record the goal stands for, in the calling app (Objective)"}
+        - {name: reference_id, label: Reference Id, required: true, description: "That record's id. The appraisal has one goal per reference: a second call updates it"}
+        - {name: note, type: text, label: Note, description: "Its standing in words (progress, a score)"}
+        - {name: weightage, label: Weightage (%), description: "A decimal from 0 to 100; a new goal gets 0 when empty, and an existing one keeps its own. The goals' weightages must still total 100"}
+      contract:
+        effect: transactional_action
+        returns: {type: object, properties: {goal: {type: string}, created: {type: boolean}}}
+        completion: "The appraisal has exactly one goal for this reference, with this title and note, committed with this receipt"
+    - name: send_back
+      label: Send Back
+      docstatus: [0]
+      permission: write
+      condition: "doc.stage == null || doc.stage == 'Manager Review' || doc.stage == 'Sign-off'"
+      params:
+        - {name: note, type: text, label: Why, required: true}
+      contract: {effect: transactional_action, returns: {type: object, properties: {stage: {type: string}}}, completion: "The appraisal is one stage back and whoever holds that stage is told why"}
+  list: {columns: [number, employee_name, appraisal_cycle, stage, final_score], sort: created_at desc}
+
+- name: TrainingRequirement
+  label: Required For
+  kind: child
+  fields:
+    - {name: department, type: link, to: Department, in_list: true}
+    - {name: designation, type: link, to: Designation, in_list: true}
+    - {name: branch, type: link, to: Branch, in_list: true}
+    - {name: employment_type, type: link, to: EmploymentType, in_list: true}
 
 - name: TrainingProgram
   label: Training Program
@@ -316,7 +408,11 @@
     - {name: program_name, type: data, label: Name, required: true, unique: true, in_list: true}
     - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
     - {name: valid_for_months, type: int, min: 1, in_list: true, description: "How long completing it counts; empty: for good"}
-    - {name: mandatory, type: check, in_list: true, in_filter: true}
+    - {name: mandatory, type: check, in_list: true, in_filter: true, description: "Listed in the Training Compliance report for everyone it is required for, and its lapse is also told to the HR managers"}
+    - {name: required_for, type: table, of: TrainingRequirement, visible_if: "doc.mandatory",
+       description: "Who must hold it. Each line names the people who fit everything it fills; a person fits when any line does. No lines: every active employee of the company"}
+    - {name: warn_days_before, type: int, min: "0", default: 30, label: Warn Days Before It Lapses,
+       description: "Days before a record's last valid day that its holder is told. 30 when empty"}
     - {name: description, type: text}
   list: {columns: [program_name, valid_for_months, mandatory], sort: program_name asc}
 
@@ -352,7 +448,7 @@
   title_field: program_name
   company_scoped: true
   owner_fields: [employee_user]
-  description: "What someone has completed, and until when it counts. Sessions make these."
+  description: "What someone has completed, and until when it counts. Sessions make these, and so does the Record a Completed Training operation."
   fields:
     - {name: employee, type: link, to: Employee, required: true, read_only: true, in_list: true, in_filter: true, index: true}
     - {name: employee_user, type: email, fetch_from: employee.user, read_only: true, hidden: true, label: Employee's User}
@@ -362,4 +458,38 @@
     - {name: session, type: link, to: TrainingEvent, read_only: true}
     - {name: completed_on, type: date, read_only: true, in_list: true}
     - {name: valid_until, type: date, read_only: true, in_list: true, in_filter: true}
+    - {name: source, type: data, max_length: 200, read_only: true, no_copy: true, in_filter: true,
+       description: "What made this record: session:<id> for a training session, or the reference another app gave (lms:<enrolment id>). An employee has one record per source"}
+    - {name: expiry_warned_on, type: date, read_only: true, no_copy: true, label: Lapse Warning Sent On}
+  # Records made before 0.18.0 have no source; PostgreSQL counts empty (null) values as distinct, so they stay as they are.
+  unique: [[employee, source]]
   list: {columns: [employee, program_name, completed_on, valid_until], sort: completed_on desc}
+
+- name: Skill
+  label: Skill
+  kind: master
+  module: performance
+  title_field: skill_name
+  description: "Something a person can do, held at a level from 1 (beginner) to 5 (expert). Designations say which they need; employees' records say which they hold."
+  fields:
+    - {name: skill_name, type: data, required: true, unique: true, in_list: true}
+    - {name: category, type: data, in_list: true, in_filter: true}
+    - {name: description, type: text}
+    - {name: disabled, type: check, in_filter: true}
+  list: {columns: [skill_name, category], sort: skill_name asc}
+
+- name: EmployeeSkill
+  label: Skill Held
+  kind: child
+  fields:
+    - {name: skill, type: link, to: Skill, required: true, link_filters: {disabled: false}, in_list: true}
+    - {name: level, type: int, required: true, min: 1, max: 5, in_list: true, description: 1 (beginner) to 5 (expert)}
+    - {name: assessed_on, type: date, in_list: true}
+    - {name: note, type: data}
+
+- name: RequiredSkill
+  label: Skill Needed
+  kind: child
+  fields:
+    - {name: skill, type: link, to: Skill, required: true, link_filters: {disabled: false}, in_list: true}
+    - {name: level, type: int, required: true, min: 1, max: 5, default: 1, in_list: true, description: The lowest level that does the job}

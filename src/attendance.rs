@@ -436,6 +436,16 @@ impl DocHook for ShiftAssignmentHook {
 
     async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let (Some(emp), Some(start)) = (id(doc, "employee"), opt_date(doc, "start_date")) else { return Ok(()) };
+        // The employee's row is locked first, so two saves or submits for one employee run one after the other and
+        // the second sees the first (a read alone let two overlapping submits both pass).
+        hc.kernel.get_tx(&sys(hc.ctx), hc.tx, "Employee", emp, true).await?;
+        if let Some(r) = lookup(hc, "ShiftRoster", id(doc, "roster")).await? {
+            let (from, to) = (opt_date(&r, "from_date"), opt_date(&r, "to_date"));
+            let end = opt_date(doc, "end_date");
+            if from.is_some_and(|f| start < f) || end.is_none_or(|e| to.is_some_and(|t| e > t)) || id(&r, "company") != id(doc, "company") {
+                return Err(Error::field("roster", "the shift's days must lie inside the roster's, in its company"));
+            }
+        }
         let clash: Option<String> = sqlx::query_scalar(
             "select coalesce(number, id::text) from e_shift_assignment where tenant_id = $1 and employee = $2 and docstatus = 1 and id <> $3 \
              and daterange(start_date, end_date, '[]') && daterange($4, $5, '[]') limit 1",

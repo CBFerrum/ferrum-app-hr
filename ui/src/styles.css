@@ -1077,3 +1077,52 @@ button.ppl-day:hover {
     height: 1.375rem;
   }
 }
+
+/* Rosters: the list, and the grid's cells (each a button a planner opens; days keep a readable width). */
+.ppl-rosters {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ppl-rosters li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.ppl-roster .ppl-week td {
+  min-width: 5.5rem;
+}
+
+.ppl-roster caption {
+  padding: 0.5rem;
+  text-align: start;
+  font-weight: 600;
+}
+
+.ppl-roster-cell {
+  width: 100%;
+  min-height: 2rem;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ppl-roster-cell:hover {
+  background: var(--surface-2);
+}
+
+.ppl-roster-cell:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.ppl-roster td[data-draft] {
+  font-style: italic;
+}
