@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.25.2
+
+No package or database change.
+
+**Reports read only what their caller reads (K0-7).** Each report's filters (department, designation, status,
+document type, program, skill, roster, employee, leave type, payroll entry) are refused when the caller cannot read
+the field they filter by, as a list refuses them. Headcount's grouping is refused the same way, and with none chosen it
+groups by the first of Department, Designation, Branch, Grade, Employment Type and Gender the caller reads. A column of
+a field the caller cannot read is left out of the columns, the rows and the totals; work anniversaries show only to
+those who read the joining date.
+
+## 0.25.1
+
+Packages `hr` 0.13.1, `payroll_erp` 0.6.2. No interface change.
+
+**Two actions that change their record need the right to change it (K0-6).** Job Offer's Create Employee (it links the
+new employee on the offer) and Payroll Entry's Bank Payment File (it keeps each round's file on the run) were declared
+for anyone who reads the record. Both now need write on it: HR managers and HR users make employees from offers as
+before, payroll and HR managers make bank files; someone who only reads an offer or a run is refused and nothing
+changes. A workspace role that only read runs and was used to fetch the bank file needs write on Payroll Entry.
+
+## 0.25.0
+
+Package `hr` 0.13.0 (a field group and two roles' rules change when the package's version moves). No interface change.
+
+**Every field group closed (K0-5).** With the platform's rule that a group shows on a record only when the rule
+reaching that record grants it (Ferrum #316, #317), every grouped field of HR is tested for every role of the four
+packages alone and in pairs: reads, lists, filters and sorts, exports, the trail, writes, an appraisal's lines, the
+reports and the bank payment file. The fault this closes: an HR user who also holds Employee read every employee's
+bank details. Two leaks HR itself had are closed:
+- A job opening carried its requisition's salary range in plain fields, so everyone holding Employee read the pay
+  range the requisition keeps in `pay`. The opening's range is now in `pay`; **HR Manager** and **HR User** read and
+  write it there (their Job Opening rules gain the group). **Employee** no longer sees an opening's range: a workspace
+  that wants its people to see it grants `pay` on Job Opening to its Employee role.
+- A report's column (tax id, bank details, dates of birth, identity and bank documents) and the bank payment file
+  showed a group the caller held only through their own-record rule on everyone's rows. They show it now only to
+  those who read it on every employee, or on rows that are all their own. The tax report reads no opening figures for
+  a caller who cannot read them.
+
 ## 0.24.0
 
 Package `hr` 0.12.0. New entities Overtime Rule and Overtime Request, the Overtime Approval workflow and two message

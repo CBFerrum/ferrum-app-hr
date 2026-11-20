@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.24.0-0e7490?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.25.2-0e7490?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
@@ -37,7 +37,7 @@ People (HR and Payroll) is the employee lifecycle for Ferrum: employees and orga
 
 | | |
 |---|---|
-| **Version** | 0.24.0 (packages `hr` 0.12.0, `payroll` 0.8.2, `hr_erp` 0.5.1, `payroll_erp` 0.6.1) |
+| **Version** | 0.25.2 (packages `hr` 0.13.1, `payroll` 0.8.3, `hr_erp` 0.5.1, `payroll_erp` 0.6.2) |
 | **Kind** | Its own interface at `/people/` (your space, approvals, team calendar, rosters, directory and org chart, public careers page) with Ferrum's records screens for everything else |
 | **What it adds** | 93 entities (61 records and 32 small tables), 7 roles, 6 modules (HR, Attendance and Leave, Recruitment, Performance, Expenses, Payroll), 5 approval workflows and 2 package approval policies, 15 reports, 1 print format, 7 document templates, 17 message templates, 6 notification kinds, 8 upkeep jobs, 2 example packs |
 | **Depends on** | Ferrum platform `>=0.4.0, <0.5`. The connector **HR and ERP** (expenses and payroll posting) needs ERP `>=0.1` and ships with this app |
@@ -177,7 +177,7 @@ On a phone it is one column in the order a day goes.
 ### 🧳 Recruitment
 
 - **Job Requisitions** ask before they are submitted: the hiring manager's manager when the request names a hiring manager whose manager has a sign-in, otherwise an HR Manager; the requester never approves their own. Submitted, the requisition opens its job. A workspace can switch the approval off or replace it.
-- **Job Openings** with designation, department, employment type, branch, vacancies, salary range, interview **criteria with weights**, a publish switch and an application link. Openings close by the upkeep on their date.
+- **Job Openings** with designation, department, employment type, branch, vacancies, salary range (field group `pay`: HR managers and HR users see it, as on the requisition), interview **criteria with weights**, a publish switch and an application link. Openings close by the upkeep on their date.
 - **Recruitment Stages** per job (else the defaults), in order, by category: Screening, Interview, Offer, Hired, Rejected. Applicants start at the first; every move is kept; a Rejected stage needs a reason and rejects them; Hired accepts them.
 - **Job Applicants** with source (Campaign, Employee Referral, Walk In, Website Listing, Job Portal, Agency, Other), resume link or file (HR can attach a file; the public form takes a link), cover letter and stage history. One application per address per opening.
 - **Interviews** with rounds, interviewers, per-interviewer **scorecards** (a rating per criterion), an average rating and a weighted score, and feedback with a result.
@@ -222,7 +222,7 @@ One **Full and Final Statement** gathers, from the employee's records, what is o
 - **Hold and release a salary** with a reason: accrued as everyone's, left out of the bank entry and file, paid with the next payment that lists the employee.
 - **Leave and attendance changed after payroll ran** is refused until someone chooses on the slip: **Carry to Next Pay** (a pay adjustment on the next slip at that day's pay as paid) or **Correct the Slip**.
 - **Employee loans** (with the ERP connector): paid from the bank, repaid from each monthly slip over a number of months or an amount a month, with interest on the balance at a yearly rate. **Defer an Instalment**, **Repay Outside Salary**, **Write Off**. A slip that cannot take it all leaves the rest to the next; a corrected or cancelled slip gives its instalment back. A leaver's balance is a recovery on the final statement.
-- **Bank payment file** from a run: **ISO 20022** salary credit transfer (`pain.001.001.09`, purpose `SALA`) or a **CSV** for a bank's bulk upload, one payment to each employee paid by bank, from the company's account. Refused while anyone paid by bank has no account, and to those who may not read bank details. The bank entry and the file pay the same. Each file is a **round** of the run under message id `<run number>-<round>`, kept on the run (Last Bank File): asked again, the run gives that file unchanged, so a file uploaded twice is one instruction to the bank. **New Round** makes a file under the next message id for whoever no earlier round's file pays (each employee row shows its Bank File Round).
+- **Bank payment file** from a run: **ISO 20022** salary credit transfer (`pain.001.001.09`, purpose `SALA`) or a **CSV** for a bank's bulk upload, one payment to each employee paid by bank, from the company's account. Refused while anyone paid by bank has no account, and to those who may not read every employee's bank details or may not change the run. The bank entry and the file pay the same. Each file is a **round** of the run under message id `<run number>-<round>`, kept on the run (Last Bank File): asked again, the run gives that file unchanged, so a file uploaded twice is one instruction to the bank. **New Round** makes a file under the next message id for whoever no earlier round's file pays (each employee row shows its Bank File Round).
 - **A run paid outside Ferrum** can be recorded as paid elsewhere (with a date and a reference), and undone.
 - **Reports:** Salary Register, Payroll Summary, Bank Remittance and Income Tax Deductions (with opening figures and a previous employer's).
 
@@ -266,7 +266,7 @@ Leave requests and expense claims waiting for your approval, decisions on them, 
 | **Payroll Manager** | Salary structures, payroll runs and payroll reports, including bank details |
 | **Attendance Device** | For the API keys of biometric or RFID devices; can only post check-ins |
 
-Records about an employee carry the employee's sign-in email, so employees see their own leave, attendance, claims and slips whoever created them. Pay and bank fields are in permission groups. Employees' personal data is included in a person's export or erasure request, by email and by phone number; accounting records are kept.
+Records about an employee carry the employee's sign-in email, so employees see their own leave, attendance, claims and slips whoever created them. Pay and bank fields are in permission groups, and a group shows on a record only when the rule that reaches that record grants it: an HR user who also holds Employee sees their own bank details and no one else's; a report's column or a payroll file shows a group only to those who read it on every employee (or on their own rows alone). Employees' personal data is included in a person's export or erasure request, by email and by phone number; accounting records are kept.
 
 ### 🔌 For other apps and agents
 
@@ -427,6 +427,9 @@ People is compared with Workday HCM, SAP SuccessFactors, BambooHR, Rippling and 
 
 ### ✅ Recently shipped
 
+- [x] **0.25.2** Reports group, filter and show only fields their caller reads.
+- [x] **0.25.1** Making an employee from an offer and a run's bank payment file need the right to change the offer or the run.
+- [x] **0.25.0** Every field group closed under the rule that reaches the record; a job opening's salary range is in `pay`.
 - [x] **0.24.0** Overtime rules and time off in lieu: asked, checked against what was recorded, approved, credited as leave.
 - [x] **0.23.0** The roster grid at `/people/roster`.
 - [x] **0.22.0** Rosters (fill, publish once) and same-day shift swaps with the colleague's consent and an approval; two overlapping shift assignments submitted at once make one.

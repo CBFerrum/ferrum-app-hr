@@ -153,6 +153,13 @@ pub(crate) async fn user_id(hc: &mut HookCtx<'_>, email: &str) -> Result<Option<
         .await?)
 }
 
+/// Whether `field` of `entity` shows to the caller on every record of it, not only on the records some narrower
+/// rule of theirs reaches (S9 R13): what code reads by SQL across people (a report's column, a payroll file) shows a
+/// grouped field only then, or, with `own`, when the rows are the caller's own.
+pub(crate) fn reads_everyones(ctx: &Ctx, entity: &str, field: &str, own: bool) -> bool {
+    ctx.schema.entity(entity).is_some_and(|e| ferrum_kernel::query::readable(ctx, e, field)) && (own || full_access(ctx, entity, &[Action::Read]))
+}
+
 /// Whether the caller works on every record of the current entity (not only their own).
 pub(crate) fn full_access(ctx: &Ctx, entity: &str, actions: &[Action]) -> bool {
     ctx.is_admin || ctx.is_system || actions.iter().any(|a| ctx.perms.access(entity, *a) == Access::All)
