@@ -1,5 +1,5 @@
 package: hr
-version: 0.12.0
+version: 0.13.0
 label: Human Resources
 description: Employees and organization, holiday lists, shifts and attendance from check-ins, leave with an approval workflow and a leave ledger, recruitment, appraisals and the employee lifecycle.
 depends: [core]
@@ -192,7 +192,7 @@ roles:
       - {entity: LeaveAllocation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
       - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
       - {entity: LeaveLedgerEntry, read: true, export: true}
-      - {entity: JobOpening, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: JobOpening, read: true, write: true, create: true, delete: true, export: true, read_groups: [pay], write_groups: [pay]}
       - {entity: JobRequisition, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, read_groups: [pay], write_groups: [pay]}
       - {entity: JobStage, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: JobApplicant, read: true, write: true, create: true, delete: true, export: true, import: true}
@@ -238,7 +238,7 @@ roles:
       - {entity: LeaveAllocation, read: true, write: true, create: true, delete: true, submit: true}
       - {entity: LeaveApplication, read: true, write: true, create: true, delete: true, cancel: true}
       - {entity: LeaveLedgerEntry, read: true}
-      - {entity: JobOpening, read: true, write: true, create: true}
+      - {entity: JobOpening, read: true, write: true, create: true, read_groups: [pay], write_groups: [pay]}
       - {entity: JobRequisition, read: true, write: true, create: true, submit: true, read_groups: [pay], write_groups: [pay]}
       - {entity: JobStage, read: true}
       - {entity: JobApplicant, read: true, write: true, create: true, delete: true, import: true}

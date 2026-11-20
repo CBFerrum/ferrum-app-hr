@@ -5852,3 +5852,459 @@ async fn shipped_approvals() {
     assert_eq!(steps(&t.k.submit(&clerk, "JobRequisition", uid(&req), None).await.unwrap()), vec!["Mine".to_string()], "its own, not the package's");
     let _ = director;
 }
+
+// ───────────── K0-5: a field group shows only on records a rule granting it reaches (S9 R13) ─────────────
+
+/// Every grouped field of HR's records (`packages/hr/entities`), by entity and group. Payroll's and the connectors'
+/// entities (salary structures, slips, loans, declarations, documents) have none: their rules decide whole records.
+const GROUPED: &[(&str, &str, &[&str])] = &[
+    ("Employee", "bank", &["salary_mode", "bank_name", "bank_account_no", "ifsc_code", "iban"]),
+    ("Employee", "identity", &["tax_id", "national_id", "passport_number", "passport_valid_upto"]),
+    ("Employee", "personal", &["date_of_birth", "blood_group"]),
+    ("EmployeePromotion", "pay", &["revised_ctc"]),
+    ("JobRequisition", "pay", &["lower_range", "upper_range"]),
+    ("JobOpening", "pay", &["lower_range", "upper_range"]),
+    ("JobOffer", "pay", &["ctc"]),
+    ("Appraisal", "review", &["remarks"]),
+];
+
+/// An appraisal's lines (`AppraisalGoal`) in group `review`: they show where the appraisal's reaching rules' roles
+/// grant `review` on the line entity.
+const GOAL_REVIEW: [&str; 2] = ["manager_score", "manager_comments"];
+
+/// The packages' roles' reading rules on those entities: over every record (`true`) or the holder's own, and the
+/// groups each grants (`packages/*/package.yaml`).
+const READS: &[(&str, &str, bool, &[&str])] = &[
+    ("HR Manager", "Employee", true, &["bank", "identity", "personal"]),
+    ("HR User", "Employee", true, &["identity", "personal"]),
+    ("Employee", "Employee", false, &["bank", "identity", "personal"]),
+    ("Payroll Manager", "Employee", true, &["bank", "identity", "personal"]),
+    ("HR Manager", "EmployeePromotion", true, &["pay"]),
+    ("HR User", "EmployeePromotion", true, &["pay"]),
+    ("Employee", "EmployeePromotion", false, &["pay"]),
+    ("HR Manager", "JobRequisition", true, &["pay"]),
+    ("HR User", "JobRequisition", true, &["pay"]),
+    ("HR Manager", "JobOpening", true, &["pay"]),
+    ("HR User", "JobOpening", true, &["pay"]),
+    ("Employee", "JobOpening", true, &[]),
+    ("HR Manager", "JobOffer", true, &["pay"]),
+    ("HR User", "JobOffer", true, &["pay"]),
+    ("HR Manager", "Appraisal", true, &["review"]),
+    ("HR User", "Appraisal", true, &["review"]),
+    ("Employee", "Appraisal", false, &["review"]),
+];
+
+const HR_ROLES: [&str; 7] = ["HR Manager", "HR User", "Employee", "Payroll Manager", "Leave Approver", "Expense Approver", "Attendance Device"];
+
+/// What a holder of `roles` should get of `group` on a record of `entity`, their own or another's: whether they reach
+/// it, and whether the group shows on it.
+fn expect(roles: &[&str], entity: &str, group: &str, own: bool) -> (bool, bool) {
+    let rules: Vec<_> = READS.iter().filter(|r| r.1 == entity && roles.contains(&r.0) && (r.2 || own)).collect();
+    (!rules.is_empty(), rules.iter().any(|r| r.3.contains(&group)))
+}
+
+/// Whether a list may filter and sort by `group`'s fields (none: the holder lists nothing of `entity`): a rule over
+/// every record grants it, or each of their rules does.
+fn filterable(roles: &[&str], entity: &str, group: &str) -> Option<bool> {
+    let rules: Vec<_> = READS.iter().filter(|r| r.1 == entity && roles.contains(&r.0)).collect();
+    (!rules.is_empty()).then(|| rules.iter().any(|r| r.2 && r.3.contains(&group)) || rules.iter().all(|r| r.3.contains(&group)))
+}
+
+/// Whether `doc` shows `fields` as `stored` holds them: all of them or none (left out, or masked); a mix is a leak.
+fn shows(doc: &Doc, stored: &Doc, fields: &[&str], what: &str) -> bool {
+    let same: Vec<bool> = fields.iter().map(|f| doc.get(*f).is_some_and(|v| !v.is_null() && v == &stored[*f])).collect();
+    assert!(same.iter().all(|s| *s) || same.iter().all(|s| !*s), "{what}: some of {fields:?} show and some do not: {doc:?}");
+    same[0]
+}
+
+/// The text values of `fields` in `stored` (six characters or more) that appear anywhere in `out`.
+fn leaked(out: &impl serde::Serialize, stored: &Doc, fields: &[&str]) -> Vec<String> {
+    let text = serde_json::to_string(out).unwrap();
+    fields.iter().filter_map(|f| stored.get(*f).and_then(Value::as_str)).filter(|v| v.len() >= 6 && text.contains(*v)).map(str::to_string).collect()
+}
+
+/// A goal line's review fields show (all of them) or none do.
+fn goals_show(ap: &Doc, stored: &Doc, what: &str) -> bool {
+    let (rows, kept) = (ap["goals"].as_array().cloned().unwrap_or_default(), stored["goals"].as_array().unwrap());
+    assert_eq!(rows.len(), kept.len(), "{what}: the goals");
+    let all: Vec<bool> = rows.iter().zip(kept).map(|(r, k)| shows(r.as_object().unwrap(), k.as_object().unwrap(), &GOAL_REVIEW, what)).collect();
+    assert!(all.iter().all(|s| *s) || all.iter().all(|s| !*s), "{what}: review shows on some goals only");
+    all[0]
+}
+
+/// Grouped values for an employee, `tag` making them theirs.
+fn grouped_values(tag: &str, n: usize) -> Value {
+    json!({"salary_mode": "Cheque", "bank_name": format!("{tag} Savings Bank"), "bank_account_no": format!("{:012}", 770_000_000_000u64 + n as u64),
+           "ifsc_code": format!("HDFC0{:06}", 770_000 + n), "iban": format!("DE{:020}", 89_000_000 + n), "tax_id": format!("{tag}X7777Q"), "national_id": format!("NAT-{tag}-7777"),
+           "passport_number": format!("P{tag}77777"), "passport_valid_upto": "2037-07-07", "date_of_birth": "1977-07-07", "blood_group": "AB-"})
+}
+
+/// A role of the workspace's own, by its rules as a package writes them.
+async fn own_role(t: &T, name: &str, rules: Value) {
+    for r in rules.as_array().unwrap() {
+        let p: ferrum_meta::PermissionDef = serde_json::from_value(r.clone()).unwrap();
+        t.k.set_role_permission(&t.admin, name, &p).await.unwrap_or_else(|e| panic!("role {name}: {}", describe(&e)));
+    }
+}
+
+/// HR's records with every grouped field filled: Otto's (no one's sign-in) and one employee per person of `people`,
+/// each with a draft promotion and an appraisal of a started cycle (scored and remarked); a requisition, an opening and
+/// an offer.
+struct Grouped {
+    t: T,
+    emps: Vec<Doc>,
+    promos: Vec<Doc>,
+    appraisals: Vec<Doc>,
+    jobs: Vec<(&'static str, Doc)>,
+    /// Each record as it was made, by id.
+    stored: HashMap<Uuid, Doc>,
+    /// Each person signed in, in the order given.
+    who: Vec<Ctx>,
+}
+
+impl Grouped {
+    /// `people` sign-ins with their roles; record 0 of each list is Otto's, record i + 1 person i's.
+    async fn new(slug: &str, people: &[(String, Vec<&str>)]) -> Grouped {
+        let t = T::new(slug).await;
+        let admin = t.admin.clone();
+        let mut who = Vec::new();
+        for (email, roles) in people {
+            who.push(t.user(email, roles).await);
+        }
+        let eng = t.ins(&admin, "Designation", json!({"designation_name": "Engineer"})).await;
+        let mut emps = vec![t.employee("Otto", grouped_values("OTTO", 0)).await];
+        for (i, (email, _)) in people.iter().enumerate() {
+            let mut v = grouped_values(&format!("P{i}"), i + 1);
+            v["user"] = json!(email);
+            emps.push(t.employee(&format!("P{i}"), v).await);
+        }
+        let mut promos = Vec::new();
+        for e in &emps {
+            promos.push(
+                t.ins(
+                    &admin,
+                    "EmployeePromotion",
+                    json!({"employee": e["id"], "promotion_date": "2026-10-01", "new_designation": eng["id"], "revised_ctc": "7777777"}),
+                )
+                .await,
+            );
+        }
+        let tpl = t.ins(&admin, "AppraisalTemplate", json!({"template_title": "Core", "goals": [{"kra": "Delivery", "per_weightage": "100"}]})).await;
+        let cycle = t.ins(&admin, "AppraisalCycle", json!({"cycle_name": "H2", "company": t.c(), "start_date": "2026-10-01", "end_date": "2027-03-31"})).await;
+        t.act(&admin, "AppraisalCycle", uid(&cycle), "start", json!({"appraisal_template": tpl["id"]})).await;
+        let mut appraisals = Vec::new();
+        for (i, e) in emps.iter().enumerate() {
+            let ap = t.one("Appraisal", json!({"employee": e["id"]})).await;
+            let ap = t.get("Appraisal", uid(&ap)).await;
+            let mut goals = ap["goals"].as_array().unwrap().clone();
+            goals[0]["manager_score"] = json!("4");
+            goals[0]["manager_comments"] = json!(format!("Review of {i} kept for the group"));
+            let patch = json!({"goals": goals, "remarks": format!("Remarks on {i} kept for the group")});
+            appraisals.push(t.k.update(&admin, "Appraisal", uid(&ap), obj(patch), None).await.unwrap_or_else(|e| panic!("appraisal: {}", describe(&e))));
+        }
+        let req = t
+            .ins(
+                &admin,
+                "JobRequisition",
+                json!({"job_title": "Engineer", "company": t.c(), "designation": eng["id"], "lower_range": "6600001", "upper_range": "6600002"}),
+            )
+            .await;
+        let opening = t
+            .ins(
+                &admin,
+                "JobOpening",
+                json!({"job_title": "Engineer", "company": t.c(), "designation": eng["id"], "lower_range": "5500001", "upper_range": "5500002"}),
+            )
+            .await;
+        let applicant =
+            t.ins(&admin, "JobApplicant", json!({"applicant_name": "Kiran Rao", "email_id": "kiran@mail.test", "job_opening": opening["id"]})).await;
+        let offer = t
+            .ins(
+                &admin,
+                "JobOffer",
+                json!({"job_applicant": applicant["id"], "company": t.c(), "designation": eng["id"], "offer_date": "2026-10-10", "ctc": "4400001"}),
+            )
+            .await;
+        let jobs = vec![("JobRequisition", req), ("JobOpening", opening), ("JobOffer", offer)];
+        let mut stored = HashMap::new();
+        for (entity, d) in emps
+            .iter()
+            .map(|d| ("Employee", d))
+            .chain(promos.iter().map(|d| ("EmployeePromotion", d)))
+            .chain(appraisals.iter().map(|d| ("Appraisal", d)))
+            .chain(jobs.iter().map(|(e, d)| (*e, d)))
+        {
+            stored.insert(uid(d), t.get(entity, uid(d)).await);
+        }
+        Grouped { t, emps, promos, appraisals, jobs, stored, who }
+    }
+
+    /// Person `i`'s own record of `entity` and Otto's, as the workspace holds them; for jobs, the one record (not theirs).
+    fn records(&self, entity: &str, i: usize) -> Vec<(bool, Doc)> {
+        let list = match entity {
+            "Employee" => &self.emps,
+            "EmployeePromotion" => &self.promos,
+            "Appraisal" => &self.appraisals,
+            _ => return vec![(false, self.stored[&uid(&self.jobs.iter().find(|j| j.0 == entity).unwrap().1)].clone())],
+        };
+        vec![(true, self.stored[&uid(&list[i + 1])].clone()), (false, self.stored[&uid(&list[0])].clone())]
+    }
+}
+
+/// A patch that changes one field of `group` on `entity`.
+fn group_patch(entity: &str, group: &str) -> Value {
+    match (entity, group) {
+        ("Employee", "bank") => json!({"bank_name": "Changed Bank"}),
+        ("Employee", "identity") => json!({"national_id": "CHANGED-1"}),
+        ("Employee", "personal") => json!({"blood_group": "O+"}),
+        ("Appraisal", _) => json!({"remarks": "Changed remarks"}),
+        ("JobOffer", _) => json!({"ctc": "1"}),
+        ("EmployeePromotion", _) => json!({"revised_ctc": "1"}),
+        _ => json!({"lower_range": "1"}),
+    }
+}
+
+#[test]
+fn no_pair_of_hr_roles_shows_a_grouped_field_beyond_its_rule() {
+    run(async {
+        let slug = "hrk05m";
+        let mut sets: Vec<Vec<&str>> = HR_ROLES.iter().map(|r| vec![*r]).collect();
+        for (i, a) in HR_ROLES.iter().enumerate() {
+            for b in &HR_ROLES[i + 1..] {
+                sets.push(vec![*a, *b]);
+            }
+        }
+        let people: Vec<String> = (0..sets.len()).map(|i| format!("p{i}@{slug}.test")).collect();
+        let g = Grouped::new(slug, &people.iter().cloned().zip(sets.iter().cloned()).collect::<Vec<_>>()).await;
+        let t = &g.t;
+        for (i, roles) in sets.iter().enumerate() {
+            let who = g.who[i].clone();
+            for (entity, group, fields) in GROUPED {
+                let what = |own: bool| format!("{roles:?} on {} {entity} ({group})", if own { "their own" } else { "another's" });
+                let ent_fields: Vec<&str> = fields.to_vec();
+                for (own, stored) in g.records(entity, i) {
+                    let (reach, show) = expect(roles, entity, group, own);
+                    let got = t.k.get(&who, entity, uid(&stored), false).await;
+                    if !reach {
+                        assert!(got.is_err(), "{}: reached", what(own));
+                    } else {
+                        let doc = got.unwrap_or_else(|e| panic!("{}: {}", what(own), describe(&e)));
+                        assert_eq!(shows(&doc, &stored, &ent_fields, &what(own)), show, "{}", what(own));
+                        if *entity == "Appraisal" {
+                            assert_eq!(goals_show(&doc, &stored, &what(own)), show, "{}: the goals' review", what(own));
+                        }
+                        if !show {
+                            // The record's history tells none of it either.
+                            let trail = t.k.audit_trail(&who, entity, uid(&stored)).await.unwrap_or_else(|e| panic!("{}: trail {}", what(own), describe(&e)));
+                            assert!(
+                                leaked(&trail, &stored, &ent_fields).is_empty(),
+                                "{}: the trail tells {:?}",
+                                what(own),
+                                leaked(&trail, &stored, &ent_fields)
+                            );
+                        }
+                    }
+                    if !show {
+                        // Nobody writes a group they do not see on the record.
+                        let r = t.k.update(&who, entity, uid(&stored), obj(group_patch(entity, group)), None).await;
+                        assert!(r.is_err(), "{}: wrote {:?}", what(own), r.map(|d| d.get("id").cloned()));
+                    }
+                }
+                // Lists: no row shows the group where its rule does not grant it; filters and sorts as the set allows.
+                let Some(may_filter) = filterable(roles, entity, group) else {
+                    continue;
+                };
+                let q = ListQuery { limit: Some(500), ..Default::default() };
+                let rows = t.k.list(&who, entity, &q).await.unwrap_or_else(|e| panic!("{roles:?} list {entity}: {}", describe(&e))).rows;
+                for r in &rows {
+                    let stored = &g.stored[&uid(r)];
+                    let own = stored.get("employee_user").or(stored.get("user")).and_then(Value::as_str) == Some(people[i].as_str());
+                    if !expect(roles, entity, group, own).1 {
+                        assert!(!shows(r, stored, &ent_fields, &what(own)), "{}: a list row shows it", what(own));
+                    }
+                }
+                let first = fields[0];
+                let value = g.records(entity, i).pop().unwrap().1[first].clone();
+                let filtered =
+                    ListQuery { filters: ferrum_kernel::query::parse_filters(&json!([[first, "=", value]])).unwrap(), limit: Some(5), ..Default::default() };
+                let sorted = ListQuery { sort: Some(format!("{first} desc")), limit: Some(5), ..Default::default() };
+                for (how, q) in [("filter", filtered), ("sort", sorted)] {
+                    let r = t.k.list(&who, entity, &q).await;
+                    assert_eq!(r.is_ok(), may_filter, "{roles:?} may {how} {entity} by {first}: {:?}", r.err().map(|e| describe(&e)));
+                }
+                // An export holds what reading does, no more.
+                let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+                if let Ok(page) = t.k.list_tx(&who, &mut tx, entity, &ListQuery { limit: Some(500), ..Default::default() }, ferrum_kernel::Action::Export).await
+                {
+                    for r in &page.rows {
+                        let stored = &g.stored[&uid(r)];
+                        let own = stored.get("employee_user").or(stored.get("user")).and_then(Value::as_str) == Some(people[i].as_str());
+                        if !expect(roles, entity, group, own).1 {
+                            assert!(!shows(r, stored, &ent_fields, &what(own)), "{}: an exported row shows it", what(own));
+                        }
+                    }
+                }
+                tx.rollback().await.unwrap();
+            }
+        }
+        // Nothing anyone was refused changed a value.
+        for (entity, group, fields) in GROUPED {
+            for (_, stored) in g.records(entity, 0) {
+                let fresh = t.get(entity, uid(&stored)).await;
+                assert!(shows(&fresh, &stored, fields, "after"), "{entity} {group} changed");
+            }
+        }
+    });
+}
+
+#[test]
+fn an_hr_user_holding_their_own_employee_record_reads_no_one_else_s_bank_details() {
+    run(async {
+        let slug = "hrk05f";
+        let g = Grouped::new(slug, &[(format!("me@{slug}.test"), vec!["HR User", "Employee"])]).await;
+        let t = &g.t;
+        let hr_user = g.who[0].clone();
+        let bank = GROUPED[0].2;
+        let (mine, otto) = (t.get("Employee", uid(&g.emps[1])).await, t.get("Employee", uid(&g.emps[0])).await);
+        // Their own record: everything, bank details too, by the self-service rule.
+        let own = t.k.get(&hr_user, "Employee", uid(&mine), false).await.unwrap();
+        assert!(shows(&own, &mine, bank, "own"), "their own bank details");
+        // Otto's: identity and personal details by the HR User rule, his bank details not at all (the last four of
+        // the masked ones only).
+        let his = t.k.get(&hr_user, "Employee", uid(&otto), false).await.unwrap();
+        assert!(!shows(&his, &otto, bank, "Otto's"), "Otto's bank details: {his:?}");
+        assert!(shows(&his, &otto, GROUPED[1].2, "Otto's identity"));
+        assert!(his.get("bank_name").is_none() && his.get("ifsc_code").is_none() && his.get("salary_mode").is_none());
+        assert_eq!(his["bank_account_no"], json!("•••• 0000"), "masked");
+        assert!(leaked(&his, &otto, bank).is_empty());
+        // Lists, filters, sorts, the export, the trail.
+        let rows = t.list(&hr_user, "Employee", json!({})).await;
+        let row = rows.iter().find(|r| r["id"] == otto["id"]).expect("Otto in the list");
+        assert!(leaked(row, &otto, bank).is_empty(), "{row:?}");
+        for f in bank {
+            let by = ListQuery { filters: ferrum_kernel::query::parse_filters(&json!([[f, "=", otto[*f]]])).unwrap(), ..Default::default() };
+            forbidden(t.k.list(&hr_user, "Employee", &by).await);
+            forbidden(t.k.list(&hr_user, "Employee", &ListQuery { sort: Some(format!("{f} asc")), ..Default::default() }).await);
+        }
+        let exported = t.k.get_for_export(&hr_user, "Employee", uid(&otto)).await.expect("HR users export employees");
+        assert!(leaked(&exported, &otto, bank).is_empty(), "{exported:?}");
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        let page = t.k.list_tx(&hr_user, &mut tx, "Employee", &ListQuery::default(), ferrum_kernel::Action::Export).await.unwrap();
+        tx.rollback().await.unwrap();
+        let his_row = page.rows.iter().find(|r| r["id"] == otto["id"]).expect("Otto exported");
+        assert!(leaked(his_row, &otto, bank).is_empty(), "{his_row:?}");
+        t.k.update(&t.admin, "Employee", uid(&otto), obj(json!({"bank_name": "Otto New Savings Bank"})), None).await.unwrap();
+        let trail = t.k.audit_trail(&hr_user, "Employee", uid(&otto)).await.unwrap();
+        assert!(leaked(&trail, &t.get("Employee", uid(&otto)).await, bank).is_empty() && leaked(&trail, &otto, bank).is_empty(), "{trail}");
+        // Writing them: refused on Otto's record, and on their own (the self-service rule reads them only).
+        for (rec, patch) in
+            [(&otto, json!({"bank_name": "Changed"})), (&otto, json!({"bank_account_no": "000000000001"})), (&mine, json!({"bank_name": "Changed"}))]
+        {
+            assert!(t.k.update(&hr_user, "Employee", uid(rec), obj(patch.clone()), None).await.is_err(), "{patch}");
+        }
+        assert_eq!(t.get("Employee", uid(&mine)).await["bank_name"], mine["bank_name"]);
+        // HR's reports: the bank remittance is not theirs to run, and a pay report shows no one's account.
+        forbidden(t.report(&hr_user, "bank_remittance", &[]).await);
+        let docs = t.report(&hr_user, "expiring_documents", &[]).await.expect("documents report");
+        assert!(leaked(&docs, &otto, bank).is_empty());
+    });
+}
+
+#[test]
+fn a_line_s_review_shows_only_on_appraisals_a_rule_granting_it_reaches() {
+    run(async {
+        let slug = "hrk05l";
+        // Vic holds self-service and a workspace's role reading every appraisal without their review.
+        let g = Grouped::new(slug, &[(format!("vic@{slug}.test"), vec!["Employee"])]).await;
+        let t = &g.t;
+        own_role(t, "Appraisal Viewer", json!([{"entity": "Appraisal", "read": true}])).await;
+        let vic_id = g.who[0].user;
+        t.k.set_user_roles(&t.admin, vic_id, &["Employee".into(), "Appraisal Viewer".into()]).await.unwrap();
+        let vic = t.k.load_ctx(t.tenant, vic_id, None, "it".into()).await.unwrap();
+        let (mine, otto) = (t.get("Appraisal", uid(&g.appraisals[1])).await, t.get("Appraisal", uid(&g.appraisals[0])).await);
+        let own = t.k.get(&vic, "Appraisal", uid(&mine), false).await.unwrap();
+        assert!(shows(&own, &mine, &["remarks"], "own") && goals_show(&own, &mine, "own goals"), "their own review, lines too");
+        let his = t.k.get(&vic, "Appraisal", uid(&otto), false).await.unwrap();
+        assert!(!shows(&his, &otto, &["remarks"], "Otto's") && !goals_show(&his, &otto, "Otto's goals"), "{his:?}");
+        let rows = t.list(&vic, "Appraisal", json!({})).await;
+        let row = rows.iter().find(|r| r["id"] == otto["id"]).expect("Otto's appraisal listed");
+        assert!(row.get("remarks").is_none() && row.get("goals").and_then(Value::as_array).is_none_or(|g| g.iter().all(|l| l.get("manager_score").is_none())));
+        let by = |f: &str| ListQuery { filters: ferrum_kernel::query::parse_filters(&json!([[f, "=", "4"]])).unwrap(), ..Default::default() };
+        forbidden(t.k.list(&vic, "Appraisal", &by("remarks")).await);
+        assert!(t.k.list(&vic, "Appraisal", &by("goals.manager_score")).await.is_err(), "a line's review is no filter either");
+        forbidden(t.k.list(&vic, "Appraisal", &ListQuery { sort: Some("remarks desc".into()), ..Default::default() }).await);
+        let trail = t.k.audit_trail(&vic, "Appraisal", uid(&otto)).await.unwrap();
+        assert!(!serde_json::to_string(&trail).unwrap().contains("kept for the group"), "{trail}");
+        // Not written: the remarks, nor a goal's review.
+        let mut goals = his["goals"].as_array().cloned().unwrap_or_default();
+        goals[0]["manager_score"] = json!("1");
+        for patch in [json!({"remarks": "Changed"}), json!({"goals": goals})] {
+            assert!(t.k.update(&vic, "Appraisal", uid(&otto), obj(patch), None).await.is_err());
+        }
+        assert!(shows(&t.get("Appraisal", uid(&otto)).await, &otto, &["remarks"], "after"));
+    });
+}
+
+#[test]
+fn a_payroll_report_or_file_shows_bank_and_tax_details_only_to_those_who_read_everyone_s() {
+    run(async {
+        let slug = "hrk05r";
+        let p = P::new(slug).await;
+        let t = &p.t;
+        let otto = p.hire("Otto", "60000").await;
+        let mira = p.hire("Mira", "50000").await;
+        t.k.update(
+            &t.admin,
+            "Employee",
+            uid(&otto),
+            obj(grouped_values("OTTO", 0)
+                .as_object()
+                .cloned()
+                .map(|mut m| {
+                    m.insert("salary_mode".into(), json!("Bank"));
+                    Value::Object(m)
+                })
+                .unwrap()),
+            None,
+        )
+        .await
+        .unwrap();
+        // A clerk of the workspace's who runs payroll without reading employees, and holds self-service too.
+        own_role(
+            t,
+            "Payroll Clerk",
+            json!([{"entity": "SalarySlip", "read": true}, {"entity": "PayrollEntry", "read": true, "write": true}, {"entity": "PayrollOpening", "read": true}]),
+        )
+        .await;
+        let clerk = t.user(&format!("mira@{slug}.test"), &["Payroll Clerk", "Employee"]).await;
+        t.k.update(&t.admin, "Employee", uid(&mira), obj(json!({"user": format!("mira@{slug}.test"), "tax_id": "MIRAX5555Q"})), None).await.unwrap();
+        let run_id = p.run("2026-09-01", "2026-09-30", true).await;
+        let otto = t.get("Employee", uid(&otto)).await;
+        let secret = ["bank_name", "bank_account_no", "tax_id", "iban"];
+        let tax = t.report(&clerk, "income_tax_deductions", &[("from_date", "2026-04-01"), ("to_date", "2027-03-31")]).await.expect("the tax report");
+        assert!(leaked(&tax, &otto, &secret).is_empty(), "Otto's tax id: {tax}");
+        assert!(tax["columns"].as_array().unwrap().iter().all(|c| c["name"] != json!("tax_id")), "no tax id column");
+        let remit = t.report(&clerk, "bank_remittance", &[("payroll_entry", &run_id.to_string())]).await;
+        assert!(remit.is_err(), "bank details for the clerk: {:?}", remit.map(|r| leaked(&r, &otto, &secret)));
+        let file =
+            t.k.run_action(
+                &clerk,
+                "PayrollEntry",
+                run_id,
+                "bank_file",
+                json!({"from_account": "50100012345678", "from_bic": "HDFCINBB", "execution_date": "2026-10-01"}),
+            )
+            .await;
+        assert!(file.is_err(), "a bank file for the clerk");
+        assert_eq!(t.get("PayrollEntry", run_id).await["bank_file_rounds"].as_i64().unwrap_or(0), 0, "no round made");
+        // Mira by herself: her own tax id on her own row.
+        let mira_only = t.user(&format!("mira2@{slug}.test"), &["Employee"]).await;
+        t.k.update(&t.admin, "Employee", uid(&mira), obj(json!({"user": format!("mira2@{slug}.test")})), None).await.unwrap();
+        let mine = t.report(&mira_only, "income_tax_deductions", &[("from_date", "2026-04-01"), ("to_date", "2027-03-31")]).await.expect("her own");
+        assert_eq!(mine["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(mine["rows"][0]["tax_id"], json!("MIRAX5555Q"));
+        // The payroll manager reads everyone's.
+        let all = t.report(&p.pm, "income_tax_deductions", &[("from_date", "2026-04-01"), ("to_date", "2027-03-31")]).await.unwrap();
+        assert_eq!(row(&all, "employee_name", "Otto Test")["tax_id"], otto["tax_id"]);
+    });
+}

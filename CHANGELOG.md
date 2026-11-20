@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.25.0
+
+Package `hr` 0.13.0 (a field group and two roles' rules change when the package's version moves). No interface change.
+
+**Every field group closed (K0-5).** With the platform's rule that a group shows on a record only when the rule
+reaching that record grants it (Ferrum #316, #317), every grouped field of HR is tested for every role of the four
+packages alone and in pairs: reads, lists, filters and sorts, exports, the trail, writes, an appraisal's lines, the
+reports and the bank payment file. The fault this closes: an HR user who also holds Employee read every employee's
+bank details. Two leaks HR itself had are closed:
+- A job opening carried its requisition's salary range in plain fields, so everyone holding Employee read the pay
+  range the requisition keeps in `pay`. The opening's range is now in `pay`; **HR Manager** and **HR User** read and
+  write it there (their Job Opening rules gain the group). **Employee** no longer sees an opening's range: a workspace
+  that wants its people to see it grants `pay` on Job Opening to its Employee role.
+- A report's column (tax id, bank details, dates of birth, identity and bank documents) and the bank payment file
+  showed a group the caller held only through their own-record rule on everyone's rows. They show it now only to
+  those who read it on every employee, or on rows that are all their own. The tax report reads no opening figures for
+  a caller who cannot read them.
+
 ## 0.24.0
 
 Package `hr` 0.12.0. New entities Overtime Rule and Overtime Request, the Overtime Approval workflow and two message

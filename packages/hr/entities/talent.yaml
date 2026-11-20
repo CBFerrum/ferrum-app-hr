@@ -18,8 +18,8 @@
     - {name: publish, type: check, label: Publish on Careers Page, in_filter: true}
     - {name: posted_on, type: date, default_expr: today}
     - {name: closes_on, type: date, description: The opening closes automatically after this date}
-    - {name: lower_range, type: currency, min: "0", label: Salary From}
-    - {name: upper_range, type: currency, min: "0", label: Salary To}
+    - {name: lower_range, type: currency, min: "0", label: Salary From, perm_group: pay}
+    - {name: upper_range, type: currency, min: "0", label: Salary To, perm_group: pay}
     - {name: description, type: markdown}
     - {name: requisition, type: link, to: JobRequisition, read_only: true, no_copy: true, description: "The approved requisition that opened it"}
     - {name: application_link, type: url, description: "Where candidates apply for this job (a form of the Forms app, say), for a published list of openings to show"}

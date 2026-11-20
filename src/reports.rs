@@ -369,10 +369,12 @@ async fn headcount(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>, co: &f
     }))
 }
 
-/// Whether an Employee's `field` is the caller's to see: its field group, and, when the assistant runs
-/// the report, whether the workspace lets it go to the AI provider.
-fn sees(ctx: &Ctx, field: &str) -> bool {
-    ctx.schema.entity("Employee").is_some_and(|e| ferrum_kernel::query::readable(ctx, e, field))
+/// Whether an Employee's `field` is the caller's to see on every row of a report: its field group on every employee
+/// (S9 R13: a group their self-service rule gives them on their own record does not count for others'), or on their
+/// own when `own` (the rows are theirs alone); and, when the assistant runs the report, whether the workspace lets it
+/// go to the AI provider.
+fn sees(ctx: &Ctx, field: &str, own: bool) -> bool {
+    crate::reads_everyones(ctx, "Employee", field, own)
 }
 
 /// Each active employee's documents that are expired or expire within the type's warning days (or `days`), and
@@ -381,14 +383,14 @@ fn sees(ctx: &Ctx, field: &str) -> bool {
 async fn expiring_documents(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result<Value> {
     let today = ctx.today();
     let days: Option<i32> = p.str("days").map(|d| d.parse().map_err(|_| Error::field("days", "must be a whole number"))).transpose()?;
+    let own = own_only(ctx, "EmployeeDocument");
     let mut categories = vec!["General".to_string()];
-    if sees(ctx, "national_id") {
+    if sees(ctx, "national_id", own.is_some()) {
         categories.push("Identity".into());
     }
-    if sees(ctx, "bank_account_no") {
+    if sees(ctx, "bank_account_no", own.is_some()) {
         categories.push("Bank".into());
     }
-    let own = own_only(ctx, "EmployeeDocument");
     #[allow(clippy::type_complexity)]
     let data: Vec<(Option<String>, Option<String>, String, String, Option<NaiveDate>)> = sqlx::query_as(
         "with docs as (select employee, document_type, bool_or(expiry_date is null) open_ended, max(expiry_date) expiry, max(warn_days_before) warn \
@@ -659,11 +661,12 @@ async fn events(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>) -> Result
          left join e_department d on d.tenant_id = e.tenant_id and d.id = e.department where e.status = 'Active' and e.tenant_id = ",
     );
     qb.push_bind(ctx.tenant).push(" and e.company = ").push_bind(company);
-    push_own(&mut qb, &own_only(ctx, "Employee"));
+    let own = own_only(ctx, "Employee");
+    push_own(&mut qb, &own);
     let data: Vec<(Option<String>, Option<String>, Option<String>, Option<NaiveDate>, Option<NaiveDate>)> = qb.build_query_as().fetch_all(&mut **tx).await?;
     // A birthday is a date of birth: only for those who may see one, and never to an AI provider
     // the workspace has not allowed it.
-    let birthdays = sees(ctx, "date_of_birth");
+    let birthdays = sees(ctx, "date_of_birth", own.is_some());
     let mut found: Vec<(NaiveDate, Value)> = Vec::new();
     for (no, name, dept, born, joined) in data {
         for (event, date) in [("Birthday", born.filter(|_| birthdays)), ("Work Anniversary", joined)] {
@@ -1086,7 +1089,10 @@ fn payroll_summary(data: RegisterData) -> Value {
 /// it (what was paid before the first slip made here, and by a previous employer that year), so a
 /// year's totals are the taxable income and tax each slip's income tax counted.
 async fn income_tax(tx: &mut Tx, ctx: &Ctx, company: Uuid, (from, to): (NaiveDate, NaiveDate), data: RegisterData) -> Result<Value> {
-    let tax_id = sees(ctx, "tax_id");
+    // Someone who reads no opening figures gets none; the rows are theirs alone when slips and figures both are.
+    let openings_read = ctx.perms.access("PayrollOpening", Action::Read) != Access::None;
+    let own = own_only(ctx, "SalarySlip").is_some() && (!openings_read || own_only(ctx, "PayrollOpening").is_some());
+    let tax_id = sees(ctx, "tax_id", own);
     #[derive(Default)]
     struct Year {
         number: Option<String>,
@@ -1118,7 +1124,7 @@ async fn income_tax(tx: &mut Tx, ctx: &Ctx, company: Uuid, (from, to): (NaiveDat
     push_own(&mut qb, &own_only(ctx, "PayrollOpening"));
     qb.push(" group by e.id, e.employee_name, e.number");
     let openings: Vec<(Uuid, Option<String>, Option<String>, Decimal, Decimal, Decimal, Decimal)> =
-        if ctx.schema.entity("PayrollOpening").is_some() { qb.build_query_as().fetch_all(&mut **tx).await? } else { Vec::new() };
+        if ctx.schema.entity("PayrollOpening").is_some() && openings_read { qb.build_query_as().fetch_all(&mut **tx).await? } else { Vec::new() };
     for (emp, name, number, taxable, tax, prev_income, prev_tax) in openings {
         let e = per.entry((name.unwrap_or_default(), emp)).or_default();
         e.number = e.number.take().or(number);
@@ -1182,7 +1188,7 @@ async fn income_tax(tx: &mut Tx, ctx: &Ctx, company: Uuid, (from, to): (NaiveDat
 }
 
 async fn bank_remittance(tx: &mut Tx, ctx: &Ctx, company: Uuid, p: &Params<'_>, from: NaiveDate, to: NaiveDate) -> Result<Value> {
-    let readable = sees(ctx, "bank_account_no");
+    let readable = sees(ctx, "bank_account_no", own_only(ctx, "PayrollEntry").is_some());
     if !readable {
         return Err(Error::Forbidden("bank details are restricted to payroll and HR managers".into()));
     }

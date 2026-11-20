@@ -60,7 +60,7 @@ pub(crate) struct Order<'a> {
 pub(crate) async fn bank_file(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -> Result<Value> {
     let readable =
         |entity: &str, field: &str| hc.ctx.schema.entity(entity).and_then(|e| e.field(field).cloned()).is_some_and(|f| hc.ctx.perms.can_read_field(entity, &f));
-    if !readable("Employee", "bank_account_no") {
+    if !crate::reads_everyones(hc.ctx, "Employee", "bank_account_no", false) {
         return Err(Error::Forbidden("bank details are restricted to payroll and HR managers".into()));
     }
     let run = id(doc, "id").ok_or_else(|| Error::internal("no id"))?;
